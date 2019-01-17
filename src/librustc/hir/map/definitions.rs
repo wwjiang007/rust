@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! For each definition, we track the following data.  A definition
 //! here is defined somewhat circularly as "something with a def-id",
 //! but it generally corresponds to things like structs, enums, etc.
@@ -23,6 +13,7 @@ use rustc_data_structures::indexed_vec::{IndexVec};
 use rustc_data_structures::stable_hasher::StableHasher;
 use serialize::{Encodable, Decodable, Encoder, Decoder};
 use session::CrateDisambiguator;
+use std::borrow::Borrow;
 use std::fmt::Write;
 use std::hash::Hash;
 use syntax::ast;
@@ -35,6 +26,7 @@ use util::nodemap::NodeMap;
 /// Internally the DefPathTable holds a tree of DefKeys, where each DefKey
 /// stores the DefIndex of its parent.
 /// There is one DefPathTable for each crate.
+#[derive(Default)]
 pub struct DefPathTable {
     index_to_key: [Vec<DefKey>; 2],
     def_path_hashes: [Vec<DefPathHash>; 2],
@@ -148,45 +140,28 @@ impl Decodable for DefPathTable {
     }
 }
 
-
 /// The definition table containing node definitions.
-/// It holds the DefPathTable for local DefIds/DefPaths and it also stores a
-/// mapping from NodeIds to local DefIds.
+/// It holds the `DefPathTable` for local `DefId`s/`DefPath`s and it also stores a
+/// mapping from `NodeId`s to local `DefId`s.
+#[derive(Clone, Default)]
 pub struct Definitions {
     table: DefPathTable,
     node_to_def_index: NodeMap<DefIndex>,
     def_index_to_node: [Vec<ast::NodeId>; 2],
     pub(super) node_to_hir_id: IndexVec<ast::NodeId, hir::HirId>,
-    macro_def_scopes: FxHashMap<Mark, DefId>,
-    expansions: FxHashMap<DefIndex, Mark>,
+    /// If `Mark` is an ID of some macro expansion,
+    /// then `DefId` is the normal module (`mod`) in which the expanded macro was defined.
+    parent_modules_of_macro_defs: FxHashMap<Mark, DefId>,
+    /// Item with a given `DefIndex` was defined during macro expansion with ID `Mark`.
+    expansions_that_defined: FxHashMap<DefIndex, Mark>,
     next_disambiguator: FxHashMap<(DefIndex, DefPathData), u32>,
     def_index_to_span: FxHashMap<DefIndex, Span>,
-}
-
-// Unfortunately we have to provide a manual impl of Clone because of the
-// fixed-sized array field.
-impl Clone for Definitions {
-    fn clone(&self) -> Self {
-        Definitions {
-            table: self.table.clone(),
-            node_to_def_index: self.node_to_def_index.clone(),
-            def_index_to_node: [
-                self.def_index_to_node[0].clone(),
-                self.def_index_to_node[1].clone(),
-            ],
-            node_to_hir_id: self.node_to_hir_id.clone(),
-            macro_def_scopes: self.macro_def_scopes.clone(),
-            expansions: self.expansions.clone(),
-            next_disambiguator: self.next_disambiguator.clone(),
-            def_index_to_span: self.def_index_to_span.clone(),
-        }
-    }
 }
 
 /// A unique identifier that we can use to lookup a definition
 /// precisely. It combines the index of the definition's parent (if
 /// any) with a `DisambiguatedDefPathData`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, PartialEq, Debug, Hash, RustcEncodable, RustcDecodable)]
 pub struct DefKey {
     /// Parent path.
     pub parent: Option<DefIndex>,
@@ -210,31 +185,9 @@ impl DefKey {
         } = self.disambiguated_data;
 
         ::std::mem::discriminant(data).hash(&mut hasher);
-        match *data {
-            DefPathData::TypeNs(name) |
-            DefPathData::Trait(name) |
-            DefPathData::AssocTypeInTrait(name) |
-            DefPathData::AssocTypeInImpl(name) |
-            DefPathData::ValueNs(name) |
-            DefPathData::Module(name) |
-            DefPathData::MacroDef(name) |
-            DefPathData::TypeParam(name) |
-            DefPathData::LifetimeDef(name) |
-            DefPathData::EnumVariant(name) |
-            DefPathData::Field(name) |
-            DefPathData::GlobalMetaData(name) => {
-                name.hash(&mut hasher);
-            }
-
-            DefPathData::Impl |
-            DefPathData::CrateRoot |
-            DefPathData::Misc |
-            DefPathData::ClosureExpr |
-            DefPathData::StructCtor |
-            DefPathData::Initializer |
-            DefPathData::ImplTrait |
-            DefPathData::Typeof => {}
-        };
+        if let Some(name) = data.get_opt_name() {
+            name.hash(&mut hasher);
+        }
 
         disambiguator.hash(&mut hasher);
 
@@ -260,13 +213,13 @@ impl DefKey {
 /// between them. This introduces some artificial ordering dependency
 /// but means that if you have (e.g.) two impls for the same type in
 /// the same module, they do get distinct def-ids.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, PartialEq, Debug, Hash, RustcEncodable, RustcDecodable)]
 pub struct DisambiguatedDefPathData {
     pub data: DefPathData,
     pub disambiguator: u32
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Debug, Hash, RustcEncodable, RustcDecodable)]
 pub struct DefPath {
     /// the path leading from the crate root to the item
     pub data: Vec<DisambiguatedDefPathData>,
@@ -324,6 +277,31 @@ impl DefPath {
         s
     }
 
+    /// Return filename friendly string of the DefPah with the
+    /// crate-prefix.
+    pub fn to_string_friendly<F>(&self, crate_imported_name: F) -> String
+        where F: FnOnce(CrateNum) -> Symbol
+    {
+        let crate_name_str = crate_imported_name(self.krate).as_str();
+        let mut s = String::with_capacity(crate_name_str.len() + self.data.len() * 16);
+
+        write!(s, "::{}", crate_name_str).unwrap();
+
+        for component in &self.data {
+            if component.disambiguator == 0 {
+                write!(s, "::{}", component.data.as_interned_str()).unwrap();
+            } else {
+                write!(s,
+                       "{}[{}]",
+                       component.data.as_interned_str(),
+                       component.disambiguator)
+                    .unwrap();
+            }
+        }
+
+        s
+    }
+
     /// Return filename friendly string of the DefPah without
     /// the crate-prefix. This method is useful if you don't have
     /// a TyCtxt available.
@@ -348,16 +326,14 @@ impl DefPath {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
 pub enum DefPathData {
     // Root: these should only be used for the root nodes, because
     // they are treated specially by the `def_path` function.
     /// The crate root (marker)
     CrateRoot,
-
     // Catch-all for random DefId things like DUMMY_NODE_ID
     Misc,
-
     // Different kinds of items and item-like things:
     /// An impl
     Impl,
@@ -367,6 +343,8 @@ pub enum DefPathData {
     AssocTypeInTrait(InternedString),
     /// An associated type **value** (i.e., in an impl)
     AssocTypeInImpl(InternedString),
+    /// An existential associated type **value** (i.e., in an impl)
+    AssocExistentialInImpl(InternedString),
     /// Something in the type NS
     TypeNs(InternedString),
     /// Something in the value NS
@@ -377,25 +355,21 @@ pub enum DefPathData {
     MacroDef(InternedString),
     /// A closure expression
     ClosureExpr,
-
     // Subportions of items
     /// A type parameter (generic parameter)
     TypeParam(InternedString),
     /// A lifetime definition
-    LifetimeDef(InternedString),
+    LifetimeParam(InternedString),
     /// A variant of a enum
     EnumVariant(InternedString),
     /// A struct field
     Field(InternedString),
     /// Implicit ctor for a tuple-like struct
     StructCtor,
-    /// Initializer for a const
-    Initializer,
-    /// An `impl Trait` type node.
+    /// A constant expression (see {ast,hir}::AnonConst).
+    AnonConst,
+    /// An `impl Trait` type node
     ImplTrait,
-    /// A `typeof` type node.
-    Typeof,
-
     /// GlobalMetaData identifies a piece of crate metadata that is global to
     /// a whole crate (as opposed to just one item). GlobalMetaData components
     /// are only supposed to show up right below the crate root.
@@ -408,22 +382,28 @@ pub struct DefPathHash(pub Fingerprint);
 
 impl_stable_hash_for!(tuple_struct DefPathHash { fingerprint });
 
+impl Borrow<Fingerprint> for DefPathHash {
+    #[inline]
+    fn borrow(&self) -> &Fingerprint {
+        &self.0
+    }
+}
+
 impl Definitions {
     /// Create new empty definition map.
-    pub fn new() -> Definitions {
-        Definitions {
-            table: DefPathTable {
-                index_to_key: [vec![], vec![]],
-                def_path_hashes: [vec![], vec![]],
-            },
-            node_to_def_index: NodeMap(),
-            def_index_to_node: [vec![], vec![]],
-            node_to_hir_id: IndexVec::new(),
-            macro_def_scopes: FxHashMap(),
-            expansions: FxHashMap(),
-            next_disambiguator: FxHashMap(),
-            def_index_to_span: FxHashMap(),
-        }
+    ///
+    /// The DefIndex returned from a new Definitions are as follows:
+    /// 1. At DefIndexAddressSpace::Low,
+    ///     CRATE_ROOT has index 0:0, and then new indexes are allocated in
+    ///     ascending order.
+    /// 2. At DefIndexAddressSpace::High,
+    ///     the first FIRST_FREE_HIGH_DEF_INDEX indexes are reserved for
+    ///     internal use, then 1:FIRST_FREE_HIGH_DEF_INDEX are allocated in
+    ///     ascending order.
+    ///
+    /// FIXME: there is probably a better place to put this comment.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn def_path_table(&self) -> &DefPathTable {
@@ -490,14 +470,6 @@ impl Definitions {
         self.node_to_hir_id[node_id]
     }
 
-    pub fn find_node_for_hir_id(&self, hir_id: hir::HirId) -> ast::NodeId {
-        self.node_to_hir_id
-            .iter()
-            .position(|x| *x == hir_id)
-            .map(|idx| ast::NodeId::new(idx))
-            .unwrap()
-    }
-
     #[inline]
     pub fn def_index_to_hir_id(&self, def_index: DefIndex) -> hir::HirId {
         let space_index = def_index.address_space().index();
@@ -511,12 +483,7 @@ impl Definitions {
     #[inline]
     pub fn opt_span(&self, def_id: DefId) -> Option<Span> {
         if def_id.krate == LOCAL_CRATE {
-            let span = self.def_index_to_span.get(&def_id.index).cloned().unwrap_or(DUMMY_SP);
-            if span != DUMMY_SP {
-                Some(span)
-            } else {
-                None
-            }
+            self.def_index_to_span.get(&def_id.index).cloned()
         } else {
             None
         }
@@ -608,13 +575,12 @@ impl Definitions {
             self.node_to_def_index.insert(node_id, index);
         }
 
-        let expansion = expansion.modern();
         if expansion != Mark::root() {
-            self.expansions.insert(index, expansion);
+            self.expansions_that_defined.insert(index, expansion);
         }
 
-        // The span is added if it isn't DUMMY_SP
-        if span != DUMMY_SP {
+        // The span is added if it isn't dummy
+        if !span.is_dummy() {
             self.def_index_to_span.insert(index, span);
         }
 
@@ -630,16 +596,16 @@ impl Definitions {
         self.node_to_hir_id = mapping;
     }
 
-    pub fn expansion(&self, index: DefIndex) -> Mark {
-        self.expansions.get(&index).cloned().unwrap_or(Mark::root())
+    pub fn expansion_that_defined(&self, index: DefIndex) -> Mark {
+        self.expansions_that_defined.get(&index).cloned().unwrap_or(Mark::root())
     }
 
-    pub fn macro_def_scope(&self, mark: Mark) -> DefId {
-        self.macro_def_scopes[&mark]
+    pub fn parent_module_of_macro_def(&self, mark: Mark) -> DefId {
+        self.parent_modules_of_macro_defs[&mark]
     }
 
-    pub fn add_macro_def_scope(&mut self, mark: Mark, scope: DefId) {
-        self.macro_def_scopes.insert(mark, scope);
+    pub fn add_parent_module_of_macro_def(&mut self, mark: Mark, module: DefId) {
+        self.parent_modules_of_macro_defs.insert(mark, module);
     }
 }
 
@@ -651,11 +617,12 @@ impl DefPathData {
             Trait(name) |
             AssocTypeInTrait(name) |
             AssocTypeInImpl(name) |
+            AssocExistentialInImpl(name) |
             ValueNs(name) |
             Module(name) |
             MacroDef(name) |
             TypeParam(name) |
-            LifetimeDef(name) |
+            LifetimeParam(name) |
             EnumVariant(name) |
             Field(name) |
             GlobalMetaData(name) => Some(name),
@@ -665,9 +632,8 @@ impl DefPathData {
             Misc |
             ClosureExpr |
             StructCtor |
-            Initializer |
-            ImplTrait |
-            Typeof => None
+            AnonConst |
+            ImplTrait => None
         }
     }
 
@@ -678,27 +644,25 @@ impl DefPathData {
             Trait(name) |
             AssocTypeInTrait(name) |
             AssocTypeInImpl(name) |
+            AssocExistentialInImpl(name) |
             ValueNs(name) |
             Module(name) |
             MacroDef(name) |
             TypeParam(name) |
-            LifetimeDef(name) |
+            LifetimeParam(name) |
             EnumVariant(name) |
             Field(name) |
             GlobalMetaData(name) => {
                 return name
             }
-
             // note that this does not show up in user printouts
             CrateRoot => "{{root}}",
-
             Impl => "{{impl}}",
             Misc => "{{?}}",
             ClosureExpr => "{{closure}}",
             StructCtor => "{{constructor}}",
-            Initializer => "{{initializer}}",
+            AnonConst => "{{constant}}",
             ImplTrait => "{{impl-Trait}}",
-            Typeof => "{{typeof}}",
         };
 
         Symbol::intern(s).as_interned_str()
@@ -709,6 +673,11 @@ impl DefPathData {
     }
 }
 
+macro_rules! count {
+    () => (0usize);
+    ( $x:tt $($xs:tt)* ) => (1usize + count!($($xs)*));
+}
+
 // We define the GlobalMetaDataKind enum with this macro because we want to
 // make sure that we exhaustively iterate over all variants when registering
 // the corresponding DefIndices in the DefTable.
@@ -716,13 +685,13 @@ macro_rules! define_global_metadata_kind {
     (pub enum GlobalMetaDataKind {
         $($variant:ident),*
     }) => (
-        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash,
-                 RustcEncodable, RustcDecodable)]
+        #[derive(Clone, Copy, Debug, Hash, RustcEncodable, RustcDecodable)]
         pub enum GlobalMetaDataKind {
             $($variant),*
         }
 
         const GLOBAL_MD_ADDRESS_SPACE: DefIndexAddressSpace = DefIndexAddressSpace::High;
+        pub const FIRST_FREE_HIGH_DEF_INDEX: usize = count!($($variant)*);
 
         impl GlobalMetaDataKind {
             fn allocate_def_indices(definitions: &mut Definitions) {
@@ -784,7 +753,7 @@ define_global_metadata_kind!(pub enum GlobalMetaDataKind {
     LangItems,
     LangItemsMissing,
     NativeLibraries,
-    CodeMap,
+    SourceMap,
     Impls,
     ExportedSymbols
 });

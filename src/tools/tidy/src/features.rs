@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Tidy check to ensure that unstable features are all in order
 //!
 //! This check will ensure properties like:
@@ -20,7 +10,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::prelude::*;
 use std::path::Path;
 
@@ -50,38 +40,10 @@ pub struct Feature {
     pub tracking_issue: Option<u32>,
 }
 
-impl Feature {
-    fn check_match(&self, other: &Feature)-> Result<(), Vec<&'static str>> {
-        let mut mismatches = Vec::new();
-        if self.level != other.level {
-            mismatches.push("stability level");
-        }
-        if self.level == Status::Stable || other.level == Status::Stable {
-            // As long as a feature is unstable, the since field tracks
-            // when the given part of the feature has been implemented.
-            // Mismatches are tolerable as features evolve and functionality
-            // gets added.
-            // Once a feature is stable, the since field tracks the first version
-            // it was part of the stable distribution, and mismatches are disallowed.
-            if self.since != other.since {
-                mismatches.push("since");
-            }
-        }
-        if self.tracking_issue != other.tracking_issue {
-            mismatches.push("tracking issue");
-        }
-        if mismatches.is_empty() {
-            Ok(())
-        } else {
-            Err(mismatches)
-        }
-    }
-}
-
 pub type Features = HashMap<String, Feature>;
 
 pub fn check(path: &Path, bad: &mut bool, quiet: bool) {
-    let mut features = collect_lang_features(path);
+    let mut features = collect_lang_features(path, bad);
     assert!(!features.is_empty());
 
     let lib_features = get_and_check_lib_features(path, bad, &features);
@@ -89,12 +51,9 @@ pub fn check(path: &Path, bad: &mut bool, quiet: bool) {
 
     let mut contents = String::new();
 
-    super::walk_many(&[&path.join("test/ui-fulldeps"),
-                       &path.join("test/ui"),
-                       &path.join("test/compile-fail"),
-                       &path.join("test/compile-fail-fulldeps"),
-                       &path.join("test/parse-fail"),
-                       &path.join("test/ui"),],
+    super::walk_many(&[&path.join("test/ui"),
+                       &path.join("test/ui-fulldeps"),
+                       &path.join("test/compile-fail")],
                      &mut |path| super::filter_dirs(path),
                      &mut |file| {
         let filename = file.file_name().unwrap().to_string_lossy();
@@ -103,7 +62,7 @@ pub fn check(path: &Path, bad: &mut bool, quiet: bool) {
             return;
         }
 
-        let filen_underscore = filename.replace("-","_").replace(".rs","");
+        let filen_underscore = filename.replace('-',"_").replace(".rs","");
         let filename_is_gate_test = test_filen_gate(&filen_underscore, &mut features);
 
         contents.truncate(0);
@@ -116,13 +75,9 @@ pub fn check(path: &Path, bad: &mut bool, quiet: bool) {
 
             let gate_test_str = "gate-test-";
 
-            if !line.contains(gate_test_str) {
-                continue;
-            }
-
             let feature_name = match line.find(gate_test_str) {
                 Some(i) => {
-                    &line[i+gate_test_str.len()..line[i+1..].find(' ').unwrap_or(line.len())]
+                    line[i+gate_test_str.len()..].splitn(2, ' ').next().unwrap()
                 },
                 None => continue,
             };
@@ -161,7 +116,7 @@ pub fn check(path: &Path, bad: &mut bool, quiet: bool) {
                  name);
     }
 
-    if gate_untested.len() > 0 {
+    if !gate_untested.is_empty() {
         tidy_error!(bad, "Found {} features without a gate test.", gate_untested.len());
     }
 
@@ -214,14 +169,25 @@ fn test_filen_gate(filen_underscore: &str, features: &mut Features) -> bool {
     return false;
 }
 
-pub fn collect_lang_features(base_src_path: &Path) -> Features {
-    let mut contents = String::new();
-    let path = base_src_path.join("libsyntax/feature_gate.rs");
-    t!(t!(File::open(path)).read_to_string(&mut contents));
+pub fn collect_lang_features(base_src_path: &Path, bad: &mut bool) -> Features {
+    let contents = t!(fs::read_to_string(base_src_path.join("libsyntax/feature_gate.rs")));
 
-    contents.lines()
-        .filter_map(|line| {
-            let mut parts = line.trim().split(",");
+    // we allow rustc-internal features to omit a tracking issue.
+    // these features must be marked with `// rustc internal` in its own group.
+    let mut next_feature_is_rustc_internal = false;
+
+    contents.lines().zip(1..)
+        .filter_map(|(line, line_number)| {
+            let line = line.trim();
+            if line.starts_with("// rustc internal") {
+                next_feature_is_rustc_internal = true;
+                return None;
+            } else if line.is_empty() {
+                next_feature_is_rustc_internal = false;
+                return None;
+            }
+
+            let mut parts = line.split(',');
             let level = match parts.next().map(|l| l.trim().trim_left_matches('(')) {
                 Some("active") => Status::Unstable,
                 Some("removed") => Status::Removed,
@@ -232,9 +198,19 @@ pub fn collect_lang_features(base_src_path: &Path) -> Features {
             let since = parts.next().unwrap().trim().trim_matches('"');
             let issue_str = parts.next().unwrap().trim();
             let tracking_issue = if issue_str.starts_with("None") {
+                if level == Status::Unstable && !next_feature_is_rustc_internal {
+                    *bad = true;
+                    tidy_error!(
+                        bad,
+                        "libsyntax/feature_gate.rs:{}: no tracking issue for feature {}",
+                        line_number,
+                        name,
+                    );
+                }
                 None
             } else {
-                let s = issue_str.split("(").nth(1).unwrap().split(")").nth(0).unwrap();
+                next_feature_is_rustc_internal = false;
+                let s = issue_str.split('(').nth(1).unwrap().split(')').nth(0).unwrap();
                 Some(s.parse().unwrap())
             };
             Some((name.to_owned(),
@@ -257,21 +233,18 @@ pub fn collect_lib_features(base_src_path: &Path) -> Features {
     // add it to the set of known library features so we can still generate docs.
     lib_features.insert("compiler_builtins_lib".to_owned(), Feature {
         level: Status::Unstable,
-        since: "".to_owned(),
+        since: String::new(),
         has_gate_test: false,
         tracking_issue: None,
     });
 
     map_lib_features(base_src_path,
                      &mut |res, _, _| {
-        match res {
-            Ok((name, feature)) => {
-                if lib_features.get(name).is_some() {
-                    return;
-                }
-                lib_features.insert(name.to_owned(), feature);
-            },
-            Err(_) => (),
+        if let Ok((name, feature)) = res {
+            if lib_features.contains_key(name) {
+                return;
+            }
+            lib_features.insert(name.to_owned(), feature);
         }
     });
    lib_features
@@ -287,13 +260,12 @@ fn get_and_check_lib_features(base_src_path: &Path,
                 Ok((name, f)) => {
                     let mut check_features = |f: &Feature, list: &Features, display: &str| {
                         if let Some(ref s) = list.get(name) {
-                            if let Err(m) = (&f).check_match(s) {
+                            if f.tracking_issue != s.tracking_issue {
                                 tidy_error!(bad,
-                                            "{}:{}: mismatches to {} in: {:?}",
+                                            "{}:{}: mismatches the `issue` in {}",
                                             file.display(),
                                             line,
-                                            display,
-                                            &m);
+                                            display);
                             }
                         }
                     };
@@ -311,7 +283,7 @@ fn get_and_check_lib_features(base_src_path: &Path,
 }
 
 fn map_lib_features(base_src_path: &Path,
-                    mf: &mut FnMut(Result<(&str, Feature), &str>, &Path, usize)) {
+                    mf: &mut dyn FnMut(Result<(&str, Feature), &str>, &Path, usize)) {
     let mut contents = String::new();
     super::walk(base_src_path,
                 &mut |path| super::filter_dirs(path) || path.ends_with("src/test"),
@@ -338,11 +310,11 @@ fn map_lib_features(base_src_path: &Path,
                     f.tracking_issue = find_attr_val(line, "issue")
                     .map(|s| s.parse().unwrap());
                 }
-                if line.ends_with("]") {
+                if line.ends_with(']') {
                     mf(Ok((name, f.clone())), file, i + 1);
-                } else if !line.ends_with(",") && !line.ends_with("\\") {
+                } else if !line.ends_with(',') && !line.ends_with('\\') {
                     // We need to bail here because we might have missed the
-                    // end of a stability attribute above because the "]"
+                    // end of a stability attribute above because the ']'
                     // might not have been at the end of the line.
                     // We could then get into the very unfortunate situation that
                     // we continue parsing the file assuming the current stability
@@ -364,12 +336,11 @@ fn map_lib_features(base_src_path: &Path,
                     level: Status::Unstable,
                     since: "None".to_owned(),
                     has_gate_test: false,
-                    // Whether there is a common tracking issue
-                    // for these feature gates remains an open question
-                    // https://github.com/rust-lang/rust/issues/24111#issuecomment-340283184
-                    // But we take 24111 otherwise they will be shown as
-                    // "internal to the compiler" which they are not.
-                    tracking_issue: Some(24111),
+                    // FIXME(#57563): #57563 is now used as a common tracking issue,
+                    // although we would like to have specific tracking
+                    // issues for each `rustc_const_unstable` in the
+                    // future.
+                    tracking_issue: Some(57563),
                 };
                 mf(Ok((feature_name, feature)), file, i + 1);
                 continue;
@@ -400,7 +371,7 @@ fn map_lib_features(base_src_path: &Path,
                 has_gate_test: false,
                 tracking_issue,
             };
-            if line.contains("]") {
+            if line.contains(']') {
                 mf(Ok((feature_name, feature)), file, i + 1);
             } else {
                 becoming_feature = Some((feature_name.to_owned(), feature));

@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A number of passes which remove various redundancies in the CFG.
 //!
 //! The `SimplifyCfg` pass gets rid of unnecessary blocks in the CFG, whereas the `SimplifyLocals`
@@ -15,7 +5,7 @@
 //!
 //! The `SimplifyLocals` pass is kinda expensive and therefore not very suitable to be run often.
 //! Most of the passes should not care or be impacted in meaningful ways due to extra locals
-//! either, so running the pass once, right before translation, should suffice.
+//! either, so running the pass once, right before codegen, should suffice.
 //!
 //! On the other side of the spectrum, the `SimplifyCfg` pass is considerably cheap to run, thus
 //! one should run it after every pass which may modify CFG in significant ways. This pass must
@@ -37,12 +27,12 @@
 //! naively generate still contains the `_a = ()` write in the unreachable block "after" the
 //! return.
 
-use rustc_data_structures::bitvec::BitVector;
+use rustc_data_structures::bit_set::BitSet;
 use rustc_data_structures::indexed_vec::{Idx, IndexVec};
 use rustc::ty::TyCtxt;
 use rustc::mir::*;
 use rustc::mir::visit::{MutVisitor, Visitor, PlaceContext};
-use rustc::session::config::FullDebugInfo;
+use rustc::session::config::DebugInfo;
 use std::borrow::Cow;
 use transform::{MirPass, MirSource};
 
@@ -108,10 +98,14 @@ impl<'a, 'tcx: 'a> CfgSimplifier<'a, 'tcx> {
     pub fn simplify(mut self) {
         self.strip_nops();
 
+        let mut start = START_BLOCK;
+
         loop {
             let mut changed = false;
 
-            for bb in (0..self.basic_blocks.len()).map(BasicBlock::new) {
+            self.collapse_goto_chain(&mut start, &mut changed);
+
+            for bb in self.basic_blocks.indices() {
                 if self.pred_count[bb] == 0 {
                     continue
                 }
@@ -141,6 +135,27 @@ impl<'a, 'tcx: 'a> CfgSimplifier<'a, 'tcx> {
             }
 
             if !changed { break }
+        }
+
+        if start != START_BLOCK {
+            debug_assert!(self.pred_count[START_BLOCK] == 0);
+            self.basic_blocks.swap(START_BLOCK, start);
+            self.pred_count.swap(START_BLOCK, start);
+
+            // pred_count == 1 if the start block has no predecessor _blocks_.
+            if self.pred_count[START_BLOCK] > 1 {
+                for (bb, data) in self.basic_blocks.iter_enumerated_mut() {
+                    if self.pred_count[bb] == 0 {
+                        continue;
+                    }
+
+                    for target in data.terminator_mut().successors_mut() {
+                        if *target == start {
+                            *target = START_BLOCK;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -249,7 +264,7 @@ impl<'a, 'tcx: 'a> CfgSimplifier<'a, 'tcx> {
 }
 
 pub fn remove_dead_blocks(mir: &mut Mir) {
-    let mut seen = BitVector::new(mir.basic_blocks().len());
+    let mut seen = BitSet::new_empty(mir.basic_blocks().len());
     for (bb, _) in traversal::preorder(mir) {
         seen.insert(bb.index());
     }
@@ -285,58 +300,63 @@ impl MirPass for SimplifyLocals {
                           tcx: TyCtxt<'a, 'tcx, 'tcx>,
                           _: MirSource,
                           mir: &mut Mir<'tcx>) {
-        let mut marker = DeclMarker { locals: BitVector::new(mir.local_decls.len()) };
+        let mut marker = DeclMarker { locals: BitSet::new_empty(mir.local_decls.len()) };
         marker.visit_mir(mir);
         // Return pointer and arguments are always live
-        marker.locals.insert(RETURN_PLACE.index());
+        marker.locals.insert(RETURN_PLACE);
         for arg in mir.args_iter() {
-            marker.locals.insert(arg.index());
+            marker.locals.insert(arg);
         }
 
         // We may need to keep dead user variables live for debuginfo.
-        if tcx.sess.opts.debuginfo == FullDebugInfo {
+        if tcx.sess.opts.debuginfo == DebugInfo::Full {
             for local in mir.vars_iter() {
-                marker.locals.insert(local.index());
+                marker.locals.insert(local);
             }
         }
 
         let map = make_local_map(&mut mir.local_decls, marker.locals);
         // Update references to all vars and tmps now
-        LocalUpdater { map: map }.visit_mir(mir);
+        LocalUpdater { map }.visit_mir(mir);
         mir.local_decls.shrink_to_fit();
     }
 }
 
 /// Construct the mapping while swapping out unused stuff out from the `vec`.
-fn make_local_map<'tcx, I: Idx, V>(vec: &mut IndexVec<I, V>, mask: BitVector) -> Vec<usize> {
-    let mut map: Vec<usize> = ::std::iter::repeat(!0).take(vec.len()).collect();
-    let mut used = 0;
+fn make_local_map<'tcx, V>(
+    vec: &mut IndexVec<Local, V>,
+    mask: BitSet<Local>,
+) -> IndexVec<Local, Option<Local>> {
+    let mut map: IndexVec<Local, Option<Local>> = IndexVec::from_elem(None, &*vec);
+    let mut used = Local::new(0);
     for alive_index in mask.iter() {
-        map[alive_index] = used;
+        map[alive_index] = Some(used);
         if alive_index != used {
             vec.swap(alive_index, used);
         }
-        used += 1;
+        used.increment_by(1);
     }
-    vec.truncate(used);
+    vec.truncate(used.index());
     map
 }
 
 struct DeclMarker {
-    pub locals: BitVector,
+    pub locals: BitSet<Local>,
 }
 
 impl<'tcx> Visitor<'tcx> for DeclMarker {
     fn visit_local(&mut self, local: &Local, ctx: PlaceContext<'tcx>, _: Location) {
-        // ignore these altogether, they get removed along with their otherwise unused decls.
-        if ctx != PlaceContext::StorageLive && ctx != PlaceContext::StorageDead {
-            self.locals.insert(local.index());
+        // Ignore storage markers altogether, they get removed along with their otherwise unused
+        // decls.
+        // FIXME: Extend this to all non-uses.
+        if !ctx.is_storage_marker() {
+            self.locals.insert(*local);
         }
     }
 }
 
 struct LocalUpdater {
-    map: Vec<usize>,
+    map: IndexVec<Local, Option<Local>>,
 }
 
 impl<'tcx> MutVisitor<'tcx> for LocalUpdater {
@@ -345,7 +365,7 @@ impl<'tcx> MutVisitor<'tcx> for LocalUpdater {
         data.statements.retain(|stmt| {
             match stmt.kind {
                 StatementKind::StorageLive(l) | StatementKind::StorageDead(l) => {
-                    self.map[l.index()] != !0
+                    self.map[l].is_some()
                 }
                 _ => true
             }
@@ -353,6 +373,6 @@ impl<'tcx> MutVisitor<'tcx> for LocalUpdater {
         self.super_basic_block_data(block, data);
     }
     fn visit_local(&mut self, l: &mut Local, _: PlaceContext<'tcx>, _: Location) {
-        *l = Local::new(self.map[l.index()]);
+        *l = self.map[*l].unwrap();
     }
 }

@@ -1,13 +1,3 @@
-// Copyright 2012-2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use core::str::lossy::*;
 
 #[test]
@@ -79,7 +69,7 @@ fn chunks() {
 fn display() {
     assert_eq!(
         "Hello\u{FFFD}\u{FFFD} There\u{FFFD} Goodbye",
-        &format!("{}", Utf8Lossy::from_bytes(b"Hello\xC0\x80 There\xE6\x83 Goodbye")));
+        &Utf8Lossy::from_bytes(b"Hello\xC0\x80 There\xE6\x83 Goodbye").to_string());
 }
 
 #[test]

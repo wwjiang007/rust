@@ -1,13 +1,3 @@
-// Copyright 2013-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Operations on ASCII strings and characters.
 //!
 //! Most string operations in Rust act on UTF-8 strings. However, at times it
@@ -108,7 +98,7 @@ pub fn escape_default(c: u8) -> EscapeDefault {
         b'\\' => ([b'\\', b'\\', 0, 0], 2),
         b'\'' => ([b'\\', b'\'', 0, 0], 2),
         b'"' => ([b'\\', b'"', 0, 0], 2),
-        b'\x20' ... b'\x7e' => ([c, 0, 0, 0], 1),
+        b'\x20' ..= b'\x7e' => ([c, 0, 0, 0], 1),
         _ => ([b'\\', b'x', hexify(c >> 4), hexify(c & 0xf)], 4),
     };
 
@@ -116,7 +106,7 @@ pub fn escape_default(c: u8) -> EscapeDefault {
 
     fn hexify(b: u8) -> u8 {
         match b {
-            0 ... 9 => b'0' + b,
+            0 ..= 9 => b'0' + b,
             _ => b'a' + b - 10,
         }
     }

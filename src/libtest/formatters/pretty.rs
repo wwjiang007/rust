@@ -1,13 +1,3 @@
-// Copyright 2012-2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use super::*;
 
 pub(crate) struct PrettyFormatter<T> {
@@ -101,7 +91,7 @@ impl<T: Write> PrettyFormatter<T> {
         for &(ref f, ref stdout) in &state.not_failures {
             successes.push(f.name.to_string());
             if !stdout.is_empty() {
-                stdouts.push_str(&format!("---- {} stdout ----\n\t", f.name));
+                stdouts.push_str(&format!("---- {} stdout ----\n", f.name));
                 let output = String::from_utf8_lossy(stdout);
                 stdouts.push_str(&output);
                 stdouts.push_str("\n");
@@ -127,7 +117,7 @@ impl<T: Write> PrettyFormatter<T> {
         for &(ref f, ref stdout) in &state.failures {
             failures.push(f.name.to_string());
             if !stdout.is_empty() {
-                fail_out.push_str(&format!("---- {} stdout ----\n\t", f.name));
+                fail_out.push_str(&format!("---- {} stdout ----\n", f.name));
                 let output = String::from_utf8_lossy(stdout);
                 fail_out.push_str(&output);
                 fail_out.push_str("\n");

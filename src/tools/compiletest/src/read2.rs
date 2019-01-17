@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // FIXME: This is a complete copy of `cargo/src/cargo/util/read2.rs`
 // Consider unify the read2() in libstd, cargo and this to prevent further code duplication.
 
@@ -16,11 +6,13 @@ pub use self::imp::read2;
 #[cfg(not(any(unix, windows)))]
 mod imp {
     use std::io::{self, Read};
-    use std::process::{ChildStdout, ChildStderr};
+    use std::process::{ChildStderr, ChildStdout};
 
-    pub fn read2(out_pipe: ChildStdout,
-                 err_pipe: ChildStderr,
-                 data: &mut FnMut(bool, &mut Vec<u8>, bool)) -> io::Result<()> {
+    pub fn read2(
+        out_pipe: ChildStdout,
+        err_pipe: ChildStderr,
+        data: &mut dyn FnMut(bool, &mut Vec<u8>, bool),
+    ) -> io::Result<()> {
         let mut buffer = Vec::new();
         out_pipe.read_to_end(&mut buffer)?;
         data(true, &mut buffer, true);
@@ -33,16 +25,18 @@ mod imp {
 
 #[cfg(unix)]
 mod imp {
-    use std::io::prelude::*;
+    use libc;
     use std::io;
+    use std::io::prelude::*;
     use std::mem;
     use std::os::unix::prelude::*;
-    use std::process::{ChildStdout, ChildStderr};
-    use libc;
+    use std::process::{ChildStderr, ChildStdout};
 
-    pub fn read2(mut out_pipe: ChildStdout,
-                 mut err_pipe: ChildStderr,
-                 data: &mut FnMut(bool, &mut Vec<u8>, bool)) -> io::Result<()> {
+    pub fn read2(
+        mut out_pipe: ChildStdout,
+        mut err_pipe: ChildStderr,
+        data: &mut dyn FnMut(bool, &mut Vec<u8>, bool),
+    ) -> io::Result<()> {
         unsafe {
             libc::fcntl(out_pipe.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK);
             libc::fcntl(err_pipe.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK);
@@ -67,9 +61,9 @@ mod imp {
             if r == -1 {
                 let err = io::Error::last_os_error();
                 if err.kind() == io::ErrorKind::Interrupted {
-                    continue
+                    continue;
                 }
-                return Err(err)
+                return Err(err);
             }
 
             // Read as much as we can from each pipe, ignoring EWOULDBLOCK or
@@ -77,15 +71,13 @@ mod imp {
             // reader will return Ok(0), in which case we'll see `Ok` ourselves. In
             // this case we flip the other fd back into blocking mode and read
             // whatever's leftover on that file descriptor.
-            let handle = |res: io::Result<_>| {
-                match res {
-                    Ok(_) => Ok(true),
-                    Err(e) => {
-                        if e.kind() == io::ErrorKind::WouldBlock {
-                            Ok(false)
-                        } else {
-                            Err(e)
-                        }
+            let handle = |res: io::Result<_>| match res {
+                Ok(_) => Ok(true),
+                Err(e) => {
+                    if e.kind() == io::ErrorKind::WouldBlock {
+                        Ok(false)
+                    } else {
+                        Err(e)
                     }
                 }
             };
@@ -113,7 +105,7 @@ mod imp {
 
     use std::io;
     use std::os::windows::prelude::*;
-    use std::process::{ChildStdout, ChildStderr};
+    use std::process::{ChildStderr, ChildStdout};
     use std::slice;
 
     use self::miow::iocp::{CompletionPort, CompletionStatus};
@@ -128,9 +120,11 @@ mod imp {
         done: bool,
     }
 
-    pub fn read2(out_pipe: ChildStdout,
-                 err_pipe: ChildStderr,
-                 data: &mut FnMut(bool, &mut Vec<u8>, bool)) -> io::Result<()> {
+    pub fn read2(
+        out_pipe: ChildStdout,
+        err_pipe: ChildStderr,
+        data: &mut dyn FnMut(bool, &mut Vec<u8>, bool),
+    ) -> io::Result<()> {
         let mut out = Vec::new();
         let mut err = Vec::new();
 
@@ -206,7 +200,9 @@ mod imp {
         if v.capacity() == v.len() {
             v.reserve(1);
         }
-        slice::from_raw_parts_mut(v.as_mut_ptr().offset(v.len() as isize),
-                                  v.capacity() - v.len())
+        slice::from_raw_parts_mut(
+            v.as_mut_ptr().offset(v.len() as isize),
+            v.capacity() - v.len(),
+        )
     }
 }

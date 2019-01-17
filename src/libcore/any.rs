@@ -1,13 +1,3 @@
-// Copyright 2013-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This module implements the `Any` trait, which enables dynamic typing
 //! of any `'static` type through runtime reflection.
 //!
@@ -39,7 +29,7 @@
 //!
 //! // Logger function for any type that implements Debug.
 //! fn log<T: Any + Debug>(value: &T) {
-//!     let value_any = value as &Any;
+//!     let value_any = value as &dyn Any;
 //!
 //!     // try to convert our value to a String.  If successful, we want to
 //!     // output the String's length as well as its value.  If not, it's a
@@ -95,7 +85,7 @@ pub trait Any: 'static {
     ///
     /// use std::any::{Any, TypeId};
     ///
-    /// fn is_string(s: &Any) -> bool {
+    /// fn is_string(s: &dyn Any) -> bool {
     ///     TypeId::of::<String>() == s.get_type_id()
     /// }
     ///
@@ -120,23 +110,30 @@ impl<T: 'static + ?Sized > Any for T {
 ///////////////////////////////////////////////////////////////////////////////
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl fmt::Debug for Any {
+impl fmt::Debug for dyn Any {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.pad("Any")
     }
 }
 
-// Ensure that the result of e.g. joining a thread can be printed and
+// Ensure that the result of e.g., joining a thread can be printed and
 // hence used with `unwrap`. May eventually no longer be needed if
 // dispatch works with upcasting.
 #[stable(feature = "rust1", since = "1.0.0")]
-impl fmt::Debug for Any + Send {
+impl fmt::Debug for dyn Any + Send {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.pad("Any")
     }
 }
 
-impl Any {
+#[stable(feature = "any_send_sync_methods", since = "1.28.0")]
+impl fmt::Debug for dyn Any + Send + Sync {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.pad("Any")
+    }
+}
+
+impl dyn Any {
     /// Returns `true` if the boxed type is the same as `T`.
     ///
     /// # Examples
@@ -144,7 +141,7 @@ impl Any {
     /// ```
     /// use std::any::Any;
     ///
-    /// fn is_string(s: &Any) {
+    /// fn is_string(s: &dyn Any) {
     ///     if s.is::<String>() {
     ///         println!("It's a string!");
     ///     } else {
@@ -178,7 +175,7 @@ impl Any {
     /// ```
     /// use std::any::Any;
     ///
-    /// fn print_if_string(s: &Any) {
+    /// fn print_if_string(s: &dyn Any) {
     ///     if let Some(string) = s.downcast_ref::<String>() {
     ///         println!("It's a string({}): '{}'", string.len(), string);
     ///     } else {
@@ -196,7 +193,7 @@ impl Any {
     pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
         if self.is::<T>() {
             unsafe {
-                Some(&*(self as *const Any as *const T))
+                Some(&*(self as *const dyn Any as *const T))
             }
         } else {
             None
@@ -211,7 +208,7 @@ impl Any {
     /// ```
     /// use std::any::Any;
     ///
-    /// fn modify_if_u32(s: &mut Any) {
+    /// fn modify_if_u32(s: &mut dyn Any) {
     ///     if let Some(num) = s.downcast_mut::<u32>() {
     ///         *num = 42;
     ///     }
@@ -233,7 +230,7 @@ impl Any {
     pub fn downcast_mut<T: Any>(&mut self) -> Option<&mut T> {
         if self.is::<T>() {
             unsafe {
-                Some(&mut *(self as *mut Any as *mut T))
+                Some(&mut *(self as *mut dyn Any as *mut T))
             }
         } else {
             None
@@ -241,7 +238,7 @@ impl Any {
     }
 }
 
-impl Any+Send {
+impl dyn Any+Send {
     /// Forwards to the method defined on the type `Any`.
     ///
     /// # Examples
@@ -249,7 +246,7 @@ impl Any+Send {
     /// ```
     /// use std::any::Any;
     ///
-    /// fn is_string(s: &(Any + Send)) {
+    /// fn is_string(s: &(dyn Any + Send)) {
     ///     if s.is::<String>() {
     ///         println!("It's a string!");
     ///     } else {
@@ -275,7 +272,7 @@ impl Any+Send {
     /// ```
     /// use std::any::Any;
     ///
-    /// fn print_if_string(s: &(Any + Send)) {
+    /// fn print_if_string(s: &(dyn Any + Send)) {
     ///     if let Some(string) = s.downcast_ref::<String>() {
     ///         println!("It's a string({}): '{}'", string.len(), string);
     ///     } else {
@@ -301,7 +298,7 @@ impl Any+Send {
     /// ```
     /// use std::any::Any;
     ///
-    /// fn modify_if_u32(s: &mut (Any+ Send)) {
+    /// fn modify_if_u32(s: &mut (dyn Any + Send)) {
     ///     if let Some(num) = s.downcast_mut::<u32>() {
     ///         *num = 42;
     ///     }
@@ -325,6 +322,89 @@ impl Any+Send {
     }
 }
 
+impl dyn Any+Send+Sync {
+    /// Forwards to the method defined on the type `Any`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::any::Any;
+    ///
+    /// fn is_string(s: &(dyn Any + Send + Sync)) {
+    ///     if s.is::<String>() {
+    ///         println!("It's a string!");
+    ///     } else {
+    ///         println!("Not a string...");
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     is_string(&0);
+    ///     is_string(&"cookie monster".to_string());
+    /// }
+    /// ```
+    #[stable(feature = "any_send_sync_methods", since = "1.28.0")]
+    #[inline]
+    pub fn is<T: Any>(&self) -> bool {
+        Any::is::<T>(self)
+    }
+
+    /// Forwards to the method defined on the type `Any`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::any::Any;
+    ///
+    /// fn print_if_string(s: &(dyn Any + Send + Sync)) {
+    ///     if let Some(string) = s.downcast_ref::<String>() {
+    ///         println!("It's a string({}): '{}'", string.len(), string);
+    ///     } else {
+    ///         println!("Not a string...");
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     print_if_string(&0);
+    ///     print_if_string(&"cookie monster".to_string());
+    /// }
+    /// ```
+    #[stable(feature = "any_send_sync_methods", since = "1.28.0")]
+    #[inline]
+    pub fn downcast_ref<T: Any>(&self) -> Option<&T> {
+        Any::downcast_ref::<T>(self)
+    }
+
+    /// Forwards to the method defined on the type `Any`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::any::Any;
+    ///
+    /// fn modify_if_u32(s: &mut (dyn Any + Send + Sync)) {
+    ///     if let Some(num) = s.downcast_mut::<u32>() {
+    ///         *num = 42;
+    ///     }
+    /// }
+    ///
+    /// fn main() {
+    ///     let mut x = 10u32;
+    ///     let mut s = "starlord".to_string();
+    ///
+    ///     modify_if_u32(&mut x);
+    ///     modify_if_u32(&mut s);
+    ///
+    ///     assert_eq!(x, 42);
+    ///     assert_eq!(&s, "starlord");
+    /// }
+    /// ```
+    #[stable(feature = "any_send_sync_methods", since = "1.28.0")]
+    #[inline]
+    pub fn downcast_mut<T: Any>(&mut self) -> Option<&mut T> {
+        Any::downcast_mut::<T>(self)
+    }
+}
 
 ///////////////////////////////////////////////////////////////////////////////
 // TypeID and its methods
@@ -341,7 +421,7 @@ impl Any+Send {
 ///
 /// While `TypeId` implements `Hash`, `PartialOrd`, and `Ord`, it is worth
 /// noting that the hashes and ordering will vary between Rust releases. Beware
-/// of relying on them outside of your code!
+/// of relying on them inside of your code!
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct TypeId {

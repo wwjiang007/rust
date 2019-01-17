@@ -1,16 +1,8 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+// run-pass
 
 #![feature(const_fn)]
 
-type Field1 = i32;
+type Field1 = (i32, u32);
 type Field2 = f32;
 type Field3 = i64;
 
@@ -21,7 +13,7 @@ union DummyUnion {
 }
 
 const FLOAT1_AS_I32: i32 = 1065353216;
-const UNION: DummyUnion = DummyUnion { field1: FLOAT1_AS_I32 };
+const UNION: DummyUnion = DummyUnion { field1: (FLOAT1_AS_I32, 0) };
 
 const fn read_field1() -> Field1 {
     const FIELD1: Field1 = unsafe { UNION.field1 };
@@ -39,7 +31,15 @@ const fn read_field3() -> Field3 {
 }
 
 fn main() {
-    assert_eq!(read_field1(), FLOAT1_AS_I32);
+    let foo = FLOAT1_AS_I32;
+    assert_eq!(read_field1().0, foo);
+    assert_eq!(read_field1().0, FLOAT1_AS_I32);
+
+    let foo = 1.0;
+    assert_eq!(read_field2(), foo);
     assert_eq!(read_field2(), 1.0);
+
     assert_eq!(read_field3(), unsafe { UNION.field3 });
+    let foo = unsafe { UNION.field3 };
+    assert_eq!(read_field3(), foo);
 }

@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This calculates the types which has storage which lives across a suspension point in a
 //! generator from the perspective of typeck. The actual types used at runtime
 //! is calculated in `rustc_mir::transform::generator` and may be a subset of the
@@ -17,7 +7,7 @@ use rustc::hir::def_id::DefId;
 use rustc::hir::intravisit::{self, Visitor, NestedVisitorMap};
 use rustc::hir::{self, Pat, PatKind, Expr};
 use rustc::middle::region;
-use rustc::ty::{self, Ty, GeneratorInterior};
+use rustc::ty::{self, Ty};
 use rustc_data_structures::sync::Lrc;
 use syntax_pos::Span;
 use super::FnCtxt;
@@ -48,7 +38,7 @@ impl<'a, 'gcx, 'tcx> InteriorVisitor<'a, 'gcx, 'tcx> {
                 // See the mega-comment at `yield_in_scope` for a proof.
 
                 debug!("comparing counts yield: {} self: {}, source_span = {:?}",
-                    expr_count, self.expr_count, source_span);
+                       expr_count, self.expr_count, source_span);
 
                 if expr_count >= self.expr_count {
                     Some(yield_span)
@@ -65,7 +55,7 @@ impl<'a, 'gcx, 'tcx> InteriorVisitor<'a, 'gcx, 'tcx> {
                    expr, scope, ty, self.expr_count, yield_span);
 
             if self.fcx.any_unresolved_type_vars(&ty) {
-                let mut err = struct_span_err!(self.fcx.tcx.sess, source_span, E0907,
+                let mut err = struct_span_err!(self.fcx.tcx.sess, source_span, E0698,
                     "type inside generator must be known in this context");
                 err.span_note(yield_span,
                               "the type is part of the generator because of this `yield`");
@@ -85,11 +75,11 @@ impl<'a, 'gcx, 'tcx> InteriorVisitor<'a, 'gcx, 'tcx> {
 pub fn resolve_interior<'a, 'gcx, 'tcx>(fcx: &'a FnCtxt<'a, 'gcx, 'tcx>,
                                         def_id: DefId,
                                         body_id: hir::BodyId,
-                                        interior: GeneratorInterior<'tcx>) {
-    let body = fcx.tcx.hir.body(body_id);
+                                        interior: Ty<'tcx>) {
+    let body = fcx.tcx.hir().body(body_id);
     let mut visitor = InteriorVisitor {
         fcx,
-        types: FxHashMap(),
+        types: FxHashMap::default(),
         region_scope_tree: fcx.tcx.region_scope_tree(def_id),
         expr_count: 0,
     };
@@ -121,12 +111,11 @@ pub fn resolve_interior<'a, 'gcx, 'tcx>(fcx: &'a FnCtxt<'a, 'gcx, 'tcx>,
     // Replace all regions inside the generator interior with late bound regions
     // Note that each region slot in the types gets a new fresh late bound region,
     // which means that none of the regions inside relate to any other, even if
-    // typeck had previously found contraints that would cause them to be related.
+    // typeck had previously found constraints that would cause them to be related.
     let mut counter = 0;
     let type_list = fcx.tcx.fold_regions(&type_list, &mut false, |_, current_depth| {
         counter += 1;
-        fcx.tcx.mk_region(ty::ReLateBound(ty::DebruijnIndex::new(current_depth),
-                                        ty::BrAnon(counter)))
+        fcx.tcx.mk_region(ty::ReLateBound(current_depth, ty::BrAnon(counter)))
     });
 
     let witness = fcx.tcx.mk_generator_witness(ty::Binder::bind(type_list));
@@ -135,7 +124,7 @@ pub fn resolve_interior<'a, 'gcx, 'tcx>(fcx: &'a FnCtxt<'a, 'gcx, 'tcx>,
             witness, body.value.span);
 
     // Unify the type variable inside the generator with the new witness
-    match fcx.at(&fcx.misc(body.value.span), fcx.param_env).eq(interior.witness, witness) {
+    match fcx.at(&fcx.misc(body.value.span), fcx.param_env).eq(interior, witness) {
         Ok(ok) => fcx.register_infer_ok_obligations(ok),
         _ => bug!(),
     }
@@ -168,7 +157,13 @@ impl<'a, 'gcx, 'tcx> Visitor<'tcx> for InteriorVisitor<'a, 'gcx, 'tcx> {
 
         let scope = self.region_scope_tree.temporary_scope(expr.hir_id.local_id);
 
-        let ty = self.fcx.tables.borrow().expr_ty_adjusted(expr);
+        // Record the unadjusted type
+        let ty = self.fcx.tables.borrow().expr_ty(expr);
         self.record(ty, scope, Some(expr), expr.span);
+
+        // Also include the adjusted types, since these can result in MIR locals
+        for adjustment in self.fcx.tables.borrow().expr_adjustments(expr) {
+            self.record(adjustment.target, scope, Some(expr), expr.span);
+        }
     }
 }

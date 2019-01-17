@@ -1,20 +1,10 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(non_snake_case)]
 
 register_long_diagnostics! {
 E0454: r##"
 A link name was given with an empty name. Erroneous code example:
 
-```ignore (cannot-test-this-because-rustdoc-stops-compile-fail-before-trans)
+```ignore (cannot-test-this-because-rustdoc-stops-compile-fail-before-codegen)
 #[link(name = "")] extern {} // error: #[link(name = "")] given with empty name
 ```
 
@@ -51,7 +41,7 @@ https://doc.rust-lang.org/book/first-edition/conditional-compilation.html
 E0458: r##"
 An unknown "kind" was specified for a link attribute. Erroneous code example:
 
-```ignore (cannot-test-this-because-rustdoc-stops-compile-fail-before-trans)
+```ignore (cannot-test-this-because-rustdoc-stops-compile-fail-before-codegen)
 #[link(kind = "wonderful_unicorn")] extern {}
 // error: unknown kind: `wonderful_unicorn`
 ```
@@ -67,7 +57,7 @@ Please specify a valid "kind" value, from one of the following:
 E0459: r##"
 A link was used without a name parameter. Erroneous code example:
 
-```ignore (cannot-test-this-because-rustdoc-stops-compile-fail-before-trans)
+```ignore (cannot-test-this-because-rustdoc-stops-compile-fail-before-codegen)
 #[link(kind = "dylib")] extern {}
 // error: #[link(...)] specified without `name = "foo"`
 ```

@@ -1,13 +1,3 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Computes the restrictions that result from a borrow.
 
 use borrowck::*;
@@ -30,7 +20,7 @@ pub enum RestrictionResult<'tcx> {
 pub fn compute_restrictions<'a, 'tcx>(bccx: &BorrowckCtxt<'a, 'tcx>,
                                       span: Span,
                                       cause: euv::LoanCause,
-                                      cmt: mc::cmt<'tcx>,
+                                      cmt: &mc::cmt_<'tcx>,
                                       loan_region: ty::Region<'tcx>)
                                       -> RestrictionResult<'tcx> {
     let ctxt = RestrictionsContext {
@@ -55,7 +45,7 @@ struct RestrictionsContext<'a, 'tcx: 'a> {
 
 impl<'a, 'tcx> RestrictionsContext<'a, 'tcx> {
     fn restrict(&self,
-                cmt: mc::cmt<'tcx>) -> RestrictionResult<'tcx> {
+                cmt: &mc::cmt_<'tcx>) -> RestrictionResult<'tcx> {
         debug!("restrict(cmt={:?})", cmt);
 
         let new_lp = |v: LoanPathKind<'tcx>| Rc::new(LoanPath::new(v, cmt.ty));
@@ -67,6 +57,12 @@ impl<'a, 'tcx> RestrictionsContext<'a, 'tcx> {
                 // are inherently non-aliasable, they can only be
                 // accessed later through the borrow itself and hence
                 // must inherently comply with its terms.
+                RestrictionResult::Safe
+            }
+
+            Categorization::ThreadLocal(..) => {
+                // Thread-locals are statics that have a scope, with
+                // no underlying structure to provide restrictions.
                 RestrictionResult::Safe
             }
 
@@ -86,7 +82,7 @@ impl<'a, 'tcx> RestrictionsContext<'a, 'tcx> {
                 // When we borrow the interior of an enum, we have to
                 // ensure the enum itself is not mutated, because that
                 // could cause the type of the memory to change.
-                self.restrict(cmt_base)
+                self.restrict(&cmt_base)
             }
 
             Categorization::Interior(cmt_base, interior) => {
@@ -101,15 +97,16 @@ impl<'a, 'tcx> RestrictionsContext<'a, 'tcx> {
                 };
                 let interior = interior.cleaned();
                 let base_ty = cmt_base.ty;
-                let result = self.restrict(cmt_base);
+                let result = self.restrict(&cmt_base);
                 // Borrowing one union field automatically borrows all its fields.
                 match base_ty.sty {
-                    ty::TyAdt(adt_def, _) if adt_def.is_union() => match result {
+                    ty::Adt(adt_def, _) if adt_def.is_union() => match result {
                         RestrictionResult::Safe => RestrictionResult::Safe,
                         RestrictionResult::SafeIf(base_lp, mut base_vec) => {
                             for (i, field) in adt_def.non_enum_variant().fields.iter().enumerate() {
-                                let field =
-                                    InteriorKind::InteriorField(mc::FieldIndex(i, field.name));
+                                let field = InteriorKind::InteriorField(
+                                    mc::FieldIndex(i, field.ident.name)
+                                );
                                 let field_ty = if field == interior {
                                     cmt.ty
                                 } else {
@@ -145,17 +142,17 @@ impl<'a, 'tcx> RestrictionsContext<'a, 'tcx> {
                         //
                         // Eventually we should make these non-special and
                         // just rely on Deref<T> implementation.
-                        let result = self.restrict(cmt_base);
+                        let result = self.restrict(&cmt_base);
                         self.extend(result, &cmt, LpDeref(pk))
                     }
-                    mc::Implicit(bk, lt) | mc::BorrowedPtr(bk, lt) => {
+                    mc::BorrowedPtr(bk, lt) => {
                         // R-Deref-[Mut-]Borrowed
                         if !self.bccx.is_subregion_of(self.loan_region, lt) {
                             self.bccx.report(
                                 BckError {
                                     span: self.span,
                                     cause: BorrowViolation(self.cause),
-                                    cmt: cmt_base,
+                                    cmt: &cmt_base,
                                     code: err_borrowed_pointer_too_short(
                                         self.loan_region, lt)});
                             return RestrictionResult::Safe;
@@ -169,7 +166,7 @@ impl<'a, 'tcx> RestrictionsContext<'a, 'tcx> {
                                 // The referent can be aliased after the
                                 // references lifetime ends (by a newly-unfrozen
                                 // borrow).
-                                let result = self.restrict(cmt_base);
+                                let result = self.restrict(&cmt_base);
                                 self.extend(result, &cmt, LpDeref(pk))
                             }
                         }
@@ -183,7 +180,7 @@ impl<'a, 'tcx> RestrictionsContext<'a, 'tcx> {
 
     fn extend(&self,
               result: RestrictionResult<'tcx>,
-              cmt: &mc::cmt<'tcx>,
+              cmt: &mc::cmt_<'tcx>,
               elem: LoanPathElem<'tcx>) -> RestrictionResult<'tcx> {
         match result {
             RestrictionResult::Safe => RestrictionResult::Safe,

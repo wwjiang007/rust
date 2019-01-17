@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Auto-generate stub docs for the unstable book
 
 #![deny(warnings)]
@@ -131,7 +121,7 @@ fn main() {
     let src_path = Path::new(&src_path_str);
     let dest_path = Path::new(&dest_path_str).join("src");
 
-    let lang_features = collect_lang_features(src_path);
+    let lang_features = collect_lang_features(src_path, &mut false);
     let lib_features = collect_lib_features(src_path).into_iter().filter(|&(ref name, _)| {
         !lang_features.contains_key(name)
     }).collect();

@@ -1,13 +1,3 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 /// Used for indexing operations (`container[index]`) in immutable contexts.
 ///
 /// `container[index]` is actually syntactic sugar for `*container.index(index)`,
@@ -60,7 +50,10 @@
 /// assert_eq!(nucleotide_count[Nucleotide::T], 12);
 /// ```
 #[lang = "index"]
-#[rustc_on_unimplemented = "the type `{Self}` cannot be indexed by `{Idx}`"]
+#[rustc_on_unimplemented(
+    message="the type `{Self}` cannot be indexed by `{Idx}`",
+    label="`{Self}` cannot be indexed by `{Idx}`",
+)]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(alias = "]")]
 #[doc(alias = "[")]
@@ -147,7 +140,10 @@ pub trait Index<Idx: ?Sized> {
 /// balance[Side::Left] = Weight::Kilogram(3.0);
 /// ```
 #[lang = "index_mut"]
-#[rustc_on_unimplemented = "the type `{Self}` cannot be mutably indexed by `{Idx}`"]
+#[rustc_on_unimplemented(
+    message="the type `{Self}` cannot be mutably indexed by `{Idx}`",
+    label="`{Self}` cannot be mutably indexed by `{Idx}`",
+)]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[doc(alias = "[")]
 #[doc(alias = "]")]

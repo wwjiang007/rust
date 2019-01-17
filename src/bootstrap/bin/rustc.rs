@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Shim which is passed to Cargo as "rustc" when running the bootstrap.
 //!
 //! This shim will take care of some various tasks that our build process
@@ -107,6 +97,13 @@ fn main() {
              env::join_paths(&dylib_path).unwrap());
     let mut maybe_crate = None;
 
+    // Print backtrace in case of ICE
+    if env::var("RUSTC_BACKTRACE_ON_ICE").is_ok() && env::var("RUST_BACKTRACE").is_err() {
+        cmd.env("RUST_BACKTRACE", "1");
+    }
+
+    cmd.env("RUSTC_BREAK_ON_ICE", "1");
+
     if let Some(target) = target {
         // The stage0 compiler has a special sysroot distinct from what we
         // actually downloaded, so we just always pass the `--sysroot` option.
@@ -122,10 +119,12 @@ fn main() {
         // Help the libc crate compile by assisting it in finding the MUSL
         // native libraries.
         if let Some(s) = env::var_os("MUSL_ROOT") {
-            let mut root = OsString::from("native=");
-            root.push(&s);
-            root.push("/lib");
-            cmd.arg("-L").arg(&root);
+            if target.contains("musl") {
+                let mut root = OsString::from("native=");
+                root.push(&s);
+                root.push("/lib");
+                cmd.arg("-L").arg(&root);
+            }
         }
 
         // Override linker if necessary.
@@ -225,7 +224,9 @@ fn main() {
                 // flesh out rpath support more fully in the future.
                 cmd.arg("-Z").arg("osx-rpath-install-name");
                 Some("-Wl,-rpath,@loader_path/../lib")
-            } else if !target.contains("windows") && !target.contains("wasm32") {
+            } else if !target.contains("windows") &&
+                      !target.contains("wasm32") &&
+                      !target.contains("fuchsia") {
                 Some("-Wl,-rpath,$ORIGIN/../lib")
             } else {
                 None
@@ -246,8 +247,15 @@ fn main() {
 
         // When running miri tests, we need to generate MIR for all libraries
         if env::var("TEST_MIRI").ok().map_or(false, |val| val == "true") {
+            // The flags here should be kept in sync with `add_miri_default_args`
+            // in miri's `src/lib.rs`.
             cmd.arg("-Zalways-encode-mir");
-            cmd.arg("-Zmir-emit-validate=1");
+            // These options are preferred by miri, to be able to perform better validation,
+            // but the bootstrap compiler might not understand them.
+            if stage != "0" {
+                cmd.arg("-Zmir-emit-retag");
+                cmd.arg("-Zmir-opt-level=0");
+            }
         }
 
         // Force all crates compiled by this compiler to (a) be unstable and (b)
@@ -256,10 +264,23 @@ fn main() {
         if env::var_os("RUSTC_FORCE_UNSTABLE").is_some() {
             cmd.arg("-Z").arg("force-unstable-if-unmarked");
         }
+
+        if let Ok(map) = env::var("RUSTC_DEBUGINFO_MAP") {
+            cmd.arg("--remap-path-prefix").arg(&map);
+        }
     } else {
         // Override linker if necessary.
         if let Ok(host_linker) = env::var("RUSTC_HOST_LINKER") {
             cmd.arg(format!("-Clinker={}", host_linker));
+        }
+
+        if let Ok(s) = env::var("RUSTC_HOST_CRT_STATIC") {
+            if s == "true" {
+                cmd.arg("-C").arg("target-feature=+crt-static");
+            }
+            if s == "false" {
+                cmd.arg("-C").arg("target-feature=-crt-static");
+            }
         }
     }
 
@@ -267,21 +288,19 @@ fn main() {
         cmd.arg("--cfg").arg("parallel_queries");
     }
 
-    let color = match env::var("RUSTC_COLOR") {
-        Ok(s) => usize::from_str(&s).expect("RUSTC_COLOR should be an integer"),
-        Err(_) => 0,
-    };
-
-    if color != 0 {
-        cmd.arg("--color=always");
-    }
-
-    if env::var_os("RUSTC_DENY_WARNINGS").is_some() {
+    if env::var_os("RUSTC_DENY_WARNINGS").is_some() && env::var_os("RUSTC_EXTERNAL_TOOL").is_none()
+    {
         cmd.arg("-Dwarnings");
+        cmd.arg("-Dbare_trait_objects");
     }
 
     if verbose > 1 {
-        eprintln!("rustc command: {:?}", cmd);
+        eprintln!(
+            "rustc command: {:?}={:?} {:?}",
+            bootstrap::util::dylib_path_var(),
+            env::join_paths(&dylib_path).unwrap(),
+            cmd,
+        );
         eprintln!("sysroot: {:?}", sysroot);
         eprintln!("libdir: {:?}", libdir);
     }
@@ -301,7 +320,7 @@ fn main() {
             let start = Instant::now();
             let status = cmd
                 .status()
-                .expect(&format!("\n\n failed to run {:?}", cmd));
+                .unwrap_or_else(|_| panic!("\n\n failed to run {:?}", cmd));
             let dur = start.elapsed();
 
             let is_test = args.iter().any(|a| a == "--test");
@@ -321,7 +340,7 @@ fn main() {
         }
     }
 
-    let code = exec_cmd(&mut cmd).expect(&format!("\n\n failed to run {:?}", cmd));
+    let code = exec_cmd(&mut cmd).unwrap_or_else(|_| panic!("\n\n failed to run {:?}", cmd));
     std::process::exit(code);
 }
 

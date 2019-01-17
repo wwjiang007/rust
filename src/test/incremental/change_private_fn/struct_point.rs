@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Test where we change the body of a private method in an impl.
 // We then test what sort of functions must be rebuilt as a result.
 
@@ -20,7 +10,7 @@
 #![allow(dead_code)]
 #![crate_type = "rlib"]
 
-#![rustc_partition_translated(module="struct_point-point", cfg="cfail2")]
+#![rustc_partition_codegened(module="struct_point-point", cfg="cfail2")]
 
 #![rustc_partition_reused(module="struct_point-fn_calls_methods_in_same_impl", cfg="cfail2")]
 #![rustc_partition_reused(module="struct_point-fn_calls_methods_in_another_impl", cfg="cfail2")]

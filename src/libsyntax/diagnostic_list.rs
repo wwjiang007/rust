@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(non_snake_case)]
 
 // Error messages for EXXXX errors.
@@ -93,6 +83,68 @@ For more information about the cfg attribute, read:
 https://doc.rust-lang.org/reference.html#conditional-compilation
 "##,
 
+E0538: r##"
+Attribute contains same meta item more than once.
+
+Erroneous code example:
+
+```compile_fail,E0538
+#[deprecated(
+    since="1.0.0",
+    note="First deprecation note.",
+    note="Second deprecation note." // error: multiple same meta item
+)]
+fn deprecated_function() {}
+```
+
+Meta items are the key-value pairs inside of an attribute. Each key may only be
+used once in each attribute.
+
+To fix the problem, remove all but one of the meta items with the same key.
+
+Example:
+
+```
+#[deprecated(
+    since="1.0.0",
+    note="First deprecation note."
+)]
+fn deprecated_function() {}
+```
+"##,
+
+E0541: r##"
+An unknown meta item was used.
+
+Erroneous code example:
+
+```compile_fail,E0541
+#[deprecated(
+    since="1.0.0",
+    // error: unknown meta item
+    reason="Example invalid meta item. Should be 'note'")
+]
+fn deprecated_function() {}
+```
+
+Meta items are the key-value pairs inside of an attribute. The keys provided
+must be one of the valid keys for the specified attribute.
+
+To fix the problem, either remove the unknown meta item, or rename it if you
+provided the wrong name.
+
+In the erroneous code example above, the wrong name was provided, so changing
+to a correct one it will fix the error. Example:
+
+```
+#[deprecated(
+    since="1.0.0",
+    note="This is a valid meta item for the deprecated attribute."
+)]
+fn deprecated_function() {}
+```
+"##,
+
 E0552: r##"
 A unrecognized representation attribute was used.
 
@@ -151,19 +203,18 @@ Delete the offending feature attribute.
 "##,
 
 E0565: r##"
-A literal was used in an attribute that doesn't support literals.
+A literal was used in a built-in attribute that doesn't support literals.
 
 Erroneous code example:
 
 ```ignore (compile_fail not working here; see Issue #43707)
-#![feature(attr_literals)]
-
 #[inline("always")] // error: unsupported literal
 pub fn something() {}
 ```
 
-Literals in attributes are new and largely unsupported. Work to support literals
-where appropriate is ongoing. Try using an unquoted name instead:
+Literals in attributes are new and largely unsupported in built-in attributes.
+Work to support literals where appropriate is ongoing. Try using an unquoted
+name instead:
 
 ```
 #[inline(always)]
@@ -312,28 +363,45 @@ and likely to change in the future.
 
 "##,
 
+E0705: r##"
+A `#![feature]` attribute was declared for a feature that is stable in
+the current edition, but not in all editions.
+
+Erroneous code example:
+
+```ignore (limited to a warning during 2018 edition development)
+#![feature(rust_2018_preview)]
+#![feature(test_2018_feature)] // error: the feature
+                               // `test_2018_feature` is
+                               // included in the Rust 2018 edition
+```
+
+"##,
+
 }
 
 register_diagnostics! {
-    E0538, // multiple [same] items
     E0539, // incorrect meta item
     E0540, // multiple rustc_deprecated attributes
-    E0541, // unknown meta item
     E0542, // missing 'since'
     E0543, // missing 'reason'
     E0544, // multiple stability levels
     E0545, // incorrect 'issue'
     E0546, // missing 'feature'
     E0547, // missing 'issue'
-    E0548, // incorrect stability attribute type
+//  E0548, // replaced with a generic attribute input check
     E0549, // rustc_deprecated attribute must be paired with either stable or unstable attribute
     E0550, // multiple deprecated attributes
     E0551, // incorrect meta item
     E0553, // multiple rustc_const_unstable attributes
-    E0555, // malformed feature attribute, expected #![feature(...)]
+//  E0555, // replaced with a generic attribute input check
     E0556, // malformed feature, expected just one word
     E0584, // file for module `..` found at both .. and ..
     E0629, // missing 'feature' (rustc_const_unstable)
     E0630, // rustc_const_unstable attribute must be paired with stable/unstable attribute
     E0693, // incorrect `repr(align)` attribute format
+    E0694, // an unknown tool name found in scoped attributes
+    E0703, // invalid ABI
+    E0704, // incorrect visibility restriction
+    E0717, // rustc_promotable without stability attribute
 }

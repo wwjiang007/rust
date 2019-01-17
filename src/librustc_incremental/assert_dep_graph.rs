@@ -1,19 +1,9 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This pass is only used for the UNIT TESTS and DEBUGGING NEEDS
 //! around dependency graph construction. It serves two purposes; it
 //! will dump graphs in graphviz form to disk, and it searches for
 //! `#[rustc_if_this_changed]` and `#[rustc_then_this_would_need]`
 //! annotations. These annotations can be used to test whether paths
-//! exist in the graph. These checks run after trans, so they view the
+//! exist in the graph. These checks run after codegen, so they view the
 //! the final state of the dependency graph. Note that there are
 //! similar assertions found in `persist::dirty_clean` which check the
 //! **initial** state of the dependency graph, just after it has been
@@ -36,10 +26,10 @@
 //! #[rustc_if_this_changed(Hir)]
 //! fn foo() { }
 //!
-//! #[rustc_then_this_would_need(trans)] //~ ERROR no path from `foo`
+//! #[rustc_then_this_would_need(codegen)] //~ ERROR no path from `foo`
 //! fn bar() { }
 //!
-//! #[rustc_then_this_would_need(trans)] //~ ERROR OK
+//! #[rustc_then_this_would_need(codegen)] //~ ERROR OK
 //! fn baz() { foo(); }
 //! ```
 
@@ -49,11 +39,12 @@ use rustc::dep_graph::debug::{DepNodeFilter, EdgeFilter};
 use rustc::hir::def_id::DefId;
 use rustc::ty::TyCtxt;
 use rustc_data_structures::fx::FxHashSet;
-use rustc_data_structures::graph::{Direction, INCOMING, OUTGOING, NodeIndex};
+use rustc_data_structures::graph::implementation::{
+    Direction, INCOMING, OUTGOING, NodeIndex
+};
 use rustc::hir;
 use rustc::hir::intravisit::{self, NestedVisitorMap, Visitor};
 use rustc::ich::{ATTR_IF_THIS_CHANGED, ATTR_THEN_THIS_WOULD_NEED};
-use graphviz::IntoCow;
 use std::env;
 use std::fs::{self, File};
 use std::io::Write;
@@ -78,8 +69,8 @@ pub fn assert_dep_graph<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
             let mut visitor = IfThisChanged { tcx,
                                             if_this_changed: vec![],
                                             then_this_would_need: vec![] };
-            visitor.process_attrs(ast::CRATE_NODE_ID, &tcx.hir.krate().attrs);
-            tcx.hir.krate().visit_all_item_likes(&mut visitor.as_deep_visitor());
+            visitor.process_attrs(ast::CRATE_NODE_ID, &tcx.hir().krate().attrs);
+            tcx.hir().krate().visit_all_item_likes(&mut visitor.as_deep_visitor());
             (visitor.if_this_changed, visitor.then_this_would_need)
         };
 
@@ -110,7 +101,7 @@ impl<'a, 'tcx> IfThisChanged<'a, 'tcx> {
         for list_item in attr.meta_item_list().unwrap_or_default() {
             match list_item.word() {
                 Some(word) if value.is_none() =>
-                    value = Some(word.ident.name),
+                    value = Some(word.name()),
                 _ =>
                     // FIXME better-encapsulate meta_item (don't directly access `node`)
                     span_bug!(list_item.span(), "unexpected meta-item {:?}", list_item.node),
@@ -120,7 +111,7 @@ impl<'a, 'tcx> IfThisChanged<'a, 'tcx> {
     }
 
     fn process_attrs(&mut self, node_id: ast::NodeId, attrs: &[ast::Attribute]) {
-        let def_id = self.tcx.hir.local_def_id(node_id);
+        let def_id = self.tcx.hir().local_def_id(node_id);
         let def_path_hash = self.tcx.def_path_hash(def_id);
         for attr in attrs {
             if attr.check_name(ATTR_IF_THIS_CHANGED) {
@@ -169,7 +160,7 @@ impl<'a, 'tcx> IfThisChanged<'a, 'tcx> {
 
 impl<'a, 'tcx> Visitor<'tcx> for IfThisChanged<'a, 'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
-        NestedVisitorMap::OnlyBodies(&self.tcx.hir)
+        NestedVisitorMap::OnlyBodies(&self.tcx.hir())
     }
 
     fn visit_item(&mut self, item: &'tcx hir::Item) {
@@ -227,7 +218,7 @@ fn check_paths<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 }
 
 fn dump_graph(tcx: TyCtxt) {
-    let path: String = env::var("RUST_DEP_GRAPH").unwrap_or_else(|_| format!("dep_graph"));
+    let path: String = env::var("RUST_DEP_GRAPH").unwrap_or_else(|_| "dep_graph".to_string());
     let query = tcx.dep_graph.query();
 
     let nodes = match env::var("RUST_DEP_GRAPH_FILTER") {
@@ -272,10 +263,10 @@ impl<'a, 'tcx, 'q> dot::GraphWalk<'a> for GraphvizDepGraph<'q> {
     type Edge = (&'q DepNode, &'q DepNode);
     fn nodes(&self) -> dot::Nodes<&'q DepNode> {
         let nodes: Vec<_> = self.0.iter().cloned().collect();
-        nodes.into_cow()
+        nodes.into()
     }
     fn edges(&self) -> dot::Edges<(&'q DepNode, &'q DepNode)> {
-        self.1[..].into_cow()
+        self.1[..].into()
     }
     fn source(&self, edge: &(&'q DepNode, &'q DepNode)) -> &'q DepNode {
         edge.0
@@ -342,7 +333,7 @@ fn walk_nodes<'q>(query: &'q DepGraphQuery,
                   direction: Direction)
                   -> FxHashSet<&'q DepNode>
 {
-    let mut set = FxHashSet();
+    let mut set = FxHashSet::default();
     for &start in starts {
         debug!("walk_nodes: start={:?} outgoing?={:?}", start, direction == OUTGOING);
         if set.insert(start) {

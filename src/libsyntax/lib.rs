@@ -1,13 +1,3 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! The Rust parser and macro expander.
 //!
 //! # Note
@@ -19,13 +9,16 @@
        html_root_url = "https://doc.rust-lang.org/nightly/",
        test(attr(deny(warnings))))]
 
-#![feature(unicode_internals)]
+#![feature(crate_visibility_modifier)]
+#![feature(label_break_value)]
+#![feature(nll)]
+#![feature(rustc_attrs)]
 #![feature(rustc_diagnostic_macros)]
 #![feature(slice_sort_by_cached_key)]
-#![feature(non_exhaustive)]
-#![feature(const_atomic_usize_new)]
-#![feature(rustc_attrs)]
 #![feature(str_escape)]
+#![feature(step_trait)]
+#![feature(try_trait)]
+#![feature(unicode_internals)]
 
 #![recursion_limit="256"]
 
@@ -35,20 +28,23 @@ extern crate serialize;
 #[macro_use] extern crate log;
 pub extern crate rustc_errors as errors;
 extern crate syntax_pos;
-extern crate rustc_data_structures;
+#[macro_use] extern crate rustc_data_structures;
 extern crate rustc_target;
 #[macro_use] extern crate scoped_tls;
+#[macro_use]
+extern crate smallvec;
 
 extern crate serialize as rustc_serialize; // used by deriving
 
 use rustc_data_structures::sync::Lock;
+use rustc_data_structures::bit_set::GrowableBitSet;
+pub use rustc_data_structures::thin_vec::ThinVec;
+use ast::AttrId;
 
 // A variant of 'try!' that panics on an Err. This is used as a crutch on the
 // way towards a non-panic!-prone parser. It should be used for fatal parsing
 // errors; eventually we plan to convert all code using panictry to just use
 // normal try.
-// Exported for syntax_ext, not meant for general use.
-#[macro_export]
 macro_rules! panictry {
     ($e:expr) => ({
         use std::result::Result::{Ok, Err};
@@ -57,6 +53,23 @@ macro_rules! panictry {
             Ok(e) => e,
             Err(mut e) => {
                 e.emit();
+                FatalError.raise()
+            }
+        }
+    })
+}
+
+// A variant of 'panictry!' that works on a Vec<Diagnostic> instead of a single DiagnosticBuilder.
+macro_rules! panictry_buffer {
+    ($handler:expr, $e:expr) => ({
+        use std::result::Result::{Ok, Err};
+        use errors::{FatalError, DiagnosticBuilder};
+        match $e {
+            Ok(e) => e,
+            Err(errs) => {
+                for e in errs {
+                    DiagnosticBuilder::new_diagnostic($handler, e).emit();
+                }
                 FatalError.raise()
             }
         }
@@ -73,17 +86,19 @@ macro_rules! unwrap_or {
     }
 }
 
-struct Globals {
-    used_attrs: Lock<Vec<u64>>,
-    known_attrs: Lock<Vec<u64>>,
+pub struct Globals {
+    used_attrs: Lock<GrowableBitSet<AttrId>>,
+    known_attrs: Lock<GrowableBitSet<AttrId>>,
     syntax_pos_globals: syntax_pos::Globals,
 }
 
 impl Globals {
     fn new() -> Globals {
         Globals {
-            used_attrs: Lock::new(Vec::new()),
-            known_attrs: Lock::new(Vec::new()),
+            // We have no idea how many attributes their will be, so just
+            // initiate the vectors with 0 bits. We'll grow them as necessary.
+            used_attrs: Lock::new(GrowableBitSet::new_empty()),
+            known_attrs: Lock::new(GrowableBitSet::new_empty()),
             syntax_pos_globals: syntax_pos::Globals::new(),
         }
     }
@@ -98,7 +113,7 @@ pub fn with_globals<F, R>(f: F) -> R
     })
 }
 
-scoped_thread_local!(static GLOBALS: Globals);
+scoped_thread_local!(pub static GLOBALS: Globals);
 
 #[macro_use]
 pub mod diagnostics {
@@ -108,7 +123,7 @@ pub mod diagnostics {
     pub mod metadata;
 }
 
-// NB: This module needs to be declared first so diagnostics are
+// N.B., this module needs to be declared first so diagnostics are
 // registered before they are used.
 pub mod diagnostic_list;
 
@@ -118,14 +133,7 @@ pub mod util {
     pub mod parser;
     #[cfg(test)]
     pub mod parser_testing;
-    pub mod small_vector;
     pub mod move_map;
-
-    mod thin_vec;
-    pub use self::thin_vec::ThinVec;
-
-    mod rc_slice;
-    pub use self::rc_slice::RcSlice;
 }
 
 pub mod json;
@@ -138,18 +146,17 @@ pub mod syntax {
 
 pub mod ast;
 pub mod attr;
-pub mod codemap;
+pub mod source_map;
 #[macro_use]
 pub mod config;
 pub mod entry;
-pub mod edition;
 pub mod feature_gate;
 pub mod fold;
 pub mod parse;
 pub mod ptr;
 pub mod show_span;
 pub mod std_inject;
-pub mod str;
+pub use syntax_pos::edition;
 pub use syntax_pos::symbol;
 pub mod test;
 pub mod tokenstream;
@@ -177,6 +184,8 @@ pub mod ext {
         pub mod quoted;
     }
 }
+
+pub mod early_buffered_lints;
 
 #[cfg(test)]
 mod test_snippet;

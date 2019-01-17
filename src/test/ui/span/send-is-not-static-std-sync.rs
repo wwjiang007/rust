@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // basic tests to see that certain "obvious" errors are caught by
 // these types no longer requiring `'static` (RFC 458)
 
@@ -26,6 +16,7 @@ fn mutex() {
         *lock.lock().unwrap() = &z;
     }
     //~^^ ERROR `z` does not live long enough
+    lock.use_ref(); // (Mutex is #[may_dangle] so its dtor does not use `z` => needs explicit use)
 }
 
 fn rwlock() {
@@ -39,6 +30,7 @@ fn rwlock() {
         *lock.write().unwrap() = &z;
     }
     //~^^ ERROR `z` does not live long enough
+    lock.use_ref(); // (RwLock is #[may_dangle] so its dtor does not use `z` => needs explicit use)
 }
 
 fn channel() {
@@ -54,6 +46,10 @@ fn channel() {
         tx.send(&z).unwrap();
     }
     //~^^ ERROR `z` does not live long enough
+    // (channels lack #[may_dangle], thus their dtors are implicit uses of `z`)
 }
 
 fn main() {}
+
+trait Fake { fn use_mut(&mut self) { } fn use_ref(&self) { }  }
+impl<T> Fake for T { }

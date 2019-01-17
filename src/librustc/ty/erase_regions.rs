@@ -1,25 +1,15 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use ty::{self, Ty, TyCtxt};
 use ty::fold::{TypeFolder, TypeFoldable};
 
-pub(super) fn provide(providers: &mut ty::maps::Providers) {
-    *providers = ty::maps::Providers {
+pub(super) fn provide(providers: &mut ty::query::Providers<'_>) {
+    *providers = ty::query::Providers {
         erase_regions_ty,
         ..*providers
     };
 }
 
 fn erase_regions_ty<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, ty: Ty<'tcx>) -> Ty<'tcx> {
-    // NB: use `super_fold_with` here. If we used `fold_with`, it
+    // N.B., use `super_fold_with` here. If we used `fold_with`, it
     // could invoke the `erase_regions_ty` query recursively.
     ty.super_fold_with(&mut RegionEraserVisitor { tcx })
 }
@@ -68,7 +58,7 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for RegionEraserVisitor<'a, 'gcx, 't
         //
         // Note that we *CAN* replace early-bound regions -- the
         // type system never "sees" those, they get substituted
-        // away. In trans, they will always be erased to 'erased
+        // away. In codegen, they will always be erased to 'erased
         // whenever a substitution occurs.
         match *r {
             ty::ReLateBound(..) => r,
@@ -76,4 +66,3 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for RegionEraserVisitor<'a, 'gcx, 't
         }
     }
 }
-

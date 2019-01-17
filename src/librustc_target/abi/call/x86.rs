@@ -1,13 +1,3 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use abi::call::{ArgAttribute, FnType, PassMode, Reg, RegKind};
 use abi::{self, HasDataLayout, LayoutOf, TyLayout, TyLayoutMethods};
 use spec::HasTargetSpec;
@@ -18,17 +8,12 @@ pub enum Flavor {
     Fastcall
 }
 
-fn is_single_fp_element<'a, Ty, C>(cx: C, layout: TyLayout<'a, Ty>) -> bool
+fn is_single_fp_element<'a, Ty, C>(cx: &C, layout: TyLayout<'a, Ty>) -> bool
     where Ty: TyLayoutMethods<'a, C> + Copy,
           C: LayoutOf<Ty = Ty, TyLayout = TyLayout<'a, Ty>> + HasDataLayout
 {
     match layout.abi {
-        abi::Abi::Scalar(ref scalar) => {
-            match scalar.value {
-                abi::F32 | abi::F64 => true,
-                _ => false
-            }
-        }
+        abi::Abi::Scalar(ref scalar) => scalar.value.is_float(),
         abi::Abi::Aggregate { .. } => {
             if layout.fields.count() == 1 && layout.fields.offset(0).bytes() == 0 {
                 is_single_fp_element(cx, layout.field(cx, 0))
@@ -40,7 +25,7 @@ fn is_single_fp_element<'a, Ty, C>(cx: C, layout: TyLayout<'a, Ty>) -> bool
     }
 }
 
-pub fn compute_abi_info<'a, Ty, C>(cx: C, fty: &mut FnType<'a, Ty>, flavor: Flavor)
+pub fn compute_abi_info<'a, Ty, C>(cx: &C, fty: &mut FnType<'a, Ty>, flavor: Flavor)
     where Ty: TyLayoutMethods<'a, C> + Copy,
           C: LayoutOf<Ty = Ty, TyLayout = TyLayout<'a, Ty>> + HasDataLayout + HasTargetSpec
 {
@@ -104,9 +89,10 @@ pub fn compute_abi_info<'a, Ty, C>(cx: C, fty: &mut FnType<'a, Ty>, flavor: Flav
         for arg in &mut fty.args {
             let attrs = match arg.mode {
                 PassMode::Ignore |
-                PassMode::Indirect(_) => continue,
+                PassMode::Indirect(_, None) => continue,
                 PassMode::Direct(ref mut attrs) => attrs,
                 PassMode::Pair(..) |
+                PassMode::Indirect(_, Some(_)) |
                 PassMode::Cast(_) => {
                     unreachable!("x86 shouldn't be passing arguments by {:?}", arg.mode)
                 }

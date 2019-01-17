@@ -1,13 +1,3 @@
-// Copyright 2014-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![cfg(target_thread_local)]
 #![unstable(feature = "thread_local_internals", issue = "0")]
 
@@ -20,7 +10,7 @@
 // fallback implementation to use as well.
 //
 // Due to rust-lang/rust#18804, make sure this is not generic!
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "fuchsia", target_os = "hermit"))]
 pub unsafe fn register_dtor(t: *mut u8, dtor: unsafe extern fn(*mut u8)) {
     use libc;
     use mem;
@@ -54,11 +44,6 @@ pub unsafe fn register_dtor(t: *mut u8, dtor: unsafe extern fn(*mut u8)) {
     }
     _tlv_atexit(dtor, t);
 }
-
-// Just use the thread_local fallback implementation, at least until there's
-// a more direct implementation.
-#[cfg(target_os = "fuchsia")]
-pub use sys_common::thread_local::register_dtor_fallback as register_dtor;
 
 pub fn requires_move_before_drop() -> bool {
     // The macOS implementation of TLS apparently had an odd aspect to it

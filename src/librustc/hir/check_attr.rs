@@ -1,51 +1,88 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! This module implements some validity checks for attributes.
 //! In particular it verifies that `#[inline]` and `#[repr]` attributes are
 //! attached to items that actually support them and if there are
 //! conflicts between multiple such attributes attached to the same
 //! item.
 
-use syntax_pos::Span;
+
 use ty::TyCtxt;
+use ty::query::Providers;
+use ty::query::queries;
 
 use hir;
+use hir::def_id::DefId;
 use hir::intravisit::{self, Visitor, NestedVisitorMap};
+use std::fmt::{self, Display};
+use syntax_pos::Span;
 
 #[derive(Copy, Clone, PartialEq)]
-enum Target {
+pub(crate) enum Target {
+    ExternCrate,
+    Use,
+    Static,
+    Const,
     Fn,
+    Closure,
+    Mod,
+    ForeignMod,
+    GlobalAsm,
+    Ty,
+    Existential,
+    Enum,
     Struct,
     Union,
-    Enum,
-    Const,
-    ForeignMod,
+    Trait,
+    TraitAlias,
+    Impl,
     Expression,
     Statement,
-    Closure,
-    Static,
-    Other,
+}
+
+impl Display for Target {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", match *self {
+            Target::ExternCrate => "extern crate",
+            Target::Use => "use",
+            Target::Static => "static item",
+            Target::Const => "constant item",
+            Target::Fn => "function",
+            Target::Closure => "closure",
+            Target::Mod => "module",
+            Target::ForeignMod => "foreign module",
+            Target::GlobalAsm => "global asm",
+            Target::Ty => "type alias",
+            Target::Existential => "existential type",
+            Target::Enum => "enum",
+            Target::Struct => "struct",
+            Target::Union => "union",
+            Target::Trait => "trait",
+            Target::TraitAlias => "trait alias",
+            Target::Impl => "item",
+            Target::Expression => "expression",
+            Target::Statement => "statement",
+        })
+    }
 }
 
 impl Target {
-    fn from_item(item: &hir::Item) -> Target {
+    pub(crate) fn from_item(item: &hir::Item) -> Target {
         match item.node {
-            hir::ItemFn(..) => Target::Fn,
-            hir::ItemStruct(..) => Target::Struct,
-            hir::ItemUnion(..) => Target::Union,
-            hir::ItemEnum(..) => Target::Enum,
-            hir::ItemConst(..) => Target::Const,
-            hir::ItemForeignMod(..) => Target::ForeignMod,
-            hir::ItemStatic(..) => Target::Static,
-            _ => Target::Other,
+            hir::ItemKind::ExternCrate(..) => Target::ExternCrate,
+            hir::ItemKind::Use(..) => Target::Use,
+            hir::ItemKind::Static(..) => Target::Static,
+            hir::ItemKind::Const(..) => Target::Const,
+            hir::ItemKind::Fn(..) => Target::Fn,
+            hir::ItemKind::Mod(..) => Target::Mod,
+            hir::ItemKind::ForeignMod(..) => Target::ForeignMod,
+            hir::ItemKind::GlobalAsm(..) => Target::GlobalAsm,
+            hir::ItemKind::Ty(..) => Target::Ty,
+            hir::ItemKind::Existential(..) => Target::Existential,
+            hir::ItemKind::Enum(..) => Target::Enum,
+            hir::ItemKind::Struct(..) => Target::Struct,
+            hir::ItemKind::Union(..) => Target::Union,
+            hir::ItemKind::Trait(..) => Target::Trait,
+            hir::ItemKind::TraitAlias(..) => Target::TraitAlias,
+            hir::ItemKind::Impl(..) => Target::Impl,
         }
     }
 }
@@ -57,50 +94,22 @@ struct CheckAttrVisitor<'a, 'tcx: 'a> {
 impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
     /// Check any attribute.
     fn check_attributes(&self, item: &hir::Item, target: Target) {
-        if target == Target::Fn {
-            self.tcx.trans_fn_attrs(self.tcx.hir.local_def_id(item.id));
+        if target == Target::Fn || target == Target::Const {
+            self.tcx.codegen_fn_attrs(self.tcx.hir().local_def_id(item.id));
         } else if let Some(a) = item.attrs.iter().find(|a| a.check_name("target_feature")) {
             self.tcx.sess.struct_span_err(a.span, "attribute should be applied to a function")
                 .span_label(item.span, "not a function")
                 .emit();
         }
 
-        let mut has_wasm_import_module = false;
         for attr in &item.attrs {
             if attr.check_name("inline") {
                 self.check_inline(attr, &item.span, target)
             } else if attr.check_name("non_exhaustive") {
                 self.check_non_exhaustive(attr, item, target)
-            } else if attr.check_name("wasm_import_module") {
-                has_wasm_import_module = true;
-                if attr.value_str().is_none() {
-                    self.tcx.sess.span_err(attr.span, "\
-                        must be of the form #[wasm_import_module = \"...\"]");
-                }
-                if target != Target::ForeignMod {
-                    self.tcx.sess.span_err(attr.span, "\
-                        must only be attached to foreign modules");
-                }
-            } else if attr.check_name("wasm_custom_section") {
-                if target != Target::Const {
-                    self.tcx.sess.span_err(attr.span, "only allowed on consts");
-                }
-
-                if attr.value_str().is_none() {
-                    self.tcx.sess.span_err(attr.span, "must be of the form \
-                        #[wasm_custom_section = \"foo\"]");
-                }
+            } else if attr.check_name("marker") {
+                self.check_marker(attr, item, target)
             }
-        }
-
-        if target == Target::ForeignMod &&
-            !has_wasm_import_module &&
-            self.tcx.sess.target.target.arch == "wasm32" &&
-            false // FIXME: eventually enable this warning when stable
-        {
-            self.tcx.sess.span_warn(item.span, "\
-                must have a #[wasm_import_module = \"...\"] attribute, this \
-                will become a hard error before too long");
         }
 
         self.check_repr(item, target);
@@ -126,21 +135,26 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
             _ => {
                 struct_span_err!(self.tcx.sess,
                                  attr.span,
-                                 E0910,
+                                 E0701,
                                  "attribute can only be applied to a struct or enum")
                     .span_label(item.span, "not a struct or enum")
                     .emit();
                 return;
             }
         }
+    }
 
-        if attr.meta_item_list().is_some() || attr.value_str().is_some() {
-            struct_span_err!(self.tcx.sess,
-                             attr.span,
-                             E0911,
-                             "attribute should be empty")
-                .span_label(item.span, "not empty")
-                .emit();
+    /// Check if the `#[marker]` attribute on an `item` is valid.
+    fn check_marker(&self, attr: &hir::Attribute, item: &hir::Item, target: Target) {
+        match target {
+            Target::Trait => { /* Valid */ },
+            _ => {
+                self.tcx.sess
+                    .struct_span_err(attr.span, "attribute can only be applied to a trait")
+                    .span_label(item.span, "not a trait")
+                    .emit();
+                return;
+            }
         }
     }
 
@@ -153,12 +167,9 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
         // ```
         let hints: Vec<_> = item.attrs
             .iter()
-            .filter(|attr| match attr.name() {
-                Some(name) => name == "repr",
-                None => false,
-            })
+            .filter(|attr| attr.name() == "repr")
             .filter_map(|attr| attr.meta_item_list())
-            .flat_map(|hints| hints)
+            .flatten()
             .collect();
 
         let mut int_reprs = 0;
@@ -218,7 +229,7 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
                         continue
                     }
                 }
-                "i8" | "u8" | "i16" | "u16" |
+                "i8"  | "u8"  | "i16" | "u16" |
                 "i32" | "u32" | "i64" | "u64" |
                 "isize" | "usize" => {
                     int_reprs += 1;
@@ -272,7 +283,7 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
 
     fn check_stmt_attributes(&self, stmt: &hir::Stmt) {
         // When checking statements ignore expressions, they will be checked later
-        if let hir::Stmt_::StmtDecl(_, _) = stmt.node {
+        if let hir::StmtKind::Decl(_, _) = stmt.node {
             for attr in stmt.node.attrs() {
                 if attr.check_name("inline") {
                     self.check_inline(attr, &stmt.span, Target::Statement);
@@ -281,8 +292,8 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
                     self.emit_repr_error(
                         attr.span,
                         stmt.span,
-                        &format!("attribute should not be applied to a statement"),
-                        &format!("not a struct, enum or union"),
+                        "attribute should not be applied to a statement",
+                        "not a struct, enum or union",
                     );
                 }
             }
@@ -291,7 +302,7 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
 
     fn check_expr_attributes(&self, expr: &hir::Expr) {
         let target = match expr.node {
-            hir::ExprClosure(..) => Target::Closure,
+            hir::ExprKind::Closure(..) => Target::Closure,
             _ => Target::Expression,
         };
         for attr in expr.attrs.iter() {
@@ -302,8 +313,8 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
                 self.emit_repr_error(
                     attr.span,
                     expr.span,
-                    &format!("attribute should not be applied to an expression"),
-                    &format!("not defining a struct, enum or union"),
+                    "attribute should not be applied to an expression",
+                    "not defining a struct, enum or union",
                 );
             }
         }
@@ -311,7 +322,7 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
 
     fn check_used(&self, item: &hir::Item, target: Target) {
         for attr in &item.attrs {
-            if attr.name().map(|name| name == "used").unwrap_or(false) && target != Target::Static {
+            if attr.name() == "used" && target != Target::Static {
                 self.tcx.sess
                     .span_err(attr.span, "attribute must be applied to a `static` variable");
             }
@@ -321,7 +332,7 @@ impl<'a, 'tcx> CheckAttrVisitor<'a, 'tcx> {
 
 impl<'a, 'tcx> Visitor<'tcx> for CheckAttrVisitor<'a, 'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
-        NestedVisitorMap::OnlyBodies(&self.tcx.hir)
+        NestedVisitorMap::OnlyBodies(&self.tcx.hir())
     }
 
     fn visit_item(&mut self, item: &'tcx hir::Item) {
@@ -343,12 +354,13 @@ impl<'a, 'tcx> Visitor<'tcx> for CheckAttrVisitor<'a, 'tcx> {
 }
 
 pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
-    let mut checker = CheckAttrVisitor { tcx };
-    tcx.hir.krate().visit_all_item_likes(&mut checker.as_deep_visitor());
+    for &module in tcx.hir().krate().modules.keys() {
+        queries::check_mod_attrs::ensure(tcx, tcx.hir().local_def_id(module));
+    }
 }
 
 fn is_c_like_enum(item: &hir::Item) -> bool {
-    if let hir::ItemEnum(ref def, _) = item.node {
+    if let hir::ItemKind::Enum(ref def, _) = item.node {
         for variant in &def.variants {
             match variant.node.data {
                 hir::VariantData::Unit(_) => { /* continue */ }
@@ -359,4 +371,18 @@ fn is_c_like_enum(item: &hir::Item) -> bool {
     } else {
         false
     }
+}
+
+fn check_mod_attrs<'tcx>(tcx: TyCtxt<'_, 'tcx, 'tcx>, module_def_id: DefId) {
+    tcx.hir().visit_item_likes_in_module(
+        module_def_id,
+        &mut CheckAttrVisitor { tcx }.as_deep_visitor()
+    );
+}
+
+pub(crate) fn provide(providers: &mut Providers<'_>) {
+    *providers = Providers {
+        check_mod_attrs,
+        ..*providers
+    };
 }

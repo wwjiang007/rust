@@ -1,15 +1,5 @@
 #!/bin/sh
 
-# Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-# file at the top-level directory of this distribution and at
-# http://rust-lang.org/COPYRIGHT.
-#
-# Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-# http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-# <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-# option. This file may not be copied, modified, or distributed
-# except according to those terms.
-
 # This file provides the function `commit_toolstate_change` for pushing a change
 # to the `rust-toolstate` repository.
 #
@@ -60,7 +50,7 @@ commit_toolstate_change() {
     OLDFLAGS="$-"
     set -eu
 
-    git config --global user.email '34210020+rust-toolstate-update@users.noreply.github.com'
+    git config --global user.email '7378925+rust-toolstate-update@users.noreply.github.com'
     git config --global user.name 'Rust Toolstate Update'
     git config --global credential.helper store
     printf 'https://%s:x-oauth-basic@github.com\n' "$TOOLSTATE_REPO_ACCESS_TOKEN" \

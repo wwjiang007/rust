@@ -1,14 +1,6 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
+use std::ffi::OsStr;
 use std::env;
+use std::path::PathBuf;
 use common::Config;
 
 /// Conversion table from triple OS name to Rust SYSNAME
@@ -23,6 +15,7 @@ const OS_TABLE: &'static [(&'static str, &'static str)] = &[
     ("freebsd", "freebsd"),
     ("fuchsia", "fuchsia"),
     ("haiku", "haiku"),
+    ("hermit", "hermit"),
     ("ios", "ios"),
     ("l4re", "l4re"),
     ("linux", "linux"),
@@ -73,7 +66,7 @@ pub fn matches_os(triple: &str, name: &str) -> bool {
     // For the wasm32 bare target we ignore anything also ignored on emscripten
     // and then we also recognize `wasm32-bare` as the os for the target
     if triple == "wasm32-unknown-unknown" {
-        return name == "emscripten" || name == "wasm32-bare"
+        return name == "emscripten" || name == "wasm32-bare";
     }
     let triple: Vec<_> = triple.split('-').collect();
     for &(triple_os, os) in OS_TABLE {
@@ -83,6 +76,8 @@ pub fn matches_os(triple: &str, name: &str) -> bool {
     }
     panic!("Cannot determine OS from triple");
 }
+
+/// Determine the architecture from `triple`
 pub fn get_arch(triple: &str) -> &'static str {
     let triple: Vec<_> = triple.split('-').collect();
     for &(triple_arch, arch) in ARCH_TABLE {
@@ -127,4 +122,50 @@ pub fn logv(config: &Config, s: String) {
     if config.verbose {
         println!("{}", s);
     }
+}
+
+pub trait PathBufExt {
+    /// Append an extension to the path, even if it already has one.
+    fn with_extra_extension<S: AsRef<OsStr>>(&self, extension: S) -> PathBuf;
+}
+
+impl PathBufExt for PathBuf {
+    fn with_extra_extension<S: AsRef<OsStr>>(&self, extension: S) -> PathBuf {
+        if extension.as_ref().len() == 0 {
+            self.clone()
+        } else {
+            let mut fname = self.file_name().unwrap().to_os_string();
+            if !extension.as_ref().to_str().unwrap().starts_with(".") {
+                fname.push(".");
+            }
+            fname.push(extension);
+            self.with_file_name(fname)
+        }
+    }
+}
+
+#[test]
+#[should_panic(expected = "Cannot determine Architecture from triple")]
+fn test_get_arch_failure() {
+    get_arch("abc");
+}
+
+#[test]
+fn test_get_arch() {
+    assert_eq!("x86_64", get_arch("x86_64-unknown-linux-gnu"));
+    assert_eq!("x86_64", get_arch("amd64"));
+}
+
+#[test]
+#[should_panic(expected = "Cannot determine OS from triple")]
+fn test_matches_os_failure() {
+    matches_os("abc", "abc");
+}
+
+#[test]
+fn test_matches_os() {
+    assert!(matches_os("x86_64-unknown-linux-gnu", "linux"));
+    assert!(matches_os("wasm32-unknown-unknown", "emscripten"));
+    assert!(matches_os("wasm32-unknown-unknown", "wasm32-bare"));
+    assert!(!matches_os("wasm32-unknown-unknown", "windows"));
 }

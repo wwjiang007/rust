@@ -1,13 +1,3 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! The compiler code necessary for `#[derive(Decodable)]`. See encodable.rs for more.
 
 use deriving::{self, pathvec_std};
@@ -27,7 +17,7 @@ pub fn expand_deriving_rustc_decodable(cx: &mut ExtCtxt,
                                        span: Span,
                                        mitem: &MetaItem,
                                        item: &Annotatable,
-                                       push: &mut FnMut(Annotatable)) {
+                                       push: &mut dyn FnMut(Annotatable)) {
     expand_deriving_decodable_imp(cx, span, mitem, item, push, "rustc_serialize")
 }
 
@@ -35,7 +25,7 @@ pub fn expand_deriving_decodable(cx: &mut ExtCtxt,
                                  span: Span,
                                  mitem: &MetaItem,
                                  item: &Annotatable,
-                                 push: &mut FnMut(Annotatable)) {
+                                 push: &mut dyn FnMut(Annotatable)) {
     warn_if_deprecated(cx, span, "Decodable");
     expand_deriving_decodable_imp(cx, span, mitem, item, push, "serialize")
 }
@@ -44,7 +34,7 @@ fn expand_deriving_decodable_imp(cx: &mut ExtCtxt,
                                  span: Span,
                                  mitem: &MetaItem,
                                  item: &Annotatable,
-                                 push: &mut FnMut(Annotatable),
+                                 push: &mut dyn FnMut(Annotatable),
                                  krate: &'static str) {
     let typaram = &*deriving::hygienic_type_parameter(item, "__D");
 
@@ -131,8 +121,8 @@ fn decodable_substructure(cx: &mut ExtCtxt,
         StaticEnum(_, ref fields) => {
             let variant = cx.ident_of("i");
 
-            let mut arms = Vec::new();
-            let mut variants = Vec::new();
+            let mut arms = Vec::with_capacity(fields.len() + 1);
+            let mut variants = Vec::with_capacity(fields.len());
             let rvariant_arg = cx.ident_of("read_enum_variant_arg");
 
             for (i, &(ident, v_span, ref parts)) in fields.iter().enumerate() {

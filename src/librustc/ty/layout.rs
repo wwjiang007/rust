@@ -1,26 +1,19 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use session::{self, DataTypeKind};
 use ty::{self, Ty, TyCtxt, TypeFoldable, ReprOptions};
 
-use syntax::ast::{self, FloatTy, IntTy, UintTy};
+use syntax::ast::{self, Ident, IntTy, UintTy};
 use syntax::attr;
 use syntax_pos::DUMMY_SP;
 
 use std::cmp;
 use std::fmt;
 use std::i128;
+use std::iter;
 use std::mem;
+use std::ops::Bound;
 
 use ich::StableHashingContext;
+use rustc_data_structures::indexed_vec::{IndexVec, Idx};
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher,
                                            StableHasherResult};
 
@@ -28,13 +21,13 @@ pub use rustc_target::abi::*;
 
 pub trait IntegerExt {
     fn to_ty<'a, 'tcx>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>, signed: bool) -> Ty<'tcx>;
-    fn from_attr<C: HasDataLayout>(cx: C, ity: attr::IntType) -> Integer;
+    fn from_attr<C: HasDataLayout>(cx: &C, ity: attr::IntType) -> Integer;
     fn repr_discr<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                  ty: Ty<'tcx>,
-                  repr: &ReprOptions,
-                  min: i128,
-                  max: i128)
-                  -> (Integer, bool);
+                            ty: Ty<'tcx>,
+                            repr: &ReprOptions,
+                            min: i128,
+                            max: i128)
+                            -> (Integer, bool);
 }
 
 impl IntegerExt for Integer {
@@ -54,7 +47,7 @@ impl IntegerExt for Integer {
     }
 
     /// Get the Integer type from an attr::IntType.
-    fn from_attr<C: HasDataLayout>(cx: C, ity: attr::IntType) -> Integer {
+    fn from_attr<C: HasDataLayout>(cx: &C, ity: attr::IntType) -> Integer {
         let dl = cx.data_layout();
 
         match ity {
@@ -74,11 +67,11 @@ impl IntegerExt for Integer {
     /// N.B.: u128 values above i128::MAX will be treated as signed, but
     /// that shouldn't affect anything, other than maybe debuginfo.
     fn repr_discr<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                  ty: Ty<'tcx>,
-                  repr: &ReprOptions,
-                  min: i128,
-                  max: i128)
-                  -> (Integer, bool) {
+                            ty: Ty<'tcx>,
+                            repr: &ReprOptions,
+                            min: i128,
+                            max: i128)
+                            -> (Integer, bool) {
         // Theoretically, negative values could be larger in unsigned representation
         // than the unsigned representation of the signed minimum. However, if there
         // are any negative values, the only valid unsigned representation is u128
@@ -90,11 +83,11 @@ impl IntegerExt for Integer {
         let min_default = I8;
 
         if let Some(ity) = repr.int {
-            let discr = Integer::from_attr(tcx, ity);
+            let discr = Integer::from_attr(&tcx, ity);
             let fit = if ity.is_signed() { signed_fit } else { unsigned_fit };
             if discr < fit {
                 bug!("Integer::repr_discr: `#[repr]` hint too small for \
-                  discriminant range of enum `{}", ty)
+                      discriminant range of enum `{}", ty)
             }
             return (discr, ity.is_signed());
         }
@@ -104,7 +97,7 @@ impl IntegerExt for Integer {
                 // WARNING: the ARM EABI has two variants; the one corresponding
                 // to `at_least == I32` appears to be used on Linux and NetBSD,
                 // but some systems may use the variant corresponding to no
-                // lower bound.  However, we don't run on those yet...?
+                // lower bound. However, we don't run on those yet...?
                 "arm" => min_from_extern = Some(I32),
                 _ => min_from_extern = Some(I32),
             }
@@ -129,9 +122,9 @@ impl PrimitiveExt for Primitive {
     fn to_ty<'a, 'tcx>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>) -> Ty<'tcx> {
         match *self {
             Int(i, signed) => i.to_ty(tcx, signed),
-            F32 => tcx.types.f32,
-            F64 => tcx.types.f64,
-            Pointer => tcx.mk_mut_ptr(tcx.mk_nil()),
+            Float(FloatTy::F32) => tcx.types.f32,
+            Float(FloatTy::F64) => tcx.types.f64,
+            Pointer => tcx.mk_mut_ptr(tcx.mk_unit()),
         }
     }
 }
@@ -155,7 +148,7 @@ pub enum LayoutError<'tcx> {
 }
 
 impl<'tcx> fmt::Display for LayoutError<'tcx> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             LayoutError::Unknown(ty) => {
                 write!(f, "the type `{:?}` has an unknown layout", ty)
@@ -188,27 +181,32 @@ fn layout_raw<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 
         ty::tls::enter_context(&icx, |_| {
             let cx = LayoutCx { tcx, param_env };
-            cx.layout_raw_uncached(ty)
+            let layout = cx.layout_raw_uncached(ty);
+            // Type-level uninhabitedness should always imply ABI uninhabitedness.
+            if let Ok(layout) = layout {
+                if ty.conservative_is_privately_uninhabited(tcx) {
+                    assert!(layout.abi.is_uninhabited());
+                }
+            }
+            layout
         })
     })
 }
 
-pub fn provide(providers: &mut ty::maps::Providers) {
-    *providers = ty::maps::Providers {
+pub fn provide(providers: &mut ty::query::Providers<'_>) {
+    *providers = ty::query::Providers {
         layout_raw,
         ..*providers
     };
 }
 
-#[derive(Copy, Clone)]
 pub struct LayoutCx<'tcx, C> {
     pub tcx: C,
-    pub param_env: ty::ParamEnv<'tcx>
+    pub param_env: ty::ParamEnv<'tcx>,
 }
 
 impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
-    fn layout_raw_uncached(self, ty: Ty<'tcx>)
-                           -> Result<&'tcx LayoutDetails, LayoutError<'tcx>> {
+    fn layout_raw_uncached(&self, ty: Ty<'tcx>) -> Result<&'tcx LayoutDetails, LayoutError<'tcx>> {
         let tcx = self.tcx;
         let param_env = self.param_env;
         let dl = self.data_layout();
@@ -224,13 +222,14 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
             tcx.intern_layout(LayoutDetails::scalar(self, scalar_unit(value)))
         };
         let scalar_pair = |a: Scalar, b: Scalar| {
-            let align = a.value.align(dl).max(b.value.align(dl)).max(dl.aggregate_align);
-            let b_offset = a.value.size(dl).abi_align(b.value.align(dl));
-            let size = (b_offset + b.value.size(dl)).abi_align(align);
+            let b_align = b.value.align(dl);
+            let align = a.value.align(dl).max(b_align).max(dl.aggregate_align);
+            let b_offset = a.value.size(dl).align_to(b_align.abi);
+            let size = (b_offset + b.value.size(dl)).align_to(align.abi);
             LayoutDetails {
-                variants: Variants::Single { index: 0 },
+                variants: Variants::Single { index: VariantIdx::new(0) },
                 fields: FieldPlacement::Arbitrary {
-                    offsets: vec![Size::from_bytes(0), b_offset],
+                    offsets: vec![Size::ZERO, b_offset],
                     memory_index: vec![0, 1]
                 },
                 abi: Abi::ScalarPair(a, b),
@@ -245,19 +244,17 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
             AlwaysSized,
             /// A univariant, the last field of which may be coerced to unsized.
             MaybeUnsized,
-            /// A univariant, but with a prefix of an arbitrary size & alignment (e.g. enum tag).
+            /// A univariant, but with a prefix of an arbitrary size & alignment (e.g., enum tag).
             Prefixed(Size, Align),
         }
-        let univariant_uninterned = |fields: &[TyLayout], repr: &ReprOptions, kind| {
+
+        let univariant_uninterned = |fields: &[TyLayout<'_>], repr: &ReprOptions, kind| {
             let packed = repr.packed();
             if packed && repr.align > 0 {
                 bug!("struct cannot be packed and aligned");
             }
 
-            let pack = {
-                let pack = repr.pack as u64;
-                Align::from_bytes(pack, pack).unwrap()
-            };
+            let pack = Align::from_bytes(repr.pack as u64).unwrap();
 
             let mut align = if packed {
                 dl.i8_align
@@ -266,12 +263,12 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
             };
 
             let mut sized = true;
-            let mut offsets = vec![Size::from_bytes(0); fields.len()];
+            let mut offsets = vec![Size::ZERO; fields.len()];
             let mut inverse_memory_index: Vec<u32> = (0..fields.len() as u32).collect();
 
             let mut optimize = !repr.inhibit_struct_field_reordering_opt();
             if let StructKind::Prefixed(_, align) = kind {
-                optimize &= align.abi() == 1;
+                optimize &= align.bytes() == 1;
             }
 
             if optimize {
@@ -281,8 +278,8 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                     fields.len()
                 };
                 let optimizing = &mut inverse_memory_index[..end];
-                let field_align = |f: &TyLayout| {
-                    if packed { f.align.min(pack).abi() } else { f.align.abi() }
+                let field_align = |f: &TyLayout<'_>| {
+                    if packed { f.align.abi.min(pack) } else { f.align.abi }
                 };
                 match kind {
                     StructKind::AlwaysSized |
@@ -306,27 +303,23 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
             // field 5 with offset 0 puts 0 in offsets[5].
             // At the bottom of this function, we use inverse_memory_index to produce memory_index.
 
-            let mut offset = Size::from_bytes(0);
+            let mut offset = Size::ZERO;
 
             if let StructKind::Prefixed(prefix_size, prefix_align) = kind {
-                if packed {
-                    let prefix_align = prefix_align.min(pack);
-                    align = align.max(prefix_align);
+                let prefix_align = if packed {
+                    prefix_align.min(pack)
                 } else {
-                    align = align.max(prefix_align);
-                }
-                offset = prefix_size.abi_align(prefix_align);
+                    prefix_align
+                };
+                align = align.max(AbiAndPrefAlign::new(prefix_align));
+                offset = prefix_size.align_to(prefix_align);
             }
 
             for &i in &inverse_memory_index {
                 let field = fields[i as usize];
                 if !sized {
                     bug!("univariant: field #{} of `{}` comes after unsized field",
-                        offsets.len(), ty);
-                }
-
-                if field.abi == Abi::Uninhabited {
-                    return Ok(LayoutDetails::uninhabited(fields.len()));
+                         offsets.len(), ty);
                 }
 
                 if field.is_unsized() {
@@ -334,15 +327,13 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                 }
 
                 // Invariant: offset < dl.obj_size_bound() <= 1<<61
-                if packed {
-                    let field_pack = field.align.min(pack);
-                    offset = offset.abi_align(field_pack);
-                    align = align.max(field_pack);
-                }
-                else {
-                    offset = offset.abi_align(field.align);
-                    align = align.max(field.align);
-                }
+                let field_align = if packed {
+                    field.align.min(AbiAndPrefAlign::new(pack))
+                } else {
+                    field.align
+                };
+                offset = offset.align_to(field_align.abi);
+                align = align.max(field_align);
 
                 debug!("univariant offset: {:?} field: {:#?}", offset, field);
                 offsets[i as usize] = offset;
@@ -353,7 +344,7 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
 
             if repr.align > 0 {
                 let repr_align = repr.align as u64;
-                align = align.max(Align::from_bytes(repr_align, repr_align).unwrap());
+                align = align.max(AbiAndPrefAlign::new(Align::from_bytes(repr_align).unwrap()));
                 debug!("univariant repr_align: {:?}", repr_align);
             }
 
@@ -378,7 +369,7 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                 memory_index = inverse_memory_index;
             }
 
-            let size = min_size.abi_align(align);
+            let size = min_size.align_to(align.abi);
             let mut abi = Abi::Aggregate { sized };
 
             // Unpack newtype ABIs and find scalar pairs.
@@ -395,7 +386,7 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                         (Some((i, field)), None, None) => {
                             // Field fills the struct and it has a scalar or scalar pair ABI.
                             if offsets[i].bytes() == 0 &&
-                               align.abi() == field.align.abi() &&
+                               align.abi == field.align.abi &&
                                size == field.size {
                                 match field.abi {
                                     // For plain scalars, or vectors of them, we can't unpack
@@ -451,8 +442,12 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                 }
             }
 
+            if sized && fields.iter().any(|f| f.abi.is_uninhabited()) {
+                abi = Abi::Uninhabited;
+            }
+
             Ok(LayoutDetails {
-                variants: Variants::Single { index: 0 },
+                variants: Variants::Single { index: VariantIdx::new(0) },
                 fields: FieldPlacement::Arbitrary {
                     offsets,
                     memory_index
@@ -462,47 +457,52 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                 size
             })
         };
-        let univariant = |fields: &[TyLayout], repr: &ReprOptions, kind| {
+        let univariant = |fields: &[TyLayout<'_>], repr: &ReprOptions, kind| {
             Ok(tcx.intern_layout(univariant_uninterned(fields, repr, kind)?))
         };
-        assert!(!ty.has_infer_types());
+        debug_assert!(!ty.has_infer_types());
 
         Ok(match ty.sty {
             // Basic scalars.
-            ty::TyBool => {
+            ty::Bool => {
                 tcx.intern_layout(LayoutDetails::scalar(self, Scalar {
                     value: Int(I8, false),
                     valid_range: 0..=1
                 }))
             }
-            ty::TyChar => {
+            ty::Char => {
                 tcx.intern_layout(LayoutDetails::scalar(self, Scalar {
                     value: Int(I32, false),
                     valid_range: 0..=0x10FFFF
                 }))
             }
-            ty::TyInt(ity) => {
+            ty::Int(ity) => {
                 scalar(Int(Integer::from_attr(dl, attr::SignedInt(ity)), true))
             }
-            ty::TyUint(ity) => {
+            ty::Uint(ity) => {
                 scalar(Int(Integer::from_attr(dl, attr::UnsignedInt(ity)), false))
             }
-            ty::TyFloat(FloatTy::F32) => scalar(F32),
-            ty::TyFloat(FloatTy::F64) => scalar(F64),
-            ty::TyFnPtr(_) => {
+            ty::Float(fty) => scalar(Float(fty)),
+            ty::FnPtr(_) => {
                 let mut ptr = scalar_unit(Pointer);
                 ptr.valid_range = 1..=*ptr.valid_range.end();
                 tcx.intern_layout(LayoutDetails::scalar(self, ptr))
             }
 
             // The never type.
-            ty::TyNever => {
-                tcx.intern_layout(LayoutDetails::uninhabited(0))
+            ty::Never => {
+                tcx.intern_layout(LayoutDetails {
+                    variants: Variants::Single { index: VariantIdx::new(0) },
+                    fields: FieldPlacement::Union(0),
+                    abi: Abi::Uninhabited,
+                    align: dl.i8_align,
+                    size: Size::ZERO
+                })
             }
 
             // Potentially-fat pointers.
-            ty::TyRef(_, ty::TypeAndMut { ty: pointee, .. }) |
-            ty::TyRawPtr(ty::TypeAndMut { ty: pointee, .. }) => {
+            ty::Ref(_, pointee, _) |
+            ty::RawPtr(ty::TypeAndMut { ty: pointee, .. }) => {
                 let mut data_ptr = scalar_unit(Pointer);
                 if !ty.is_unsafe_ptr() {
                     data_ptr.valid_range = 1..=*data_ptr.valid_range.end();
@@ -515,13 +515,13 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
 
                 let unsized_part = tcx.struct_tail(pointee);
                 let metadata = match unsized_part.sty {
-                    ty::TyForeign(..) => {
+                    ty::Foreign(..) => {
                         return Ok(tcx.intern_layout(LayoutDetails::scalar(self, data_ptr)));
                     }
-                    ty::TySlice(_) | ty::TyStr => {
+                    ty::Slice(_) | ty::Str => {
                         scalar_unit(Int(dl.ptr_sized_integer(), false))
                     }
-                    ty::TyDynamic(..) => {
+                    ty::Dynamic(..) => {
                         let mut vtable = scalar_unit(Pointer);
                         vtable.valid_range = 1..=*vtable.valid_range.end();
                         vtable
@@ -534,7 +534,7 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
             }
 
             // Arrays and slices.
-            ty::TyArray(element, mut count) => {
+            ty::Array(element, mut count) => {
                 if count.has_projections() {
                     count = tcx.normalize_erasing_regions(param_env, count);
                     if count.has_projections() {
@@ -543,52 +543,58 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                 }
 
                 let element = self.layout_of(element)?;
-                let count = count.val.unwrap_u64();
+                let count = count.unwrap_usize(tcx);
                 let size = element.size.checked_mul(count, dl)
                     .ok_or(LayoutError::SizeOverflow(ty))?;
 
+                let abi = if count != 0 && ty.conservative_is_privately_uninhabited(tcx) {
+                    Abi::Uninhabited
+                } else {
+                    Abi::Aggregate { sized: true }
+                };
+
                 tcx.intern_layout(LayoutDetails {
-                    variants: Variants::Single { index: 0 },
+                    variants: Variants::Single { index: VariantIdx::new(0) },
                     fields: FieldPlacement::Array {
                         stride: element.size,
                         count
                     },
-                    abi: Abi::Aggregate { sized: true },
+                    abi,
                     align: element.align,
                     size
                 })
             }
-            ty::TySlice(element) => {
+            ty::Slice(element) => {
                 let element = self.layout_of(element)?;
                 tcx.intern_layout(LayoutDetails {
-                    variants: Variants::Single { index: 0 },
+                    variants: Variants::Single { index: VariantIdx::new(0) },
                     fields: FieldPlacement::Array {
                         stride: element.size,
                         count: 0
                     },
                     abi: Abi::Aggregate { sized: false },
                     align: element.align,
-                    size: Size::from_bytes(0)
+                    size: Size::ZERO
                 })
             }
-            ty::TyStr => {
+            ty::Str => {
                 tcx.intern_layout(LayoutDetails {
-                    variants: Variants::Single { index: 0 },
+                    variants: Variants::Single { index: VariantIdx::new(0) },
                     fields: FieldPlacement::Array {
                         stride: Size::from_bytes(1),
                         count: 0
                     },
                     abi: Abi::Aggregate { sized: false },
                     align: dl.i8_align,
-                    size: Size::from_bytes(0)
+                    size: Size::ZERO
                 })
             }
 
             // Odd unit types.
-            ty::TyFnDef(..) => {
+            ty::FnDef(..) => {
                 univariant(&[], &ReprOptions::default(), StructKind::AlwaysSized)?
             }
-            ty::TyDynamic(..) | ty::TyForeign(..) => {
+            ty::Dynamic(..) | ty::Foreign(..) => {
                 let mut unit = univariant_uninterned(&[], &ReprOptions::default(),
                   StructKind::AlwaysSized)?;
                 match unit.abi {
@@ -599,21 +605,21 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
             }
 
             // Tuples, generators and closures.
-            ty::TyGenerator(def_id, ref substs, _) => {
+            ty::Generator(def_id, ref substs, _) => {
                 let tys = substs.field_tys(def_id, tcx);
                 univariant(&tys.map(|ty| self.layout_of(ty)).collect::<Result<Vec<_>, _>>()?,
                     &ReprOptions::default(),
                     StructKind::AlwaysSized)?
             }
 
-            ty::TyClosure(def_id, ref substs) => {
+            ty::Closure(def_id, ref substs) => {
                 let tys = substs.upvar_tys(def_id, tcx);
                 univariant(&tys.map(|ty| self.layout_of(ty)).collect::<Result<Vec<_>, _>>()?,
                     &ReprOptions::default(),
                     StructKind::AlwaysSized)?
             }
 
-            ty::TyTuple(tys) => {
+            ty::Tuple(tys) => {
                 let kind = if tys.len() == 0 {
                     StructKind::AlwaysSized
                 } else {
@@ -621,11 +627,11 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                 };
 
                 univariant(&tys.iter().map(|ty| self.layout_of(ty)).collect::<Result<Vec<_>, _>>()?,
-                    &ReprOptions::default(), kind)?
+                           &ReprOptions::default(), kind)?
             }
 
             // SIMD vector types.
-            ty::TyAdt(def, ..) if def.repr.simd() => {
+            ty::Adt(def, ..) if def.repr.simd() => {
                 let element = self.layout_of(ty.simd_type(tcx))?;
                 let count = ty.simd_size(tcx) as u64;
                 assert!(count > 0);
@@ -633,17 +639,17 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                     Abi::Scalar(ref scalar) => scalar.clone(),
                     _ => {
                         tcx.sess.fatal(&format!("monomorphising SIMD type `{}` with \
-                                                a non-machine element type `{}`",
+                                                 a non-machine element type `{}`",
                                                 ty, element.ty));
                     }
                 };
                 let size = element.size.checked_mul(count, dl)
                     .ok_or(LayoutError::SizeOverflow(ty))?;
                 let align = dl.vector_align(size);
-                let size = size.abi_align(align);
+                let size = size.align_to(align.abi);
 
                 tcx.intern_layout(LayoutDetails {
-                    variants: Variants::Single { index: 0 },
+                    variants: Variants::Single { index: VariantIdx::new(0) },
                     fields: FieldPlacement::Array {
                         stride: element.size,
                         count
@@ -658,13 +664,13 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
             }
 
             // ADTs.
-            ty::TyAdt(def, substs) => {
+            ty::Adt(def, substs) => {
                 // Cache the field layouts.
                 let variants = def.variants.iter().map(|v| {
                     v.fields.iter().map(|field| {
                         self.layout_of(field.ty(tcx, substs))
                     }).collect::<Result<Vec<_>, _>>()
-                }).collect::<Result<Vec<_>, _>>()?;
+                }).collect::<Result<IndexVec<VariantIdx, _>, _>>()?;
 
                 if def.is_union() {
                     let packed = def.repr.packed();
@@ -672,10 +678,7 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                         bug!("Union cannot be packed and aligned");
                     }
 
-                    let pack = {
-                        let pack = def.repr.pack as u64;
-                        Align::from_bytes(pack, pack).unwrap()
-                    };
+                    let pack = Align::from_bytes(def.repr.pack as u64).unwrap();
 
                     let mut align = if packed {
                         dl.i8_align
@@ -686,76 +689,136 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                     if def.repr.align > 0 {
                         let repr_align = def.repr.align as u64;
                         align = align.max(
-                            Align::from_bytes(repr_align, repr_align).unwrap());
+                            AbiAndPrefAlign::new(Align::from_bytes(repr_align).unwrap()));
                     }
 
-                    let mut size = Size::from_bytes(0);
-                    for field in &variants[0] {
+                    let optimize = !def.repr.inhibit_union_abi_opt();
+                    let mut size = Size::ZERO;
+                    let mut abi = Abi::Aggregate { sized: true };
+                    let index = VariantIdx::new(0);
+                    for field in &variants[index] {
                         assert!(!field.is_unsized());
 
-                        if packed {
-                            let field_pack = field.align.min(pack);
-                            align = align.max(field_pack);
+                        let field_align = if packed {
+                            field.align.min(AbiAndPrefAlign::new(pack))
                         } else {
-                            align = align.max(field.align);
+                            field.align
+                        };
+                        align = align.max(field_align);
+
+                        // If all non-ZST fields have the same ABI, forward this ABI
+                        if optimize && !field.is_zst() {
+                            // Normalize scalar_unit to the maximal valid range
+                            let field_abi = match &field.abi {
+                                Abi::Scalar(x) => Abi::Scalar(scalar_unit(x.value)),
+                                Abi::ScalarPair(x, y) => {
+                                    Abi::ScalarPair(
+                                        scalar_unit(x.value),
+                                        scalar_unit(y.value),
+                                    )
+                                }
+                                Abi::Vector { element: x, count } => {
+                                    Abi::Vector {
+                                        element: scalar_unit(x.value),
+                                        count: *count,
+                                    }
+                                }
+                                Abi::Uninhabited |
+                                Abi::Aggregate { .. }  => Abi::Aggregate { sized: true },
+                            };
+
+                            if size == Size::ZERO {
+                                // first non ZST: initialize 'abi'
+                                abi = field_abi;
+                            } else if abi != field_abi  {
+                                // different fields have different ABI: reset to Aggregate
+                                abi = Abi::Aggregate { sized: true };
+                            }
                         }
+
                         size = cmp::max(size, field.size);
                     }
 
                     return Ok(tcx.intern_layout(LayoutDetails {
-                        variants: Variants::Single { index: 0 },
-                        fields: FieldPlacement::Union(variants[0].len()),
-                        abi: Abi::Aggregate { sized: true },
+                        variants: Variants::Single { index },
+                        fields: FieldPlacement::Union(variants[index].len()),
+                        abi,
                         align,
-                        size: size.abi_align(align)
+                        size: size.align_to(align.abi)
                     }));
                 }
 
-                let (inh_first, inh_second) = {
-                    let mut inh_variants = (0..variants.len()).filter(|&v| {
-                        variants[v].iter().all(|f| f.abi != Abi::Uninhabited)
-                    });
-                    (inh_variants.next(), inh_variants.next())
+                // A variant is absent if it's uninhabited and only has ZST fields.
+                // Present uninhabited variants only require space for their fields,
+                // but *not* an encoding of the discriminant (e.g., a tag value).
+                // See issue #49298 for more details on the need to leave space
+                // for non-ZST uninhabited data (mostly partial initialization).
+                let absent = |fields: &[TyLayout<'_>]| {
+                    let uninhabited = fields.iter().any(|f| f.abi.is_uninhabited());
+                    let is_zst = fields.iter().all(|f| f.is_zst());
+                    uninhabited && is_zst
                 };
-                if inh_first.is_none() {
-                    // Uninhabited because it has no variants, or only uninhabited ones.
-                    return Ok(tcx.intern_layout(LayoutDetails::uninhabited(0)));
+                let (present_first, present_second) = {
+                    let mut present_variants = variants.iter_enumerated().filter_map(|(i, v)| {
+                        if absent(v) {
+                            None
+                        } else {
+                            Some(i)
+                        }
+                    });
+                    (present_variants.next(), present_variants.next())
+                };
+                if present_first.is_none() {
+                    // Uninhabited because it has no variants, or only absent ones.
+                    return tcx.layout_raw(param_env.and(tcx.types.never));
                 }
 
                 let is_struct = !def.is_enum() ||
-                    // Only one variant is inhabited.
-                    (inh_second.is_none() &&
+                    // Only one variant is present.
+                    (present_second.is_none() &&
                     // Representation optimizations are allowed.
-                     !def.repr.inhibit_enum_layout_opt());
+                    !def.repr.inhibit_enum_layout_opt());
                 if is_struct {
                     // Struct, or univariant enum equivalent to a struct.
                     // (Typechecking will reject discriminant-sizing attrs.)
 
-                    let v = inh_first.unwrap();
+                    let v = present_first.unwrap();
                     let kind = if def.is_enum() || variants[v].len() == 0 {
                         StructKind::AlwaysSized
                     } else {
                         let param_env = tcx.param_env(def.did);
                         let last_field = def.variants[v].fields.last().unwrap();
                         let always_sized = tcx.type_of(last_field.did)
-                          .is_sized(tcx.at(DUMMY_SP), param_env);
+                                              .is_sized(tcx.at(DUMMY_SP), param_env);
                         if !always_sized { StructKind::MaybeUnsized }
                         else { StructKind::AlwaysSized }
                     };
 
                     let mut st = univariant_uninterned(&variants[v], &def.repr, kind)?;
                     st.variants = Variants::Single { index: v };
-                    // Exclude 0 from the range of a newtype ABI NonZero<T>.
-                    if Some(def.did) == self.tcx.lang_items().non_zero() {
-                        match st.abi {
-                            Abi::Scalar(ref mut scalar) |
-                            Abi::ScalarPair(ref mut scalar, _) => {
-                                if *scalar.valid_range.start() == 0 {
-                                    scalar.valid_range = 1..=*scalar.valid_range.end();
-                                }
+                    let (start, end) = self.tcx.layout_scalar_valid_range(def.did);
+                    match st.abi {
+                        Abi::Scalar(ref mut scalar) |
+                        Abi::ScalarPair(ref mut scalar, _) => {
+                            // the asserts ensure that we are not using the
+                            // `#[rustc_layout_scalar_valid_range(n)]`
+                            // attribute to widen the range of anything as that would probably
+                            // result in UB somewhere
+                            if let Bound::Included(start) = start {
+                                assert!(*scalar.valid_range.start() <= start);
+                                scalar.valid_range = start..=*scalar.valid_range.end();
                             }
-                            _ => {}
+                            if let Bound::Included(end) = end {
+                                assert!(*scalar.valid_range.end() >= end);
+                                scalar.valid_range = *scalar.valid_range.start()..=end;
+                            }
                         }
+                        _ => assert!(
+                            start == Bound::Unbounded && end == Bound::Unbounded,
+                            "nonscalar layout for layout_scalar_valid_range type {:?}: {:#?}",
+                            def,
+                            st,
+                        ),
                     }
                     return Ok(tcx.intern_layout(st));
                 }
@@ -763,17 +826,17 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                 // The current code for niche-filling relies on variant indices
                 // instead of actual discriminants, so dataful enums with
                 // explicit discriminants (RFC #2363) would misbehave.
-                let no_explicit_discriminants = def.variants.iter().enumerate()
-                    .all(|(i, v)| v.discr == ty::VariantDiscr::Relative(i));
+                let no_explicit_discriminants = def.variants.iter_enumerated()
+                    .all(|(i, v)| v.discr == ty::VariantDiscr::Relative(i.as_u32()));
 
                 // Niche-filling enum optimization.
                 if !def.repr.inhibit_enum_layout_opt() && no_explicit_discriminants {
                     let mut dataful_variant = None;
-                    let mut niche_variants = usize::max_value()..=0;
+                    let mut niche_variants = VariantIdx::MAX..=VariantIdx::new(0);
 
                     // Find one non-ZST variant.
-                    'variants: for (v, fields) in variants.iter().enumerate() {
-                        if fields.iter().any(|f| f.abi == Abi::Uninhabited) {
+                    'variants: for (v, fields) in variants.iter_enumerated() {
+                        if absent(fields) {
                             continue 'variants;
                         }
                         for f in fields {
@@ -795,15 +858,21 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                     }
 
                     if let Some(i) = dataful_variant {
-                        let count = (niche_variants.end() - niche_variants.start() + 1) as u128;
+                        let count = (
+                            niche_variants.end().as_u32() - niche_variants.start().as_u32() + 1
+                        ) as u128;
                         for (field_index, &field) in variants[i].iter().enumerate() {
-                            let (offset, niche, niche_start) =
-                                match self.find_niche(field, count)? {
-                                    Some(niche) => niche,
-                                    None => continue
-                                };
+                            let niche = match self.find_niche(field)? {
+                                Some(niche) => niche,
+                                _ => continue,
+                            };
+                            let (niche_start, niche_scalar) = match niche.reserve(self, count) {
+                                Some(pair) => pair,
+                                None => continue,
+                            };
+
                             let mut align = dl.aggregate_align;
-                            let st = variants.iter().enumerate().map(|(j, v)| {
+                            let st = variants.iter_enumerated().map(|(j, v)| {
                                 let mut st = univariant_uninterned(v,
                                     &def.repr, StructKind::AlwaysSized)?;
                                 st.variants = Variants::Single { index: j };
@@ -811,13 +880,13 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                                 align = align.max(st.align);
 
                                 Ok(st)
-                            }).collect::<Result<Vec<_>, _>>()?;
+                            }).collect::<Result<IndexVec<VariantIdx, _>, _>>()?;
 
-                            let offset = st[i].fields.offset(field_index) + offset;
+                            let offset = st[i].fields.offset(field_index) + niche.offset;
                             let size = st[i].size;
 
-                            let abi = match st[i].abi {
-                                Abi::Scalar(_) => Abi::Scalar(niche.clone()),
+                            let mut abi = match st[i].abi {
+                                Abi::Scalar(_) => Abi::Scalar(niche_scalar.clone()),
                                 Abi::ScalarPair(ref first, ref second) => {
                                     // We need to use scalar_unit to reset the
                                     // valid range to the maximal one for that
@@ -825,19 +894,29 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                                     // guaranteed to be initialised, not the
                                     // other primitive.
                                     if offset.bytes() == 0 {
-                                        Abi::ScalarPair(niche.clone(), scalar_unit(second.value))
+                                        Abi::ScalarPair(
+                                            niche_scalar.clone(),
+                                            scalar_unit(second.value),
+                                        )
                                     } else {
-                                        Abi::ScalarPair(scalar_unit(first.value), niche.clone())
+                                        Abi::ScalarPair(
+                                            scalar_unit(first.value),
+                                            niche_scalar.clone(),
+                                        )
                                     }
                                 }
                                 _ => Abi::Aggregate { sized: true },
                             };
 
+                            if st.iter().all(|v| v.abi.is_uninhabited()) {
+                                abi = Abi::Uninhabited;
+                            }
+
                             return Ok(tcx.intern_layout(LayoutDetails {
                                 variants: Variants::NicheFilling {
                                     dataful_variant: i,
                                     niche_variants,
-                                    niche,
+                                    niche: niche_scalar,
                                     niche_start,
                                     variants: st,
                                 },
@@ -855,9 +934,9 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
 
                 let (mut min, mut max) = (i128::max_value(), i128::min_value());
                 let discr_type = def.repr.discr_type();
-                let bits = Integer::from_attr(tcx, discr_type).size().bits();
-                for (i, discr) in def.discriminants(tcx).enumerate() {
-                    if variants[i].iter().any(|f| f.abi == Abi::Uninhabited) {
+                let bits = Integer::from_attr(self, discr_type).size().bits();
+                for (i, discr) in def.discriminants(tcx) {
+                    if variants[i].iter().any(|f| f.abi.is_uninhabited()) {
                         continue;
                     }
                     let mut x = discr.val as i128;
@@ -868,50 +947,55 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                     if x < min { min = x; }
                     if x > max { max = x; }
                 }
+                // We might have no inhabited variants, so pretend there's at least one.
+                if (min, max) == (i128::max_value(), i128::min_value()) {
+                    min = 0;
+                    max = 0;
+                }
                 assert!(min <= max, "discriminant range is {}...{}", min, max);
                 let (min_ity, signed) = Integer::repr_discr(tcx, ty, &def.repr, min, max);
 
                 let mut align = dl.aggregate_align;
-                let mut size = Size::from_bytes(0);
+                let mut size = Size::ZERO;
 
                 // We're interested in the smallest alignment, so start large.
-                let mut start_align = Align::from_bytes(256, 256).unwrap();
-                assert_eq!(Integer::for_abi_align(dl, start_align), None);
+                let mut start_align = Align::from_bytes(256).unwrap();
+                assert_eq!(Integer::for_align(dl, start_align), None);
 
                 // repr(C) on an enum tells us to make a (tag, union) layout,
                 // so we need to grow the prefix alignment to be at least
                 // the alignment of the union. (This value is used both for
                 // determining the alignment of the overall enum, and the
                 // determining the alignment of the payload after the tag.)
-                let mut prefix_align = min_ity.align(dl);
+                let mut prefix_align = min_ity.align(dl).abi;
                 if def.repr.c() {
                     for fields in &variants {
                         for field in fields {
-                            prefix_align = prefix_align.max(field.align);
+                            prefix_align = prefix_align.max(field.align.abi);
                         }
                     }
                 }
 
                 // Create the set of structs that represent each variant.
-                let mut layout_variants = variants.iter().enumerate().map(|(i, field_layouts)| {
+                let mut layout_variants = variants.iter_enumerated().map(|(i, field_layouts)| {
                     let mut st = univariant_uninterned(&field_layouts,
                         &def.repr, StructKind::Prefixed(min_ity.size(), prefix_align))?;
                     st.variants = Variants::Single { index: i };
                     // Find the first field we can't move later
                     // to make room for a larger discriminant.
                     for field in st.fields.index_by_increasing_offset().map(|j| field_layouts[j]) {
-                        if !field.is_zst() || field.align.abi() != 1 {
-                            start_align = start_align.min(field.align);
+                        if !field.is_zst() || field.align.abi.bytes() != 1 {
+                            start_align = start_align.min(field.align.abi);
                             break;
                         }
                     }
                     size = cmp::max(size, st.size);
                     align = align.max(st.align);
                     Ok(st)
-                }).collect::<Result<Vec<_>, _>>()?;
+                }).collect::<Result<IndexVec<VariantIdx, _>, _>>()?;
 
                 // Align the maximum variant size to the largest alignment.
-                size = size.abi_align(align);
+                size = size.align_to(align.abi);
 
                 if size.bytes() >= dl.obj_size_bound() {
                     return Err(LayoutError::SizeOverflow(ty));
@@ -924,14 +1008,14 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                     // because this discriminant will be loaded, and then stored into variable of
                     // type calculated by typeck. Consider such case (a bug): typeck decided on
                     // byte-sized discriminant, but layout thinks we need a 16-bit to store all
-                    // discriminant values. That would be a bug, because then, in trans, in order
+                    // discriminant values. That would be a bug, because then, in codegen, in order
                     // to store this 16-bit discriminant into 8-bit sized temporary some of the
                     // space necessary to represent would have to be discarded (or layout is wrong
                     // on thinking it needs 16 bits)
                     bug!("layout decided on a larger discriminant type ({:?}) than typeck ({:?})",
                          min_ity, typeck_ity);
                     // However, it is fine to make discr type however large (as an optimisation)
-                    // after this point – we’ll just truncate the value we load in trans.
+                    // after this point – we’ll just truncate the value we load in codegen.
                 }
 
                 // Check to see if we should use a different type for the
@@ -947,7 +1031,7 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                 let mut ity = if def.repr.c() || def.repr.int.is_some() {
                     min_ity
                 } else {
-                    Integer::for_abi_align(dl, start_align).unwrap_or(min_ity)
+                    Integer::for_align(dl, start_align).unwrap_or(min_ity)
                 };
 
                 // If the alignment is not larger than the chosen discriminant size,
@@ -959,9 +1043,6 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                     let old_ity_size = min_ity.size();
                     let new_ity_size = ity.size();
                     for variant in &mut layout_variants {
-                        if variant.abi == Abi::Uninhabited {
-                            continue;
-                        }
                         match variant.fields {
                             FieldPlacement::Arbitrary { ref mut offsets, .. } => {
                                 for i in offsets {
@@ -988,13 +1069,8 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                 let mut abi = Abi::Aggregate { sized: true };
                 if tag.value.size(dl) == size {
                     abi = Abi::Scalar(tag.clone());
-                } else if !tag.is_bool() {
-                    // HACK(nox): Blindly using ScalarPair for all tagged enums
-                    // where applicable leads to Option<u8> being handled as {i1, i8},
-                    // which later confuses SROA and some loop optimisations,
-                    // ultimately leading to the repeat-trusted-len test
-                    // failing. We make the trade-off of using ScalarPair only
-                    // for types where the tag isn't a boolean.
+                } else {
+                    // Try to use a ScalarPair for all tagged enums.
                     let mut common_prim = None;
                     for (field_layouts, layout_variant) in variants.iter().zip(&layout_variants) {
                         let offsets = match layout_variant.fields {
@@ -1045,7 +1121,7 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                             }
                             _ => bug!()
                         };
-                        if pair_offsets[0] == Size::from_bytes(0) &&
+                        if pair_offsets[0] == Size::ZERO &&
                             pair_offsets[1] == *offset &&
                             align == pair.align &&
                             size == pair.size {
@@ -1055,13 +1131,18 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                         }
                     }
                 }
+
+                if layout_variants.iter().all(|v| v.abi.is_uninhabited()) {
+                    abi = Abi::Uninhabited;
+                }
+
                 tcx.intern_layout(LayoutDetails {
                     variants: Variants::Tagged {
-                        discr: tag,
+                        tag,
                         variants: layout_variants,
                     },
                     fields: FieldPlacement::Arbitrary {
-                        offsets: vec![Size::from_bytes(0)],
+                        offsets: vec![Size::ZERO],
                         memory_index: vec![0]
                     },
                     abi,
@@ -1071,18 +1152,24 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
             }
 
             // Types with no meaningful known layout.
-            ty::TyProjection(_) | ty::TyAnon(..) => {
+            ty::Projection(_) | ty::Opaque(..) => {
                 let normalized = tcx.normalize_erasing_regions(param_env, ty);
                 if ty == normalized {
                     return Err(LayoutError::Unknown(ty));
                 }
                 tcx.layout_raw(param_env.and(normalized))?
             }
-            ty::TyParam(_) => {
-                return Err(LayoutError::Unknown(ty));
-            }
-            ty::TyGeneratorWitness(..) | ty::TyInfer(_) | ty::TyError => {
+
+            ty::Bound(..) |
+            ty::Placeholder(..) |
+            ty::UnnormalizedProjection(..) |
+            ty::GeneratorWitness(..) |
+            ty::Infer(_) => {
                 bug!("LayoutDetails::compute: unexpected type `{}`", ty)
+            }
+
+            ty::Param(_) | ty::Error => {
+                return Err(LayoutError::Unknown(ty));
             }
         })
     }
@@ -1090,11 +1177,11 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
     /// This is invoked by the `layout_raw` query to record the final
     /// layout of each type.
     #[inline]
-    fn record_layout_for_printing(self, layout: TyLayout<'tcx>) {
+    fn record_layout_for_printing(&self, layout: TyLayout<'tcx>) {
         // If we are running with `-Zprint-type-sizes`, record layouts for
         // dumping later. Ignore layouts that are done with non-empty
         // environments or non-monomorphic layouts, as the user only wants
-        // to see the stuff resulting from the final trans session.
+        // to see the stuff resulting from the final codegen session.
         if
             !self.tcx.sess.opts.debugging_opts.print_type_sizes ||
             layout.ty.has_param_types() ||
@@ -1107,13 +1194,13 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
         self.record_layout_for_printing_outlined(layout)
     }
 
-    fn record_layout_for_printing_outlined(self, layout: TyLayout<'tcx>) {
+    fn record_layout_for_printing_outlined(&self, layout: TyLayout<'tcx>) {
         // (delay format until we actually need it)
         let record = |kind, packed, opt_discr_size, variants| {
             let type_desc = format!("{:?}", layout.ty);
             self.tcx.sess.code_stats.borrow_mut().record_type_size(kind,
                                                                    type_desc,
-                                                                   layout.align,
+                                                                   layout.align.abi,
                                                                    layout.size,
                                                                    packed,
                                                                    opt_discr_size,
@@ -1121,12 +1208,12 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
         };
 
         let adt_def = match layout.ty.sty {
-            ty::TyAdt(ref adt_def, _) => {
+            ty::Adt(ref adt_def, _) => {
                 debug!("print-type-size t: `{:?}` process adt", layout.ty);
                 adt_def
             }
 
-            ty::TyClosure(..) => {
+            ty::Closure(..) => {
                 debug!("print-type-size t: `{:?}` record closure", layout.ty);
                 record(DataTypeKind::Closure, false, None, vec![]);
                 return;
@@ -1141,10 +1228,10 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
         let adt_kind = adt_def.adt_kind();
         let adt_packed = adt_def.repr.packed();
 
-        let build_variant_info = |n: Option<ast::Name>,
+        let build_variant_info = |n: Option<Ident>,
                                   flds: &[ast::Name],
                                   layout: TyLayout<'tcx>| {
-            let mut min_size = Size::from_bytes(0);
+            let mut min_size = Size::ZERO;
             let field_info: Vec<_> = flds.iter().enumerate().map(|(i, &name)| {
                 match layout.field(self, i) {
                     Err(err) => {
@@ -1160,20 +1247,20 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                             name: name.to_string(),
                             offset: offset.bytes(),
                             size: field_layout.size.bytes(),
-                            align: field_layout.align.abi(),
+                            align: field_layout.align.abi.bytes(),
                         }
                     }
                 }
             }).collect();
 
             session::VariantInfo {
-                name: n.map(|n|n.to_string()),
+                name: n.map(|n| n.to_string()),
                 kind: if layout.is_unsized() {
                     session::SizeKind::Min
                 } else {
                     session::SizeKind::Exact
                 },
-                align: layout.align.abi(),
+                align: layout.align.abi.bytes(),
                 size: if min_size.bytes() == 0 {
                     layout.size.bytes()
                 } else {
@@ -1186,15 +1273,15 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
         match layout.variants {
             Variants::Single { index } => {
                 debug!("print-type-size `{:#?}` variant {}",
-                       layout, adt_def.variants[index].name);
+                       layout, adt_def.variants[index].ident);
                 if !adt_def.variants.is_empty() {
                     let variant_def = &adt_def.variants[index];
                     let fields: Vec<_> =
-                        variant_def.fields.iter().map(|f| f.name).collect();
+                        variant_def.fields.iter().map(|f| f.ident.name).collect();
                     record(adt_kind.into(),
                            adt_packed,
                            None,
-                           vec![build_variant_info(Some(variant_def.name),
+                           vec![build_variant_info(Some(variant_def.ident),
                                                    &fields,
                                                    layout)]);
                 } else {
@@ -1209,16 +1296,16 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                 debug!("print-type-size `{:#?}` adt general variants def {}",
                        layout.ty, adt_def.variants.len());
                 let variant_infos: Vec<_> =
-                    adt_def.variants.iter().enumerate().map(|(i, variant_def)| {
+                    adt_def.variants.iter_enumerated().map(|(i, variant_def)| {
                         let fields: Vec<_> =
-                            variant_def.fields.iter().map(|f| f.name).collect();
-                        build_variant_info(Some(variant_def.name),
-                                            &fields,
-                                            layout.for_variant(self, i))
+                            variant_def.fields.iter().map(|f| f.ident.name).collect();
+                        build_variant_info(Some(variant_def.ident),
+                                           &fields,
+                                           layout.for_variant(self, i))
                     })
                     .collect();
                 record(adt_kind.into(), adt_packed, match layout.variants {
-                    Variants::Tagged { ref discr, .. } => Some(discr.value.size(self)),
+                    Variants::Tagged { ref tag, .. } => Some(tag.value.size(self)),
                     _ => None
                 }, variant_infos);
             }
@@ -1226,10 +1313,10 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
     }
 }
 
-/// Type size "skeleton", i.e. the only information determining a type's size.
+/// Type size "skeleton", i.e., the only information determining a type's size.
 /// While this is conservative, (aside from constant sizes, only pointers,
 /// newtypes thereof and null pointer optimized enums are allowed), it is
-/// enough to statically check common usecases of transmute.
+/// enough to statically check common use cases of transmute.
 #[derive(Copy, Clone, Debug)]
 pub enum SizeSkeleton<'tcx> {
     /// Any statically computable Layout.
@@ -1251,7 +1338,7 @@ impl<'a, 'tcx> SizeSkeleton<'tcx> {
                    tcx: TyCtxt<'a, 'tcx, 'tcx>,
                    param_env: ty::ParamEnv<'tcx>)
                    -> Result<SizeSkeleton<'tcx>, LayoutError<'tcx>> {
-        assert!(!ty.has_infer_types());
+        debug_assert!(!ty.has_infer_types());
 
         // First try computing a static layout.
         let err = match tcx.layout_of(param_env.and(ty)) {
@@ -1262,13 +1349,13 @@ impl<'a, 'tcx> SizeSkeleton<'tcx> {
         };
 
         match ty.sty {
-            ty::TyRef(_, ty::TypeAndMut { ty: pointee, .. }) |
-            ty::TyRawPtr(ty::TypeAndMut { ty: pointee, .. }) => {
+            ty::Ref(_, pointee, _) |
+            ty::RawPtr(ty::TypeAndMut { ty: pointee, .. }) => {
                 let non_zero = !ty.is_unsafe_ptr();
                 let tail = tcx.struct_tail(pointee);
                 match tail.sty {
-                    ty::TyParam(_) | ty::TyProjection(_) => {
-                        assert!(tail.has_param_types() || tail.has_self_ty());
+                    ty::Param(_) | ty::Projection(_) => {
+                        debug_assert!(tail.has_param_types() || tail.has_self_ty());
                         Ok(SizeSkeleton::Pointer {
                             non_zero,
                             tail: tcx.erase_regions(&tail)
@@ -1282,14 +1369,15 @@ impl<'a, 'tcx> SizeSkeleton<'tcx> {
                 }
             }
 
-            ty::TyAdt(def, substs) => {
+            ty::Adt(def, substs) => {
                 // Only newtypes and enums w/ nullable pointer optimization.
                 if def.is_union() || def.variants.is_empty() || def.variants.len() > 2 {
                     return Err(err);
                 }
 
                 // Get a zero-sized variant or a pointer newtype.
-                let zero_or_ptr_variant = |i: usize| {
+                let zero_or_ptr_variant = |i| {
+                    let i = VariantIdx::new(i);
                     let fields = def.variants[i].fields.iter().map(|field| {
                         SizeSkeleton::compute(field.ty(tcx, substs), tcx, param_env)
                     });
@@ -1318,8 +1406,12 @@ impl<'a, 'tcx> SizeSkeleton<'tcx> {
                 if def.variants.len() == 1 {
                     if let Some(SizeSkeleton::Pointer { non_zero, tail }) = v0 {
                         return Ok(SizeSkeleton::Pointer {
-                            non_zero: non_zero ||
-                                Some(def.did) == tcx.lang_items().non_zero(),
+                            non_zero: non_zero || match tcx.layout_scalar_valid_range(def.did) {
+                                (Bound::Included(start), Bound::Unbounded) => start > 0,
+                                (Bound::Included(start), Bound::Included(end)) =>
+                                    0 < start && start < end,
+                                _ => false,
+                            },
                             tail,
                         });
                     } else {
@@ -1341,7 +1433,7 @@ impl<'a, 'tcx> SizeSkeleton<'tcx> {
                 }
             }
 
-            ty::TyProjection(_) | ty::TyAnon(..) => {
+            ty::Projection(_) | ty::Opaque(..) => {
                 let normalized = tcx.normalize_erasing_regions(param_env, ty);
                 if ty == normalized {
                     Err(err)
@@ -1354,7 +1446,7 @@ impl<'a, 'tcx> SizeSkeleton<'tcx> {
         }
     }
 
-    pub fn same_size(self, other: SizeSkeleton) -> bool {
+    pub fn same_size(self, other: SizeSkeleton<'_>) -> bool {
         match (self, other) {
             (SizeSkeleton::Known(a), SizeSkeleton::Known(b)) => a == b,
             (SizeSkeleton::Pointer { tail: a, .. },
@@ -1423,7 +1515,7 @@ impl<'a, 'tcx> LayoutOf for LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
 
     /// Computes the layout of a type. Note that this implicitly
     /// executes in "reveal all" mode.
-    fn layout_of(self, ty: Ty<'tcx>) -> Self::TyLayout {
+    fn layout_of(&self, ty: Ty<'tcx>) -> Self::TyLayout {
         let param_env = self.param_env.with_reveal_all();
         let ty = self.tcx.normalize_erasing_regions(param_env, ty);
         let details = self.tcx.layout_raw(param_env.and(ty))?;
@@ -1432,7 +1524,7 @@ impl<'a, 'tcx> LayoutOf for LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
             details
         };
 
-        // NB: This recording is normally disabled; when enabled, it
+        // N.B., this recording is normally disabled; when enabled, it
         // can however trigger recursive invocations of `layout_of`.
         // Therefore, we execute it *after* the main query has
         // completed, to avoid problems around recursive structures
@@ -1444,13 +1536,13 @@ impl<'a, 'tcx> LayoutOf for LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
     }
 }
 
-impl<'a, 'tcx> LayoutOf for LayoutCx<'tcx, ty::maps::TyCtxtAt<'a, 'tcx, 'tcx>> {
+impl<'a, 'tcx> LayoutOf for LayoutCx<'tcx, ty::query::TyCtxtAt<'a, 'tcx, 'tcx>> {
     type Ty = Ty<'tcx>;
     type TyLayout = Result<TyLayout<'tcx>, LayoutError<'tcx>>;
 
     /// Computes the layout of a type. Note that this implicitly
     /// executes in "reveal all" mode.
-    fn layout_of(self, ty: Ty<'tcx>) -> Self::TyLayout {
+    fn layout_of(&self, ty: Ty<'tcx>) -> Self::TyLayout {
         let param_env = self.param_env.with_reveal_all();
         let ty = self.tcx.normalize_erasing_regions(param_env, ty);
         let details = self.tcx.layout_raw(param_env.and(ty))?;
@@ -1459,7 +1551,7 @@ impl<'a, 'tcx> LayoutOf for LayoutCx<'tcx, ty::maps::TyCtxtAt<'a, 'tcx, 'tcx>> {
             details
         };
 
-        // NB: This recording is normally disabled; when enabled, it
+        // N.B., this recording is normally disabled; when enabled, it
         // can however trigger recursive invocations of `layout_of`.
         // Therefore, we execute it *after* the main query has
         // completed, to avoid problems around recursive structures
@@ -1476,28 +1568,28 @@ impl<'a, 'tcx> LayoutOf for LayoutCx<'tcx, ty::maps::TyCtxtAt<'a, 'tcx, 'tcx>> {
 }
 
 // Helper (inherent) `layout_of` methods to avoid pushing `LayoutCx` to users.
-impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
+impl TyCtxt<'a, 'tcx, '_> {
     /// Computes the layout of a type. Note that this implicitly
     /// executes in "reveal all" mode.
     #[inline]
     pub fn layout_of(self, param_env_and_ty: ty::ParamEnvAnd<'tcx, Ty<'tcx>>)
                      -> Result<TyLayout<'tcx>, LayoutError<'tcx>> {
         let cx = LayoutCx {
-            tcx: self,
+            tcx: self.global_tcx(),
             param_env: param_env_and_ty.param_env
         };
         cx.layout_of(param_env_and_ty.value)
     }
 }
 
-impl<'a, 'tcx> ty::maps::TyCtxtAt<'a, 'tcx, 'tcx> {
+impl ty::query::TyCtxtAt<'a, 'tcx, '_> {
     /// Computes the layout of a type. Note that this implicitly
     /// executes in "reveal all" mode.
     #[inline]
     pub fn layout_of(self, param_env_and_ty: ty::ParamEnvAnd<'tcx, Ty<'tcx>>)
                      -> Result<TyLayout<'tcx>, LayoutError<'tcx>> {
         let cx = LayoutCx {
-            tcx: self,
+            tcx: self.global_tcx().at(self.span),
             param_env: param_env_and_ty.param_env
         };
         cx.layout_of(param_env_and_ty.value)
@@ -1508,7 +1600,7 @@ impl<'a, 'tcx, C> TyLayoutMethods<'tcx, C> for Ty<'tcx>
     where C: LayoutOf<Ty = Ty<'tcx>> + HasTyCtxt<'tcx>,
           C::TyLayout: MaybeResult<TyLayout<'tcx>>
 {
-    fn for_variant(this: TyLayout<'tcx>, cx: C, variant_index: usize) -> TyLayout<'tcx> {
+    fn for_variant(this: TyLayout<'tcx>, cx: &C, variant_index: VariantIdx) -> TyLayout<'tcx> {
         let details = match this.variants {
             Variants::Single { index } if index == variant_index => this.details,
 
@@ -1520,12 +1612,17 @@ impl<'a, 'tcx, C> TyLayoutMethods<'tcx, C> for Ty<'tcx>
                 });
 
                 let fields = match this.ty.sty {
-                    ty::TyAdt(def, _) => def.variants[variant_index].fields.len(),
+                    ty::Adt(def, _) => def.variants[variant_index].fields.len(),
                     _ => bug!()
                 };
-                let mut details = LayoutDetails::uninhabited(fields);
-                details.variants = Variants::Single { index: variant_index };
-                cx.tcx().intern_layout(details)
+                let tcx = cx.tcx();
+                tcx.intern_layout(LayoutDetails {
+                    variants: Variants::Single { index: variant_index },
+                    fields: FieldPlacement::Union(fields),
+                    abi: Abi::Uninhabited,
+                    align: tcx.data_layout.i8_align,
+                    size: Size::ZERO
+                })
             }
 
             Variants::NicheFilling { ref variants, .. } |
@@ -1542,34 +1639,34 @@ impl<'a, 'tcx, C> TyLayoutMethods<'tcx, C> for Ty<'tcx>
         }
     }
 
-    fn field(this: TyLayout<'tcx>, cx: C, i: usize) -> C::TyLayout {
+    fn field(this: TyLayout<'tcx>, cx: &C, i: usize) -> C::TyLayout {
         let tcx = cx.tcx();
         cx.layout_of(match this.ty.sty {
-            ty::TyBool |
-            ty::TyChar |
-            ty::TyInt(_) |
-            ty::TyUint(_) |
-            ty::TyFloat(_) |
-            ty::TyFnPtr(_) |
-            ty::TyNever |
-            ty::TyFnDef(..) |
-            ty::TyGeneratorWitness(..) |
-            ty::TyForeign(..) |
-            ty::TyDynamic(..) => {
+            ty::Bool |
+            ty::Char |
+            ty::Int(_) |
+            ty::Uint(_) |
+            ty::Float(_) |
+            ty::FnPtr(_) |
+            ty::Never |
+            ty::FnDef(..) |
+            ty::GeneratorWitness(..) |
+            ty::Foreign(..) |
+            ty::Dynamic(..) => {
                 bug!("TyLayout::field_type({:?}): not applicable", this)
             }
 
             // Potentially-fat pointers.
-            ty::TyRef(_, ty::TypeAndMut { ty: pointee, .. }) |
-            ty::TyRawPtr(ty::TypeAndMut { ty: pointee, .. }) => {
-                assert!(i < 2);
+            ty::Ref(_, pointee, _) |
+            ty::RawPtr(ty::TypeAndMut { ty: pointee, .. }) => {
+                assert!(i < this.fields.count());
 
                 // Reuse the fat *T type as its own thin pointer data field.
-                // This provides information about e.g. DST struct pointees
+                // This provides information about e.g., DST struct pointees
                 // (which may have no non-DST form), and will work as long
                 // as the `Abi` or `FieldPlacement` is checked by users.
                 if i == 0 {
-                    let nil = tcx.mk_nil();
+                    let nil = tcx.mk_unit();
                     let ptr_ty = if this.ty.is_unsafe_ptr() {
                         tcx.mk_mut_ptr(nil)
                     } else {
@@ -1582,50 +1679,64 @@ impl<'a, 'tcx, C> TyLayoutMethods<'tcx, C> for Ty<'tcx>
                 }
 
                 match tcx.struct_tail(pointee).sty {
-                    ty::TySlice(_) |
-                    ty::TyStr => tcx.types.usize,
-                    ty::TyDynamic(..) => {
-                        // FIXME(eddyb) use an usize/fn() array with
-                        // the correct number of vtables slots.
-                        tcx.mk_imm_ref(tcx.types.re_static, tcx.mk_nil())
+                    ty::Slice(_) |
+                    ty::Str => tcx.types.usize,
+                    ty::Dynamic(_, _) => {
+                        tcx.mk_imm_ref(
+                            tcx.types.re_static,
+                            tcx.mk_array(tcx.types.usize, 3),
+                        )
+                        /* FIXME use actual fn pointers
+                        Warning: naively computing the number of entries in the
+                        vtable by counting the methods on the trait + methods on
+                        all parent traits does not work, because some methods can
+                        be not object safe and thus excluded from the vtable.
+                        Increase this counter if you tried to implement this but
+                        failed to do it without duplicating a lot of code from
+                        other places in the compiler: 2
+                        tcx.mk_tup(&[
+                            tcx.mk_array(tcx.types.usize, 3),
+                            tcx.mk_array(Option<fn()>),
+                        ])
+                        */
                     }
                     _ => bug!("TyLayout::field_type({:?}): not applicable", this)
                 }
             }
 
             // Arrays and slices.
-            ty::TyArray(element, _) |
-            ty::TySlice(element) => element,
-            ty::TyStr => tcx.types.u8,
+            ty::Array(element, _) |
+            ty::Slice(element) => element,
+            ty::Str => tcx.types.u8,
 
             // Tuples, generators and closures.
-            ty::TyClosure(def_id, ref substs) => {
+            ty::Closure(def_id, ref substs) => {
                 substs.upvar_tys(def_id, tcx).nth(i).unwrap()
             }
 
-            ty::TyGenerator(def_id, ref substs, _) => {
+            ty::Generator(def_id, ref substs, _) => {
                 substs.field_tys(def_id, tcx).nth(i).unwrap()
             }
 
-            ty::TyTuple(tys) => tys[i],
+            ty::Tuple(tys) => tys[i],
 
             // SIMD vector types.
-            ty::TyAdt(def, ..) if def.repr.simd() => {
+            ty::Adt(def, ..) if def.repr.simd() => {
                 this.ty.simd_type(tcx)
             }
 
             // ADTs.
-            ty::TyAdt(def, substs) => {
+            ty::Adt(def, substs) => {
                 match this.variants {
                     Variants::Single { index } => {
                         def.variants[index].fields[i].ty(tcx, substs)
                     }
 
                     // Discriminant field for enums (where applicable).
-                    Variants::Tagged { ref discr, .. } |
+                    Variants::Tagged { tag: ref discr, .. } |
                     Variants::NicheFilling { niche: ref discr, .. } => {
                         assert_eq!(i, 0);
-                        let layout = LayoutDetails::scalar(tcx, discr.clone());
+                        let layout = LayoutDetails::scalar(cx, discr.clone());
                         return MaybeResult::from_ok(TyLayout {
                             details: tcx.intern_layout(layout),
                             ty: discr.value.to_ty(tcx)
@@ -1634,24 +1745,46 @@ impl<'a, 'tcx, C> TyLayoutMethods<'tcx, C> for Ty<'tcx>
                 }
             }
 
-            ty::TyProjection(_) | ty::TyAnon(..) | ty::TyParam(_) |
-            ty::TyInfer(_) | ty::TyError => {
+            ty::Projection(_) | ty::UnnormalizedProjection(..) | ty::Bound(..) |
+            ty::Placeholder(..) | ty::Opaque(..) | ty::Param(_) | ty::Infer(_) |
+            ty::Error => {
                 bug!("TyLayout::field_type: unexpected type `{}`", this.ty)
             }
         })
     }
 }
 
+struct Niche {
+    offset: Size,
+    scalar: Scalar,
+    available: u128,
+}
+
+impl Niche {
+    fn reserve<'a, 'tcx>(
+        &self,
+        cx: &LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>>,
+        count: u128,
+    ) -> Option<(u128, Scalar)> {
+        if count > self.available {
+            return None;
+        }
+        let Scalar { value, valid_range: ref v } = self.scalar;
+        let bits = value.size(cx).bits();
+        assert!(bits <= 128);
+        let max_value = !0u128 >> (128 - bits);
+        let start = v.end().wrapping_add(1) & max_value;
+        let end = v.end().wrapping_add(count) & max_value;
+        Some((start, Scalar { value, valid_range: *v.start()..=end }))
+    }
+}
+
 impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
     /// Find the offset of a niche leaf field, starting from
-    /// the given type and recursing through aggregates, which
-    /// has at least `count` consecutive invalid values.
-    /// The tuple is `(offset, scalar, niche_value)`.
+    /// the given type and recursing through aggregates.
     // FIXME(eddyb) traverse already optimized enums.
-    fn find_niche(self, layout: TyLayout<'tcx>, count: u128)
-        -> Result<Option<(Size, Scalar, u128)>, LayoutError<'tcx>>
-    {
-        let scalar_component = |scalar: &Scalar, offset| {
+    fn find_niche(&self, layout: TyLayout<'tcx>) -> Result<Option<Niche>, LayoutError<'tcx>> {
+        let scalar_niche = |scalar: &Scalar, offset| {
             let Scalar { value, valid_range: ref v } = *scalar;
 
             let bits = value.size(self).bits();
@@ -1659,43 +1792,44 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
             let max_value = !0u128 >> (128 - bits);
 
             // Find out how many values are outside the valid range.
-            let niches = if v.start() <= v.end() {
+            let available = if v.start() <= v.end() {
                 v.start() + (max_value - v.end())
             } else {
                 v.start() - v.end() - 1
             };
 
-            // Give up if we can't fit `count` consecutive niches.
-            if count > niches {
+            // Give up if there is no niche value available.
+            if available == 0 {
                 return None;
             }
 
-            let niche_start = v.end().wrapping_add(1) & max_value;
-            let niche_end = v.end().wrapping_add(count) & max_value;
-            Some((offset, Scalar {
-                value,
-                valid_range: *v.start()..=niche_end
-            }, niche_start))
+            Some(Niche { offset, scalar: scalar.clone(), available })
         };
 
         // Locals variables which live across yields are stored
         // in the generator type as fields. These may be uninitialized
         // so we don't look for niches there.
-        if let ty::TyGenerator(..) = layout.ty.sty {
+        if let ty::Generator(..) = layout.ty.sty {
             return Ok(None);
         }
 
         match layout.abi {
             Abi::Scalar(ref scalar) => {
-                return Ok(scalar_component(scalar, Size::from_bytes(0)));
+                return Ok(scalar_niche(scalar, Size::ZERO));
             }
             Abi::ScalarPair(ref a, ref b) => {
-                return Ok(scalar_component(a, Size::from_bytes(0)).or_else(|| {
-                    scalar_component(b, a.value.size(self).abi_align(b.value.align(self)))
-                }));
+                // HACK(nox): We iter on `b` and then `a` because `max_by_key`
+                // returns the last maximum.
+                let niche = iter::once(
+                    (b, a.value.size(self).align_to(b.value.align(self).abi))
+                )
+                    .chain(iter::once((a, Size::ZERO)))
+                    .filter_map(|(scalar, offset)| scalar_niche(scalar, offset))
+                    .max_by_key(|niche| niche.available);
+                return Ok(niche);
             }
             Abi::Vector { ref element, .. } => {
-                return Ok(scalar_component(element, Size::from_bytes(0)));
+                return Ok(scalar_niche(element, Size::ZERO));
             }
             _ => {}
         }
@@ -1708,19 +1842,29 @@ impl<'a, 'tcx> LayoutCx<'tcx, TyCtxt<'a, 'tcx, 'tcx>> {
                 return Ok(None);
             }
         }
-        if let FieldPlacement::Array { .. } = layout.fields {
+        if let FieldPlacement::Array { count: original_64_bit_count, .. } = layout.fields {
+            // rust-lang/rust#57038: avoid ICE within FieldPlacement::count when count too big
+            if original_64_bit_count > usize::max_value() as u64 {
+                return Err(LayoutError::SizeOverflow(layout.ty));
+            }
             if layout.fields.count() > 0 {
-                return self.find_niche(layout.field(self, 0)?, count);
+                return self.find_niche(layout.field(self, 0)?);
+            } else {
+                return Ok(None);
             }
         }
+        let mut niche = None;
+        let mut available = 0;
         for i in 0..layout.fields.count() {
-            let r = self.find_niche(layout.field(self, i)?, count)?;
-            if let Some((offset, scalar, niche_value)) = r {
-                let offset = layout.fields.offset(i) + offset;
-                return Ok(Some((offset, scalar, niche_value)));
+            if let Some(mut c) = self.find_niche(layout.field(self, i)?)? {
+                if c.available > available {
+                    available = c.available;
+                    c.offset += layout.fields.offset(i);
+                    niche = Some(c);
+                }
             }
         }
-        Ok(None)
+        Ok(niche)
     }
 }
 
@@ -1736,10 +1880,10 @@ impl<'a> HashStable<StableHashingContext<'a>> for Variants {
                 index.hash_stable(hcx, hasher);
             }
             Tagged {
-                ref discr,
+                ref tag,
                 ref variants,
             } => {
-                discr.hash_stable(hcx, hasher);
+                tag.hash_stable(hcx, hasher);
                 variants.hash_stable(hcx, hasher);
             }
             NicheFilling {
@@ -1780,6 +1924,16 @@ impl<'a> HashStable<StableHashingContext<'a>> for FieldPlacement {
                 memory_index.hash_stable(hcx, hasher);
             }
         }
+    }
+}
+
+impl<'a> HashStable<StableHashingContext<'a>> for VariantIdx {
+    fn hash_stable<W: StableHasherResult>(
+        &self,
+        hcx: &mut StableHashingContext<'a>,
+        hasher: &mut StableHasher<W>,
+    ) {
+        self.as_u32().hash_stable(hcx, hasher)
     }
 }
 
@@ -1839,17 +1993,20 @@ impl_stable_hash_for!(enum ::ty::layout::Integer {
 
 impl_stable_hash_for!(enum ::ty::layout::Primitive {
     Int(integer, signed),
-    F32,
-    F64,
+    Float(fty),
     Pointer
+});
+
+impl_stable_hash_for!(struct ::ty::layout::AbiAndPrefAlign {
+    abi,
+    pref
 });
 
 impl<'gcx> HashStable<StableHashingContext<'gcx>> for Align {
     fn hash_stable<W: StableHasherResult>(&self,
                                           hcx: &mut StableHashingContext<'gcx>,
                                           hasher: &mut StableHasher<W>) {
-        self.abi().hash_stable(hcx, hasher);
-        self.pref().hash_stable(hcx, hasher);
+        self.bytes().hash_stable(hcx, hasher);
     }
 }
 

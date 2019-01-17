@@ -1,13 +1,5 @@
-// Copyright 2012 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
+#![allow(non_camel_case_types)]
+#![allow(dead_code)]
 #![feature(never_type)]
 
 use std::mem::size_of;
@@ -68,9 +60,15 @@ enum EnumSingle5 {
     A = 42 as u8,
 }
 
-enum NicheFilledEnumWithInhabitedVariant {
+enum EnumWithMaybeUninhabitedVariant<T> {
     A(&'static ()),
-    B(&'static (), !),
+    B(&'static (), T),
+    C,
+}
+
+enum NicheFilledEnumWithAbsentVariant {
+    A(&'static ()),
+    B((), !),
     C,
 }
 
@@ -107,5 +105,10 @@ pub fn main() {
     assert_eq!(size_of::<EnumSingle4>(), 1);
     assert_eq!(size_of::<EnumSingle5>(), 1);
 
-    assert_eq!(size_of::<NicheFilledEnumWithInhabitedVariant>(), size_of::<&'static ()>());
+    assert_eq!(size_of::<EnumWithMaybeUninhabitedVariant<!>>(),
+               size_of::<EnumWithMaybeUninhabitedVariant<()>>());
+    assert_eq!(size_of::<NicheFilledEnumWithAbsentVariant>(), size_of::<&'static ()>());
+
+    assert_eq!(size_of::<Option<Option<(bool, &())>>>(), size_of::<(bool, &())>());
+    assert_eq!(size_of::<Option<Option<(&(), bool)>>>(), size_of::<(bool, &())>());
 }

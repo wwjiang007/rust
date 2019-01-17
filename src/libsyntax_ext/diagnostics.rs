@@ -1,13 +1,3 @@
-// Copyright 2018 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(non_snake_case)]
 
 // Error messages for EXXXX errors.
@@ -41,5 +31,91 @@ asm!("nop" : "r"(a));
 Considering that this would be a long explanation, we instead recommend you to
 take a look at the unstable book:
 https://doc.rust-lang.org/unstable-book/language-features/asm.html
+"##,
+
+E0662: r##"
+An invalid input operand constraint was passed to the `asm` macro (third line).
+
+Erroneous code example:
+
+```compile_fail,E0662
+asm!("xor %eax, %eax"
+     :
+     : "=test"("a")
+    );
+```
+
+Considering that this would be a long explanation, we instead recommend you to
+take a look at the unstable book:
+https://doc.rust-lang.org/unstable-book/language-features/asm.html
+"##,
+
+E0663: r##"
+An invalid input operand constraint was passed to the `asm` macro (third line).
+
+Erroneous code example:
+
+```compile_fail,E0663
+asm!("xor %eax, %eax"
+     :
+     : "+test"("a")
+    );
+```
+
+Considering that this would be a long explanation, we instead recommend you to
+take a look at the unstable book:
+https://doc.rust-lang.org/unstable-book/language-features/asm.html
+"##,
+
+E0664: r##"
+A clobber was surrounded by braces in the `asm` macro.
+
+Erroneous code example:
+
+```compile_fail,E0664
+asm!("mov $$0x200, %eax"
+     :
+     :
+     : "{eax}"
+    );
+```
+
+Considering that this would be a long explanation, we instead recommend you to
+take a look at the unstable book:
+https://doc.rust-lang.org/unstable-book/language-features/asm.html
+"##,
+
+E0665: r##"
+The `Default` trait was derived on an enum.
+
+Erroneous code example:
+
+```compile_fail,E0665
+#[derive(Default)]
+enum Food {
+    Sweet,
+    Salty,
+}
+```
+
+The `Default` cannot be derived on an enum for the simple reason that the
+compiler doesn't know which value to pick by default whereas it can for a
+struct as long as all its fields implement the `Default` trait as well.
+
+If you still want to implement `Default` on your enum, you'll have to do it "by
+hand":
+
+```
+enum Food {
+    Sweet,
+    Salty,
+}
+
+impl Default for Food {
+    fn default() -> Food {
+        Food::Sweet
+    }
+}
+```
 "##,
 }

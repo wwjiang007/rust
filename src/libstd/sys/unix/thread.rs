@@ -1,13 +1,3 @@
-// Copyright 2014-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use boxed::FnBox;
 use cmp;
 use ffi::CStr;
@@ -49,7 +39,8 @@ unsafe fn pthread_attr_setstacksize(_attr: *mut libc::pthread_attr_t,
 }
 
 impl Thread {
-    pub unsafe fn new<'a>(stack: usize, p: Box<FnBox() + 'a>)
+    // unsafe: see thread::Builder::spawn_unchecked for safety requirements
+    pub unsafe fn new(stack: usize, p: Box<dyn FnBox()>)
                           -> io::Result<Thread> {
         let p = box p;
         let mut native: libc::pthread_t = mem::zeroed();
@@ -138,7 +129,8 @@ impl Thread {
               target_os = "solaris",
               target_os = "haiku",
               target_os = "l4re",
-              target_os = "emscripten"))]
+              target_os = "emscripten",
+              target_os = "hermit"))]
     pub fn set_name(_name: &CStr) {
         // Newlib, Illumos, Haiku, and Emscripten have no way to set a thread name.
     }
@@ -209,7 +201,6 @@ pub mod guard {
     pub type Guard = Range<usize>;
     pub unsafe fn current() -> Option<Guard> { None }
     pub unsafe fn init() -> Option<Guard> { None }
-    pub unsafe fn deinit() {}
 }
 
 
@@ -326,11 +317,20 @@ pub mod guard {
             // Reallocate the last page of the stack.
             // This ensures SIGBUS will be raised on
             // stack overflow.
-            let result = mmap(stackaddr, PAGE_SIZE, PROT_NONE,
+            // Systems which enforce strict PAX MPROTECT do not allow
+            // to mprotect() a mapping with less restrictive permissions
+            // than the initial mmap() used, so we mmap() here with
+            // read/write permissions and only then mprotect() it to
+            // no permissions at all. See issue #50313.
+            let result = mmap(stackaddr, PAGE_SIZE, PROT_READ | PROT_WRITE,
                               MAP_PRIVATE | MAP_ANON | MAP_FIXED, -1, 0);
-
             if result != stackaddr || result == MAP_FAILED {
                 panic!("failed to allocate a guard page");
+            }
+
+            let result = mprotect(stackaddr, PAGE_SIZE, PROT_NONE);
+            if result != 0 {
+                panic!("failed to protect the guard page");
             }
 
             let guardaddr = stackaddr as usize;
@@ -341,26 +341,6 @@ pub mod guard {
             };
 
             Some(guardaddr..guardaddr + offset * PAGE_SIZE)
-        }
-    }
-
-    pub unsafe fn deinit() {
-        if !cfg!(target_os = "linux") {
-            if let Some(stackaddr) = get_stack_start_aligned() {
-                // Remove the protection on the guard page.
-                // FIXME: we cannot unmap the page, because when we mmap()
-                // above it may be already mapped by the OS, which we can't
-                // detect from mmap()'s return value. If we unmap this page,
-                // it will lead to failure growing stack size on platforms like
-                // macOS. Instead, just restore the page to a writable state.
-                // This ain't Linux, so we probably don't need to care about
-                // execstack.
-                let result = mprotect(stackaddr, PAGE_SIZE, PROT_READ | PROT_WRITE);
-
-                if result != 0 {
-                    panic!("unable to reset the guard page");
-                }
-            }
         }
     }
 

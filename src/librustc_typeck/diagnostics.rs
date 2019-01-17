@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(non_snake_case)]
 
 register_long_diagnostics! {
@@ -207,7 +197,7 @@ let string = "salutations !";
 // The ordering relation for strings can't be evaluated at compile time,
 // so this doesn't work:
 match string {
-    "hello" ... "world" => {}
+    "hello" ..= "world" => {}
     _ => {}
 }
 
@@ -538,7 +528,7 @@ fn main() {
     let foo = Foo;
     let ref_foo = &&Foo;
 
-    // error, reached the recursion limit while auto-dereferencing &&Foo
+    // error, reached the recursion limit while auto-dereferencing `&&Foo`
     ref_foo.foo();
 }
 ```
@@ -655,7 +645,7 @@ For example, a function like:
 fn f(a: u16, b: &str) {}
 ```
 
-Must always be called with exactly two arguments, e.g. `f(2, "test")`.
+Must always be called with exactly two arguments, e.g., `f(2, "test")`.
 
 Note that Rust does not have a notion of optional function arguments or
 variadic functions (except for its C-FFI).
@@ -1041,32 +1031,38 @@ enum NightsWatch {}
 "##,
 
 E0087: r##"
-Too many type parameters were supplied for a function. For example:
+#### Note: this error code is no longer emitted by the compiler.
 
-```compile_fail,E0087
+Too many type arguments were supplied for a function. For example:
+
+```compile_fail,E0107
 fn foo<T>() {}
 
 fn main() {
-    foo::<f64, bool>(); // error, expected 1 parameter, found 2 parameters
+    foo::<f64, bool>(); // error: wrong number of type arguments:
+                        //        expected 1, found 2
 }
 ```
 
-The number of supplied parameters must exactly match the number of defined type
+The number of supplied arguments must exactly match the number of defined type
 parameters.
 "##,
 
 E0088: r##"
-You gave too many lifetime parameters. Erroneous code example:
+#### Note: this error code is no longer emitted by the compiler.
 
-```compile_fail,E0088
+You gave too many lifetime arguments. Erroneous code example:
+
+```compile_fail,E0107
 fn f() {}
 
 fn main() {
-    f::<'static>() // error: too many lifetime parameters provided
+    f::<'static>() // error: wrong number of lifetime arguments:
+                   //        expected 0, found 1
 }
 ```
 
-Please check you give the right number of lifetime parameters. Example:
+Please check you give the right number of lifetime arguments. Example:
 
 ```
 fn f() {}
@@ -1101,42 +1097,48 @@ fn main() {
 "##,
 
 E0089: r##"
-Not enough type parameters were supplied for a function. For example:
+#### Note: this error code is no longer emitted by the compiler.
 
-```compile_fail,E0089
+Too few type arguments were supplied for a function. For example:
+
+```compile_fail,E0107
 fn foo<T, U>() {}
 
 fn main() {
-    foo::<f64>(); // error, expected 2 parameters, found 1 parameter
+    foo::<f64>(); // error: wrong number of type arguments: expected 2, found 1
 }
 ```
 
-Note that if a function takes multiple type parameters but you want the compiler
+Note that if a function takes multiple type arguments but you want the compiler
 to infer some of them, you can use type placeholders:
 
-```compile_fail,E0089
+```compile_fail,E0107
 fn foo<T, U>(x: T) {}
 
 fn main() {
     let x: bool = true;
-    foo::<f64>(x);    // error, expected 2 parameters, found 1 parameter
+    foo::<f64>(x);    // error: wrong number of type arguments:
+                      //        expected 2, found 1
     foo::<_, f64>(x); // same as `foo::<bool, f64>(x)`
 }
 ```
 "##,
 
 E0090: r##"
-You gave too few lifetime parameters. Example:
+#### Note: this error code is no longer emitted by the compiler.
 
-```compile_fail,E0090
+You gave too few lifetime arguments. Example:
+
+```compile_fail,E0107
 fn foo<'a: 'b, 'b: 'a>() {}
 
 fn main() {
-    foo::<'static>(); // error, expected 2 lifetime parameters
+    foo::<'static>(); // error: wrong number of lifetime arguments:
+                      //        expected 2, found 1
 }
 ```
 
-Please check you give the right number of lifetime parameters. Example:
+Please check you give the right number of lifetime arguments. Example:
 
 ```
 fn foo<'a: 'b, 'b: 'a>() {}
@@ -1179,7 +1181,7 @@ extern "rust-intrinsic" {
 ```
 
 Please check you didn't make a mistake in the function's name. All intrinsic
-functions are defined in librustc_trans/trans/intrinsic.rs and in
+functions are defined in librustc_codegen_llvm/intrinsic.rs and in
 libcore/intrinsics.rs in the Rust source code. Example:
 
 ```
@@ -1209,7 +1211,7 @@ fn main() {
 ```
 
 Please check you didn't make a mistake in the function's name. All intrinsic
-functions are defined in librustc_trans/trans/intrinsic.rs and in
+functions are defined in librustc_codegen_llvm/intrinsic.rs and in
 libcore/intrinsics.rs in the Rust source code. Example:
 
 ```
@@ -1254,18 +1256,34 @@ extern "rust-intrinsic" {
 "##,
 
 E0107: r##"
-This error means that an incorrect number of lifetime parameters were provided
-for a type (like a struct or enum) or trait:
+This error means that an incorrect number of generic arguments were provided:
 
 ```compile_fail,E0107
-struct Foo<'a, 'b>(&'a str, &'b str);
-enum Bar { A, B, C }
+struct Foo<T> { x: T }
 
-struct Baz<'a> {
-    foo: Foo<'a>, // error: expected 2, found 1
-    bar: Bar<'a>, // error: expected 0, found 1
+struct Bar { x: Foo }             // error: wrong number of type arguments:
+                                  //        expected 1, found 0
+struct Baz<S, T> { x: Foo<S, T> } // error: wrong number of type arguments:
+                                  //        expected 1, found 2
+
+fn foo<T, U>(x: T, y: U) {}
+
+fn main() {
+    let x: bool = true;
+    foo::<bool>(x);                 // error: wrong number of type arguments:
+                                    //        expected 2, found 1
+    foo::<bool, i32, i32>(x, 2, 4); // error: wrong number of type arguments:
+                                    //        expected 2, found 3
+}
+
+fn f() {}
+
+fn main() {
+    f::<'static>(); // error: wrong number of lifetime arguments:
+                    //        expected 0, found 1
 }
 ```
+
 "##,
 
 E0109: r##"
@@ -1273,7 +1291,7 @@ You tried to give a type parameter to a type which doesn't need it. Erroneous
 code example:
 
 ```compile_fail,E0109
-type X = u32<i32>; // error: type parameters are not allowed on this type
+type X = u32<i32>; // error: type arguments are not allowed on this entity
 ```
 
 Please check that you used the correct type and recheck its definition. Perhaps
@@ -1501,12 +1519,12 @@ struct Foo {
 "##,
 
 E0131: r##"
-It is not possible to define `main` with type parameters, or even with function
-parameters. When `main` is present, it must take no arguments and return `()`.
+It is not possible to define `main` with generic parameters.
+When `main` is present, it must take no arguments and return `()`.
 Erroneous code example:
 
 ```compile_fail,E0131
-fn main<T>() { // error: main function is not allowed to have type parameters
+fn main<T>() { // error: main function is not allowed to have generic parameters
 }
 ```
 "##,
@@ -1582,7 +1600,7 @@ it has been disabled for now.
 
 E0185: r##"
 An associated function for a trait was defined to be static, but an
-implementation of the trait declared the same function to be a method (i.e. to
+implementation of the trait declared the same function to be a method (i.e., to
 take a `self` parameter).
 
 Here's an example of this error:
@@ -1603,7 +1621,7 @@ impl Foo for Bar {
 "##,
 
 E0186: r##"
-An associated function for a trait was defined to be a method (i.e. to take a
+An associated function for a trait was defined to be a method (i.e., to take a
 `self` parameter), but an implementation of the trait declared the same function
 to be static.
 
@@ -2146,7 +2164,7 @@ fn main() -> i32 { 0 }
 
 let x = 1u8;
 match x {
-    0u8...3i8 => (),
+    0u8..=3i8 => (),
     // error: mismatched types in range: expected u8, found i8
     _ => ()
 }
@@ -2189,7 +2207,7 @@ as the type you're matching on. Example:
 let x = 1u8;
 
 match x {
-    0u8...3u8 => (), // ok!
+    0u8..=3u8 => (), // ok!
     _ => ()
 }
 ```
@@ -2338,7 +2356,7 @@ Rust does not currently support this. A simple example that causes this error:
 
 ```compile_fail,E0225
 fn main() {
-    let _: Box<std::io::Read + std::io::Write>;
+    let _: Box<dyn std::io::Read + std::io::Write>;
 }
 ```
 
@@ -2348,7 +2366,7 @@ auto traits. For example, the following compiles correctly:
 
 ```
 fn main() {
-    let _: Box<std::io::Read + Send + Sync>;
+    let _: Box<dyn std::io::Read + Send + Sync>;
 }
 ```
 "##,
@@ -2393,13 +2411,15 @@ fn baz<I>(x: &<I as Foo>::A) where I: Foo<A=Bar> {}
 "##,
 
 E0243: r##"
+#### Note: this error code is no longer emitted by the compiler.
+
 This error indicates that not enough type parameters were found in a type or
 trait.
 
 For example, the `Foo` struct below is defined to be generic in `T`, but the
 type parameter is missing in the definition of `Bar`:
 
-```compile_fail,E0243
+```compile_fail,E0107
 struct Foo<T> { x: T }
 
 struct Bar { x: Foo }
@@ -2407,13 +2427,15 @@ struct Bar { x: Foo }
 "##,
 
 E0244: r##"
+#### Note: this error code is no longer emitted by the compiler.
+
 This error indicates that too many type parameters were found in a type or
 trait.
 
 For example, the `Foo` struct below has no type parameters, but is supplied
 with two in the definition of `Bar`:
 
-```compile_fail,E0244
+```compile_fail,E0107
 struct Foo { x: bool }
 
 struct Bar<S, T> { x: Foo<S, T> }
@@ -3052,6 +3074,66 @@ containing the unsized type is the last and only unsized type field in the
 struct.
 "##,
 
+E0378: r##"
+The `DispatchFromDyn` trait currently can only be implemented for
+builtin pointer types and structs that are newtype wrappers around them
+— that is, the struct must have only one field (except for`PhantomData`),
+and that field must itself implement `DispatchFromDyn`.
+
+Examples:
+
+```
+#![feature(dispatch_from_dyn, unsize)]
+use std::{
+    marker::Unsize,
+    ops::DispatchFromDyn,
+};
+
+struct Ptr<T: ?Sized>(*const T);
+
+impl<T: ?Sized, U: ?Sized> DispatchFromDyn<Ptr<U>> for Ptr<T>
+where
+    T: Unsize<U>,
+{}
+```
+
+```
+#![feature(dispatch_from_dyn)]
+use std::{
+    ops::DispatchFromDyn,
+    marker::PhantomData,
+};
+
+struct Wrapper<T> {
+    ptr: T,
+    _phantom: PhantomData<()>,
+}
+
+impl<T, U> DispatchFromDyn<Wrapper<U>> for Wrapper<T>
+where
+    T: DispatchFromDyn<U>,
+{}
+```
+
+Example of illegal `DispatchFromDyn` implementation
+(illegal because of extra field)
+
+```compile-fail,E0378
+#![feature(dispatch_from_dyn)]
+use std::ops::DispatchFromDyn;
+
+struct WrapperExtraField<T> {
+    ptr: T,
+    extra_stuff: i32,
+}
+
+impl<T, U> DispatchFromDyn<WrapperExtraField<U>> for WrapperExtraField<T>
+where
+    T: DispatchFromDyn<U>,
+{}
+```
+"##,
+
 E0390: r##"
 You tried to implement methods for a primitive type. Erroneous code example:
 
@@ -3283,180 +3365,6 @@ last parameter in its name. Example:
 
 extern "platform-intrinsic" {
     fn simd_shuffle8<A,B>(a: A, b: A, c: [u32; 8]) -> B;
-}
-```
-"##,
-
-E0440: r##"
-A platform-specific intrinsic function has the wrong number of type
-parameters. Erroneous code example:
-
-```compile_fail,E0440
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct f64x2(f64, f64);
-
-extern "platform-intrinsic" {
-    fn x86_mm_movemask_pd<T>(x: f64x2) -> i32;
-    // error: platform-specific intrinsic has wrong number of type
-    //        parameters
-}
-```
-
-Please refer to the function declaration to see if it corresponds
-with yours. Example:
-
-```
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct f64x2(f64, f64);
-
-extern "platform-intrinsic" {
-    fn x86_mm_movemask_pd(x: f64x2) -> i32;
-}
-```
-"##,
-
-E0441: r##"
-An unknown platform-specific intrinsic function was used. Erroneous
-code example:
-
-```compile_fail,E0441
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct i16x8(i16, i16, i16, i16, i16, i16, i16, i16);
-
-extern "platform-intrinsic" {
-    fn x86_mm_adds_ep16(x: i16x8, y: i16x8) -> i16x8;
-    // error: unrecognized platform-specific intrinsic function
-}
-```
-
-Please verify that the function name wasn't misspelled, and ensure
-that it is declared in the rust source code (in the file
-src/librustc_platform_intrinsics/x86.rs). Example:
-
-```
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct i16x8(i16, i16, i16, i16, i16, i16, i16, i16);
-
-extern "platform-intrinsic" {
-    fn x86_mm_adds_epi16(x: i16x8, y: i16x8) -> i16x8; // ok!
-}
-```
-"##,
-
-E0442: r##"
-Intrinsic argument(s) and/or return value have the wrong type.
-Erroneous code example:
-
-```compile_fail,E0442
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct i8x16(i8, i8, i8, i8, i8, i8, i8, i8,
-             i8, i8, i8, i8, i8, i8, i8, i8);
-#[repr(simd)]
-struct i32x4(i32, i32, i32, i32);
-#[repr(simd)]
-struct i64x2(i64, i64);
-
-extern "platform-intrinsic" {
-    fn x86_mm_adds_epi16(x: i8x16, y: i32x4) -> i64x2;
-    // error: intrinsic arguments/return value have wrong type
-}
-```
-
-To fix this error, please refer to the function declaration to give
-it the awaited types. Example:
-
-```
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct i16x8(i16, i16, i16, i16, i16, i16, i16, i16);
-
-extern "platform-intrinsic" {
-    fn x86_mm_adds_epi16(x: i16x8, y: i16x8) -> i16x8; // ok!
-}
-```
-"##,
-
-E0443: r##"
-Intrinsic argument(s) and/or return value have the wrong type.
-Erroneous code example:
-
-```compile_fail,E0443
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct i16x8(i16, i16, i16, i16, i16, i16, i16, i16);
-#[repr(simd)]
-struct i64x8(i64, i64, i64, i64, i64, i64, i64, i64);
-
-extern "platform-intrinsic" {
-    fn x86_mm_adds_epi16(x: i16x8, y: i16x8) -> i64x8;
-    // error: intrinsic argument/return value has wrong type
-}
-```
-
-To fix this error, please refer to the function declaration to give
-it the awaited types. Example:
-
-```
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct i16x8(i16, i16, i16, i16, i16, i16, i16, i16);
-
-extern "platform-intrinsic" {
-    fn x86_mm_adds_epi16(x: i16x8, y: i16x8) -> i16x8; // ok!
-}
-```
-"##,
-
-E0444: r##"
-A platform-specific intrinsic function has wrong number of arguments.
-Erroneous code example:
-
-```compile_fail,E0444
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct f64x2(f64, f64);
-
-extern "platform-intrinsic" {
-    fn x86_mm_movemask_pd(x: f64x2, y: f64x2, z: f64x2) -> i32;
-    // error: platform-specific intrinsic has invalid number of arguments
-}
-```
-
-Please refer to the function declaration to see if it corresponds
-with yours. Example:
-
-```
-#![feature(repr_simd)]
-#![feature(platform_intrinsics)]
-
-#[repr(simd)]
-struct f64x2(f64, f64);
-
-extern "platform-intrinsic" {
-    fn x86_mm_movemask_pd(x: f64x2) -> i32; // ok!
 }
 ```
 "##,
@@ -3701,29 +3609,6 @@ fn main() {}
 
 For more information about the inline attribute, https:
 read://doc.rust-lang.org/reference.html#inline-attributes
-"##,
-
-E0558: r##"
-The `export_name` attribute was malformed.
-
-Erroneous code example:
-
-```ignore (error-emitted-at-codegen-which-cannot-be-handled-by-compile_fail)
-#[export_name] // error: export_name attribute has invalid format
-pub fn something() {}
-
-fn main() {}
-```
-
-The `export_name` attribute expects a string in order to determine the name of
-the exported symbol. Example:
-
-```
-#[export_name = "some_function"] // ok!
-pub fn something() {}
-
-fn main() {}
-```
 "##,
 
 E0559: r##"
@@ -4519,6 +4404,41 @@ impl Foo for () {
 ```
 "##,
 
+E0646: r##"
+It is not possible to define `main` with a where clause.
+Erroneous code example:
+
+```compile_fail,E0646
+fn main() where i32: Copy { // error: main function is not allowed to have
+                            // a where clause
+}
+```
+"##,
+
+E0647: r##"
+It is not possible to define `start` with a where clause.
+Erroneous code example:
+
+```compile_fail,E0647
+#![feature(start)]
+
+#[start]
+fn start(_: isize, _: *const *const u8) -> isize where (): Copy {
+    //^ error: start function is not allowed to have a where clause
+    0
+}
+```
+"##,
+
+E0648: r##"
+`export_name` attributes may not contain null characters (`\0`).
+
+```compile_fail,E0648
+#[export_name="\0foo"] // error: `export_name` may not contain null characters
+pub fn bar() {}
+```
+"##,
+
 E0689: r##"
 This error indicates that the numeric value for the method being passed exists
 but the type of the numeric value or binding could not be identified.
@@ -4526,23 +4446,25 @@ but the type of the numeric value or binding could not be identified.
 The error happens on numeric literals:
 
 ```compile_fail,E0689
-2.0.recip();
+2.0.neg();
 ```
 
 and on numeric bindings without an identified concrete type:
 
 ```compile_fail,E0689
 let x = 2.0;
-x.recip();  // same error as above
+x.neg();  // same error as above
 ```
 
 Because of this, you must give the numeric literal or binding a type:
 
 ```
-let _ = 2.0_f32.recip();
+use std::ops::Neg;
+
+let _ = 2.0_f32.neg();
 let x: f32 = 2.0;
-let _ = x.recip();
-let _ = (2.0 as f32).recip();
+let _ = x.neg();
+let _ = (2.0 as f32).neg();
 ```
 "##,
 
@@ -4553,8 +4475,6 @@ on fields that were not guaranteed to be zero-sized.
 Erroneous code example:
 
 ```compile_fail,E0690
-#![feature(repr_transparent)]
-
 #[repr(transparent)]
 struct LengthWithUnit<U> { // error: transparent struct needs exactly one
     value: f32,            //        non-zero-sized field, but has 2
@@ -4574,8 +4494,6 @@ To combine `repr(transparent)` with type parameters, `PhantomData` may be
 useful:
 
 ```
-#![feature(repr_transparent)]
-
 use std::marker::PhantomData;
 
 #[repr(transparent)]
@@ -4593,7 +4511,7 @@ field that requires non-trivial alignment.
 Erroneous code example:
 
 ```compile_fail,E0691
-#![feature(repr_transparent, repr_align, attr_literals)]
+#![feature(repr_align)]
 
 #[repr(align(32))]
 struct ForceAlign32;
@@ -4612,8 +4530,6 @@ requirement.
 Consider removing the over-aligned zero-sized field:
 
 ```
-#![feature(repr_transparent)]
-
 #[repr(transparent)]
 struct Wrapper(f32);
 ```
@@ -4622,7 +4538,7 @@ Alternatively, `PhantomData<T>` has alignment 1 for all `T`, so you can use it
 if you need to keep the field for some reason:
 
 ```
-#![feature(repr_transparent, repr_align, attr_literals)]
+#![feature(repr_align)]
 
 use std::marker::PhantomData;
 
@@ -4640,7 +4556,7 @@ alignment.
 "##,
 
 
-E0908: r##"
+E0699: r##"
 A method was called on a raw pointer whose inner type wasn't completely known.
 
 For example, you may have done something like:
@@ -4685,6 +4601,37 @@ and now when you call `.is_null()` on a raw pointer to `Foo`, there's ambiguity.
 Given that we don't know what type the pointer is, and there's potential
 ambiguity for some types, we disallow calling methods on raw pointers when
 the type is unknown.
+"##,
+
+E0714: r##"
+A `#[marker]` trait contained an associated item.
+
+The items of marker traits cannot be overridden, so there's no need to have them
+when they cannot be changed per-type anyway.  If you wanted them for ergonomic
+reasons, consider making an extension trait instead.
+"##,
+
+E0715: r##"
+An `impl` for a `#[marker]` trait tried to override an associated item.
+
+Because marker traits are allowed to have multiple implementations for the same
+type, it's not allowed to override anything in those implementations, as it
+would be ambiguous which override should actually be used.
+"##,
+
+
+E0720: r##"
+An `impl Trait` type expands to a recursive type.
+
+An `impl Trait` type must be expandable to a concrete type that contains no
+`impl Trait` types. For example the following example tries to create an
+`impl Trait` type `T` that is equal to `[T, T]`:
+
+```compile_fail,E0720
+fn make_recursive_type() -> impl Sized {
+    [make_recursive_type(), make_recursive_type()]
+}
+```
 "##,
 
 }
@@ -4752,6 +4699,7 @@ register_diagnostics! {
 //  E0372, // coherence not object safe
     E0377, // the trait `CoerceUnsized` may only be implemented for a coercion
            // between structures with the same definition
+//  E0558, // replaced with a generic attribute input check
     E0533, // `{}` does not name a unit variant, unit struct or a constant
 //  E0563, // cannot determine a type for this `impl Trait`: {} // removed in 6383de15
     E0564, // only named lifetimes are allowed in `impl Trait`,
@@ -4769,5 +4717,6 @@ register_diagnostics! {
     E0640, // infer outlives requirements
     E0641, // cannot cast to/from a pointer with an unknown kind
     E0645, // trait aliases not finished
-    E0907, // type inside generator must be known in this context
+    E0698, // type inside generator must be known in this context
+    E0719, // duplicate values for associated type binding
 }

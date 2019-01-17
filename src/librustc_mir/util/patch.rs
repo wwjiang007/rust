@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use rustc::ty::Ty;
 use rustc::mir::*;
 use rustc_data_structures::indexed_vec::{IndexVec, Idx};
@@ -62,7 +52,7 @@ impl<'tcx> MirPatch<'tcx> {
                 terminator: Some(Terminator {
                     source_info: SourceInfo {
                         span: mir.span,
-                        scope: ARGUMENT_VISIBILITY_SCOPE
+                        scope: OUTERMOST_SOURCE_SCOPE
                     },
                     kind: TerminatorKind::Resume
                 }),
@@ -130,7 +120,7 @@ impl<'tcx> MirPatch<'tcx> {
     }
 
     pub fn add_assign(&mut self, loc: Location, place: Place<'tcx>, rv: Rvalue<'tcx>) {
-        self.add_statement(loc, StatementKind::Assign(place, rv));
+        self.add_statement(loc, StatementKind::Assign(place, box rv));
     }
 
     pub fn make_nop(&mut self, loc: Location) {
@@ -156,7 +146,7 @@ impl<'tcx> MirPatch<'tcx> {
         }
 
         let mut new_statements = self.new_statements;
-        new_statements.sort_by(|u,v| u.0.cmp(&v.0));
+        new_statements.sort_by_key(|s| s.0);
 
         let mut delta = 0;
         let mut last_bb = START_BLOCK;

@@ -1,13 +1,3 @@
-// Copyright 2013-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Hex binary-to-text encoding
 
 pub use self::FromHexError::*;
@@ -22,7 +12,7 @@ pub trait ToHex {
     fn to_hex(&self) -> String;
 }
 
-const CHARS: &'static [u8] = b"0123456789abcdef";
+const CHARS: &[u8] = b"0123456789abcdef";
 
 impl ToHex for [u8] {
     /// Turn a vector of `u8` bytes into a hexadecimal string.
@@ -125,9 +115,9 @@ impl FromHex for str {
             buf <<= 4;
 
             match byte {
-                b'A'...b'F' => buf |= byte - b'A' + 10,
-                b'a'...b'f' => buf |= byte - b'a' + 10,
-                b'0'...b'9' => buf |= byte - b'0',
+                b'A'..=b'F' => buf |= byte - b'A' + 10,
+                b'a'..=b'f' => buf |= byte - b'a' + 10,
+                b'0'..=b'9' => buf |= byte - b'0',
                 b' '|b'\r'|b'\n'|b'\t' => {
                     buf >>= 4;
                     continue
@@ -146,7 +136,7 @@ impl FromHex for str {
         }
 
         match modulus {
-            0 => Ok(b.into_iter().collect()),
+            0 => Ok(b),
             _ => Err(InvalidHexLength),
         }
     }

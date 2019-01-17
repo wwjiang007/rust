@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(non_snake_case)]
 
 register_long_diagnostics! {
@@ -259,6 +249,65 @@ let result = loop { // ok!
     i += 1;
 };
 ```
+"##,
+
+E0642: r##"
+Trait methods currently cannot take patterns as arguments.
+
+Example of erroneous code:
+
+```compile_fail,E0642
+trait Foo {
+    fn foo((x, y): (i32, i32)); // error: patterns aren't allowed
+                                //        in trait methods
+}
+```
+
+You can instead use a single name for the argument:
+
+```
+trait Foo {
+    fn foo(x_and_y: (i32, i32)); // ok!
+}
+```
+"##,
+
+E0695: r##"
+A `break` statement without a label appeared inside a labeled block.
+
+Example of erroneous code:
+
+```compile_fail,E0695
+# #![feature(label_break_value)]
+loop {
+    'a: {
+        break;
+    }
+}
+```
+
+Make sure to always label the `break`:
+
+```
+# #![feature(label_break_value)]
+'l: loop {
+    'a: {
+        break 'l;
+    }
+}
+```
+
+Or if you want to `break` the labeled block:
+
+```
+# #![feature(label_break_value)]
+loop {
+    'a: {
+        break 'a;
+    }
+    break;
+}
+```
 "##
 }
 
@@ -268,7 +317,8 @@ register_diagnostics! {
     E0561, // patterns aren't allowed in function pointer types
     E0567, // auto traits can not have generic parameters
     E0568, // auto traits can not have super traits
-    E0642, // patterns aren't allowed in methods without bodies
     E0666, // nested `impl Trait` is illegal
     E0667, // `impl Trait` in projections
+    E0696, // `continue` pointing to a labeled block
+    E0706, // `async fn` in trait
 }

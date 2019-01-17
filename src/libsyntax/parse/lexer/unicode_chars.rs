@@ -1,21 +1,11 @@
-// Copyright 2012-2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Characters and their corresponding confusables were collected from
 // http://www.unicode.org/Public/security/10.0.0/confusables.txt
 
 use syntax_pos::{Span, NO_EXPANSION};
-use errors::DiagnosticBuilder;
+use errors::{Applicability, DiagnosticBuilder};
 use super::StringReader;
 
-const UNICODE_ARRAY: &'static [(char, &'static str, char)] = &[
+const UNICODE_ARRAY: &[(char, &str, char)] = &[
     (' ', "Line Separator", ' '),
     (' ', "Paragraph Separator", ' '),
     (' ', "Ogham Space mark", ' '),
@@ -306,7 +296,7 @@ const UNICODE_ARRAY: &'static [(char, &'static str, char)] = &[
     ('＞', "Fullwidth Greater-Than Sign", '>'), ];
 
 
-const ASCII_ARRAY: &'static [(char, &'static str)] = &[
+const ASCII_ARRAY: &[(char, &str)] = &[
     (' ', "Space"),
     ('_', "Underscore"),
     ('-', "Minus/Hyphen"),
@@ -333,9 +323,9 @@ const ASCII_ARRAY: &'static [(char, &'static str)] = &[
     ('=', "Equals Sign"),
     ('>', "Greater-Than Sign"), ];
 
-pub fn check_for_substitution<'a>(reader: &StringReader<'a>,
+crate fn check_for_substitution<'a>(reader: &StringReader<'a>,
                                   ch: char,
-                                  err: &mut DiagnosticBuilder<'a>) {
+                                  err: &mut DiagnosticBuilder<'a>) -> bool {
     UNICODE_ARRAY
     .iter()
     .find(|&&(c, _, _)| c == ch)
@@ -344,14 +334,20 @@ pub fn check_for_substitution<'a>(reader: &StringReader<'a>,
         match ASCII_ARRAY.iter().find(|&&(c, _)| c == ascii_char) {
             Some(&(ascii_char, ascii_name)) => {
                 let msg =
-                    format!("unicode character '{}' ({}) looks like '{}' ({}), but it's not",
+                    format!("Unicode character '{}' ({}) looks like '{}' ({}), but it is not",
                             ch, u_name, ascii_char, ascii_name);
-                err.span_help(span, &msg);
+                err.span_suggestion_with_applicability(
+                    span,
+                    &msg,
+                    ascii_char.to_string(),
+                    Applicability::MaybeIncorrect);
+                true
             },
             None => {
                 let msg = format!("substitution character not found for '{}'", ch);
                 reader.sess.span_diagnostic.span_bug_no_panic(span, &msg);
+                false
             }
         }
-    });
+    }).unwrap_or(false)
 }

@@ -1,18 +1,9 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use deriving::path_std;
 use deriving::generic::*;
 use deriving::generic::ty::*;
 
 use syntax::ast::{self, Expr, Generics, ItemKind, MetaItem, VariantData};
+use syntax::ast::GenericArg;
 use syntax::attr;
 use syntax::ext::base::{Annotatable, ExtCtxt};
 use syntax::ext::build::AstBuilder;
@@ -24,7 +15,7 @@ pub fn expand_deriving_clone(cx: &mut ExtCtxt,
                              span: Span,
                              mitem: &MetaItem,
                              item: &Annotatable,
-                             push: &mut FnMut(Annotatable)) {
+                             push: &mut dyn FnMut(Annotatable)) {
     // check if we can use a short form
     //
     // the short form is `fn clone(&self) -> Self { *self }`
@@ -48,7 +39,10 @@ pub fn expand_deriving_clone(cx: &mut ExtCtxt,
                 ItemKind::Struct(_, Generics { ref params, .. }) |
                 ItemKind::Enum(_, Generics { ref params, .. }) => {
                     if attr::contains_name(&annitem.attrs, "rustc_copy_clone_marker") &&
-                        !params.iter().any(|param| param.is_type_param())
+                        !params.iter().any(|param| match param.kind {
+                            ast::GenericParamKind::Type { .. } => true,
+                            _ => false,
+                        })
                     {
                         bounds = vec![];
                         is_shallow = true;
@@ -123,7 +117,7 @@ fn cs_clone_shallow(name: &str,
         let span = span.with_ctxt(cx.backtrace());
         let assert_path = cx.path_all(span, true,
                                         cx.std_path(&["clone", helper_name]),
-                                        vec![], vec![ty], vec![]);
+                                        vec![GenericArg::Type(ty)], vec![]);
         stmts.push(cx.stmt_let_type_only(span, cx.ty_path(assert_path)));
     }
     fn process_variant(cx: &mut ExtCtxt, stmts: &mut Vec<ast::Stmt>, variant: &VariantData) {
@@ -136,7 +130,7 @@ fn cs_clone_shallow(name: &str,
     let mut stmts = Vec::new();
     if is_union {
         // let _: AssertParamIsCopy<Self>;
-        let self_ty = cx.ty_path(cx.path_ident(trait_span, keywords::SelfType.ident()));
+        let self_ty = cx.ty_path(cx.path_ident(trait_span, keywords::SelfUpper.ident()));
         assert_ty_bounds(cx, &mut stmts, self_ty, trait_span, "AssertParamIsCopy");
     } else {
         match *substr.fields {

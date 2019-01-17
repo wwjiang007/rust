@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use core::cell::*;
 use core::default::Default;
 use std::mem::drop;
@@ -163,6 +153,64 @@ fn ref_map_does_not_update_flag() {
     }
     assert!(x.try_borrow().is_ok());
     assert!(x.try_borrow_mut().is_ok());
+}
+
+#[test]
+fn ref_map_split_updates_flag() {
+    let x = RefCell::new([1, 2]);
+    {
+        let b1 = x.borrow();
+        assert!(x.try_borrow().is_ok());
+        assert!(x.try_borrow_mut().is_err());
+        {
+            let (_b2, _b3) = Ref::map_split(b1, |slc| slc.split_at(1));
+            assert!(x.try_borrow().is_ok());
+            assert!(x.try_borrow_mut().is_err());
+        }
+        assert!(x.try_borrow().is_ok());
+        assert!(x.try_borrow_mut().is_ok());
+    }
+    assert!(x.try_borrow().is_ok());
+    assert!(x.try_borrow_mut().is_ok());
+
+    {
+        let b1 = x.borrow_mut();
+        assert!(x.try_borrow().is_err());
+        assert!(x.try_borrow_mut().is_err());
+        {
+            let (_b2, _b3) = RefMut::map_split(b1, |slc| slc.split_at_mut(1));
+            assert!(x.try_borrow().is_err());
+            assert!(x.try_borrow_mut().is_err());
+            drop(_b2);
+            assert!(x.try_borrow().is_err());
+            assert!(x.try_borrow_mut().is_err());
+        }
+        assert!(x.try_borrow().is_ok());
+        assert!(x.try_borrow_mut().is_ok());
+    }
+    assert!(x.try_borrow().is_ok());
+    assert!(x.try_borrow_mut().is_ok());
+}
+
+#[test]
+fn ref_map_split() {
+    let x = RefCell::new([1, 2]);
+    let (b1, b2) = Ref::map_split(x.borrow(), |slc| slc.split_at(1));
+    assert_eq!(*b1, [1]);
+    assert_eq!(*b2, [2]);
+}
+
+#[test]
+fn ref_mut_map_split() {
+    let x = RefCell::new([1, 2]);
+    {
+        let (mut b1, mut b2) = RefMut::map_split(x.borrow_mut(), |slc| slc.split_at_mut(1));
+        assert_eq!(*b1, [1]);
+        assert_eq!(*b2, [2]);
+        b1[0] = 2;
+        b2[0] = 1;
+    }
+    assert_eq!(*x.borrow(), [2, 1]);
 }
 
 #[test]

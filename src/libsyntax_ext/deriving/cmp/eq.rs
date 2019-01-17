@@ -1,18 +1,8 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use deriving::path_std;
 use deriving::generic::*;
 use deriving::generic::ty::*;
 
-use syntax::ast::{self, Expr, MetaItem};
+use syntax::ast::{self, Expr, MetaItem, GenericArg};
 use syntax::ext::base::{Annotatable, ExtCtxt};
 use syntax::ext::build::AstBuilder;
 use syntax::ptr::P;
@@ -23,7 +13,7 @@ pub fn expand_deriving_eq(cx: &mut ExtCtxt,
                           span: Span,
                           mitem: &MetaItem,
                           item: &Annotatable,
-                          push: &mut FnMut(Annotatable)) {
+                          push: &mut dyn FnMut(Annotatable)) {
     let inline = cx.meta_word(span, Symbol::intern("inline"));
     let hidden = cx.meta_list_item_word(span, Symbol::intern("hidden"));
     let doc = cx.meta_list(span, Symbol::intern("doc"), vec![hidden]);
@@ -62,7 +52,7 @@ fn cs_total_eq_assert(cx: &mut ExtCtxt, trait_span: Span, substr: &Substructure)
         let span = span.with_ctxt(cx.backtrace());
         let assert_path = cx.path_all(span, true,
                                         cx.std_path(&["cmp", helper_name]),
-                                        vec![], vec![ty], vec![]);
+                                        vec![GenericArg::Type(ty)], vec![]);
         stmts.push(cx.stmt_let_type_only(span, cx.ty_path(assert_path)));
     }
     fn process_variant(cx: &mut ExtCtxt, stmts: &mut Vec<ast::Stmt>, variant: &ast::VariantData) {

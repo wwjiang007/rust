@@ -1,13 +1,3 @@
-// Copyright 2013-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // force-host
 
 #![feature(plugin_registrar, quote, rustc_private)]
@@ -18,7 +8,7 @@ extern crate rustc_plugin;
 extern crate syntax_pos;
 
 use syntax::ast::{self, Item, MetaItem, ItemKind};
-use syntax::codemap::DUMMY_SP;
+use syntax::source_map::DUMMY_SP;
 use syntax::ext::base::*;
 use syntax::ext::quote::rt::ToTokens;
 use syntax::parse::{self, token};
@@ -37,13 +27,13 @@ pub fn plugin_registrar(reg: &mut Registry) {
     reg.register_macro("make_a_1", expand_make_a_1);
     reg.register_macro("identity", expand_identity);
     reg.register_syntax_extension(
-        Symbol::intern("into_multi_foo"),
+        Symbol::intern("rustc_into_multi_foo"),
         MultiModifier(Box::new(expand_into_foo_multi)));
     reg.register_syntax_extension(
-        Symbol::intern("duplicate"),
+        Symbol::intern("rustc_duplicate"),
         MultiDecorator(Box::new(expand_duplicate)));
     reg.register_syntax_extension(
-        Symbol::intern("caller"),
+        Symbol::intern("rustc_caller"),
         MultiDecorator(Box::new(expand_caller)));
 }
 
@@ -112,7 +102,7 @@ fn expand_duplicate(cx: &mut ExtCtxt,
     let copy_name = match mi.node {
         ast::MetaItemKind::List(ref xs) => {
             if let Some(word) = xs[0].word() {
-                word.ident
+                word.ident.segments.last().unwrap().ident
             } else {
                 cx.span_err(mi.span, "Expected word");
                 return;

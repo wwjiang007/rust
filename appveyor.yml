@@ -1,17 +1,15 @@
 environment:
-  SCCACHE_BUCKET: rust-lang-ci-sccache2
-  SCCACHE_REGION: us-west-1
-  AWS_ACCESS_KEY_ID: AKIAJAMV3QAMMA6AXHFQ
-  AWS_SECRET_ACCESS_KEY:
-    secure: 7Y+JiquYedOAgnUU26uL0DPzrxmTtR+qIwG6rNKSuWDffqU3vVZxbGXim9QpTO80
-  SCCACHE_DIGEST: f808afabb4a4eb1d7112bcb3fa6be03b61e93412890c88e177c667eb37f46353d7ec294e559b16f9f4b5e894f2185fe7670a0df15fd064889ecbd80f0c34166c
-  TOOLSTATE_REPO_ACCESS_TOKEN:
-    secure: PTZiSxJMVUZ0VnMR5i13E4OagbXfglj7pcskDQiKufVrDm13mLoI0vDJAEM35+bY
 
   # By default schannel checks revocation of certificates unlike some other SSL
   # backends, but we've historically had problems on CI where a revocation
   # server goes down presumably. See #43333 for more info
   CARGO_HTTP_CHECK_REVOKE: false
+
+  # Recommended by AppVeyor this moves our builds to GCE which incurs a 3-4
+  # minute startup overhead, but that's paltry compared to our overall build
+  # times so we're will to eat the cost. This is intended to give us better
+  # performance I believe!
+  appveyor_build_worker_cloud: gce
 
   matrix:
   # 32/64 bit MSVC tests
@@ -82,17 +80,21 @@ environment:
   # 32/64 bit MSVC and GNU deployment
   - RUST_CONFIGURE_ARGS: >
       --build=x86_64-pc-windows-msvc
+      --target=x86_64-pc-windows-msvc,aarch64-pc-windows-msvc
       --enable-full-tools
       --enable-profiler
     SCRIPT: python x.py dist
+    DIST_REQUIRE_ALL_TOOLS: 1
     DEPLOY: 1
     CI_JOB_NAME: dist-x86_64-msvc
+    APPVEYOR_BUILD_WORKER_IMAGE: Visual Studio 2017 Preview
   - RUST_CONFIGURE_ARGS: >
       --build=i686-pc-windows-msvc
       --target=i586-pc-windows-msvc
       --enable-full-tools
       --enable-profiler
     SCRIPT: python x.py dist
+    DIST_REQUIRE_ALL_TOOLS: 1
     DEPLOY: 1
     CI_JOB_NAME: dist-i686-msvc
   - MSYS_BITS: 32
@@ -101,6 +103,7 @@ environment:
     MINGW_URL: https://s3-us-west-1.amazonaws.com/rust-lang-ci2/rust-ci-mirror
     MINGW_ARCHIVE: i686-6.3.0-release-posix-dwarf-rt_v5-rev2.7z
     MINGW_DIR: mingw32
+    DIST_REQUIRE_ALL_TOOLS: 1
     DEPLOY: 1
     CI_JOB_NAME: dist-i686-mingw
   - MSYS_BITS: 64
@@ -109,6 +112,7 @@ environment:
     MINGW_URL: https://s3-us-west-1.amazonaws.com/rust-lang-ci2/rust-ci-mirror
     MINGW_ARCHIVE: x86_64-6.3.0-release-posix-seh-rt_v5-rev2.7z
     MINGW_DIR: mingw64
+    DIST_REQUIRE_ALL_TOOLS: 1
     DEPLOY: 1
     CI_JOB_NAME: dist-x86_64-mingw
 
@@ -138,6 +142,20 @@ install:
   - if defined MINGW_URL 7z x -y %MINGW_ARCHIVE% > nul
   - if defined MINGW_URL set PATH=%CD%\%MINGW_DIR%\bin;C:\msys64\usr\bin;%PATH%
 
+  # If we're compiling for MSVC then we, like most other distribution builders,
+  # switch to clang as the compiler. This'll allow us eventually to enable LTO
+  # amongst LLVM and rustc. Note that we only do this on MSVC as I don't think
+  # clang has an output mode compatible with MinGW that we need. If it does we
+  # should switch to clang for MinGW as well!
+  #
+  # Note that the LLVM installer is an NSIS installer
+  #
+  # Original downloaded here came from
+  # http://releases.llvm.org/7.0.0/LLVM-7.0.0-win64.exe
+  - if NOT defined MINGW_URL appveyor-retry appveyor DownloadFile https://s3-us-west-1.amazonaws.com/rust-lang-ci2/rust-ci-mirror/LLVM-7.0.0-win64.exe
+  - if NOT defined MINGW_URL .\LLVM-7.0.0-win64.exe /S /NCRC /D=C:\clang-rust
+  - if NOT defined MINGW_URL set RUST_CONFIGURE_ARGS=%RUST_CONFIGURE_ARGS% --set llvm.clang-cl=C:\clang-rust\bin\clang-cl.exe
+
   # Here we do a pretty heinous thing which is to mangle the MinGW installation
   # we just had above. Currently, as of this writing, we're using MinGW-w64
   # builds of gcc, and that's currently at 6.3.0. We use 6.3.0 as it appears to
@@ -166,8 +184,8 @@ install:
   - set PATH=C:\Python27;%PATH%
 
   # Download and install sccache
-  - appveyor-retry appveyor DownloadFile https://s3-us-west-1.amazonaws.com/rust-lang-ci2/rust-ci-mirror/2018-04-02-sccache-x86_64-pc-windows-msvc
-  - mv 2018-04-02-sccache-x86_64-pc-windows-msvc sccache.exe
+  - appveyor-retry appveyor DownloadFile https://s3-us-west-1.amazonaws.com/rust-lang-ci2/rust-ci-mirror/2018-04-26-sccache-x86_64-pc-windows-msvc
+  - mv 2018-04-26-sccache-x86_64-pc-windows-msvc sccache.exe
   - set PATH=%PATH%;%CD%
 
   # Download and install ninja
@@ -197,6 +215,11 @@ test_script:
   - set NO_CCACHE=1
   - sh src/ci/run.sh
 
+on_failure:
+  # Dump crash log
+  - set PATH=%PATH%;"C:\Program Files (x86)\Windows Kits\10\Debuggers\X64"
+  - if exist %LOCALAPPDATA%\CrashDumps for %%f in (%LOCALAPPDATA%\CrashDumps\*) do cdb -c "k;q" -G -z "%%f"
+
 branches:
   only:
     - auto
@@ -212,10 +235,8 @@ before_deploy:
 
 deploy:
   - provider: S3
-    skip_cleanup: true
-    access_key_id: AKIAJVBODR3IA4O72THQ
-    secret_access_key:
-      secure: tQWIE+DJHjXaV4np/3YeETkEmXngtIuIgAO/LYKQaUshGLgN8cBCFGG3cHx5lKLt
+    access_key_id: $(AWS_ACCESS_KEY_ID)
+    secret_access_key: $(AWS_SECRET_ACCESS_KEY)
     bucket: rust-lang-ci2
     set_public: true
     region: us-west-1
@@ -229,10 +250,8 @@ deploy:
   # This provider is the same as the one above except that it has a slightly
   # different upload directory and a slightly different trigger
   - provider: S3
-    skip_cleanup: true
-    access_key_id: AKIAJVBODR3IA4O72THQ
-    secret_access_key:
-      secure: tQWIE+DJHjXaV4np/3YeETkEmXngtIuIgAO/LYKQaUshGLgN8cBCFGG3cHx5lKLt
+    access_key_id: $(AWS_ACCESS_KEY_ID)
+    secret_access_key: $(AWS_SECRET_ACCESS_KEY)
     bucket: rust-lang-ci2
     set_public: true
     region: us-west-1

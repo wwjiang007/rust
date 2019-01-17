@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Parsing of GCC-style Language-Specific Data Area (LSDA)
 //! For details see:
 //!   http://refspecs.linuxfoundation.org/LSB_3.0.0/LSB-PDA/LSB-PDA/ehframechpt.html
@@ -48,8 +38,8 @@ pub const DW_EH_PE_indirect: u8 = 0x80;
 pub struct EHContext<'a> {
     pub ip: usize, // Current instruction pointer
     pub func_start: usize, // Address of the current function
-    pub get_text_start: &'a Fn() -> usize, // Get address of the code section
-    pub get_data_start: &'a Fn() -> usize, // Get address of the data section
+    pub get_text_start: &'a dyn Fn() -> usize, // Get address of the code section
+    pub get_data_start: &'a dyn Fn() -> usize, // Get address of the data section
 }
 
 pub enum EHAction {

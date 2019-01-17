@@ -1,19 +1,7 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A pass that simplifies branches when their condition is known.
 
-use rustc::ty::{self, TyCtxt};
-use rustc::middle::const_val::ConstVal;
+use rustc::ty::{TyCtxt, ParamEnv};
 use rustc::mir::*;
-use rustc::mir::interpret::{Value, PrimVal};
 use transform::{MirPass, MirSource};
 
 use std::borrow::Cow;
@@ -32,20 +20,22 @@ impl MirPass for SimplifyBranches {
     }
 
     fn run_pass<'a, 'tcx>(&self,
-                          _tcx: TyCtxt<'a, 'tcx, 'tcx>,
+                          tcx: TyCtxt<'a, 'tcx, 'tcx>,
                           _src: MirSource,
                           mir: &mut Mir<'tcx>) {
         for block in mir.basic_blocks_mut() {
             let terminator = block.terminator_mut();
             terminator.kind = match terminator.kind {
-                TerminatorKind::SwitchInt { discr: Operand::Constant(box Constant {
-                    literal: Literal::Value { ref value }, ..
-                }), ref values, ref targets, .. } => {
-                    if let Some(constint) = value.val.to_raw_bits() {
+                TerminatorKind::SwitchInt {
+                    discr: Operand::Constant(ref c), switch_ty, ref values, ref targets, ..
+                } => {
+                    let switch_ty = ParamEnv::empty().and(switch_ty);
+                    let constant = c.literal.map_evaluated(|c| c.assert_bits(tcx, switch_ty));
+                    if let Some(constant) = constant {
                         let (otherwise, targets) = targets.split_last().unwrap();
                         let mut ret = TerminatorKind::Goto { target: *otherwise };
                         for (&v, t) in values.iter().zip(targets.iter()) {
-                            if v == constint {
+                            if v == constant {
                                 ret = TerminatorKind::Goto { target: *t };
                                 break;
                             }
@@ -55,16 +45,10 @@ impl MirPass for SimplifyBranches {
                         continue
                     }
                 },
-                TerminatorKind::Assert { target, cond: Operand::Constant(box Constant {
-                    literal: Literal::Value {
-                        value: &ty::Const {
-                            val: ConstVal::Value(Value::ByVal(PrimVal::Bytes(cond))),
-                        .. }
-                    }, ..
-                }), expected, .. } if (cond == 1) == expected => {
-                    assert!(cond <= 1);
-                    TerminatorKind::Goto { target: target }
-                },
+                TerminatorKind::Assert {
+                    target, cond: Operand::Constant(ref c), expected, ..
+                } if (c.literal.map_evaluated(|e| e.assert_bool(tcx)) == Some(true)) == expected =>
+                    TerminatorKind::Goto { target },
                 TerminatorKind::FalseEdges { real_target, .. } => {
                     TerminatorKind::Goto { target: real_target }
                 },

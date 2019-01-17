@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Test where we change a type definition by adding a field.  Fns with
 // this type in their signature are recompiled, as are their callers.
 // Fns with that type used only in their body are also recompiled, but
@@ -22,14 +12,14 @@
 #![allow(dead_code)]
 #![crate_type = "rlib"]
 
-// These are expected to require translation.
-#![rustc_partition_translated(module="struct_point-point", cfg="cfail2")]
-#![rustc_partition_translated(module="struct_point-fn_with_type_in_sig", cfg="cfail2")]
-#![rustc_partition_translated(module="struct_point-call_fn_with_type_in_sig", cfg="cfail2")]
-#![rustc_partition_translated(module="struct_point-fn_with_type_in_body", cfg="cfail2")]
-#![rustc_partition_translated(module="struct_point-fn_make_struct", cfg="cfail2")]
-#![rustc_partition_translated(module="struct_point-fn_read_field", cfg="cfail2")]
-#![rustc_partition_translated(module="struct_point-fn_write_field", cfg="cfail2")]
+// These are expected to require codegen.
+#![rustc_partition_codegened(module="struct_point-point", cfg="cfail2")]
+#![rustc_partition_codegened(module="struct_point-fn_with_type_in_sig", cfg="cfail2")]
+#![rustc_partition_codegened(module="struct_point-call_fn_with_type_in_sig", cfg="cfail2")]
+#![rustc_partition_codegened(module="struct_point-fn_with_type_in_body", cfg="cfail2")]
+#![rustc_partition_codegened(module="struct_point-fn_make_struct", cfg="cfail2")]
+#![rustc_partition_codegened(module="struct_point-fn_read_field", cfg="cfail2")]
+#![rustc_partition_codegened(module="struct_point-fn_write_field", cfg="cfail2")]
 
 #![rustc_partition_reused(module="struct_point-call_fn_with_type_in_body", cfg="cfail2")]
 

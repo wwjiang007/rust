@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use dataflow::move_paths::{HasMoveData, MoveData, MovePathIndex, LookupResult};
 use dataflow::{MaybeInitializedPlaces, MaybeUninitializedPlaces};
 use dataflow::{DataflowResults};
@@ -16,20 +6,17 @@ use dataflow::{drop_flag_effects_for_location, on_lookup_result_bits};
 use dataflow::MoveDataParamEnv;
 use dataflow::{self, do_dataflow, DebugFormatted};
 use rustc::ty::{self, TyCtxt};
+use rustc::ty::layout::VariantIdx;
 use rustc::mir::*;
-use rustc::middle::const_val::ConstVal;
-use rustc::mir::interpret::{Value, PrimVal};
 use rustc::util::nodemap::FxHashMap;
-use rustc_data_structures::indexed_set::IdxSetBuf;
-use rustc_data_structures::indexed_vec::Idx;
+use rustc_data_structures::bit_set::BitSet;
+use std::fmt;
+use syntax::ast;
+use syntax_pos::Span;
 use transform::{MirPass, MirSource};
 use util::patch::MirPatch;
 use util::elaborate_drops::{DropFlagState, Unwind, elaborate_drop};
 use util::elaborate_drops::{DropElaborator, DropStyle, DropFlagMode};
-use syntax::ast;
-use syntax_pos::Span;
-
-use std::fmt;
 
 pub struct ElaborateDrops;
 
@@ -41,9 +28,22 @@ impl MirPass for ElaborateDrops {
     {
         debug!("elaborate_drops({:?} @ {:?})", src, mir.span);
 
-        let id = tcx.hir.as_local_node_id(src.def_id).unwrap();
+        let id = tcx.hir().as_local_node_id(src.def_id).unwrap();
         let param_env = tcx.param_env(src.def_id).with_reveal_all();
-        let move_data = MoveData::gather_moves(mir, tcx).unwrap();
+        let move_data = match MoveData::gather_moves(mir, tcx) {
+            Ok(move_data) => move_data,
+            Err((move_data, _move_errors)) => {
+                // The only way we should be allowing any move_errors
+                // in here is if we are in the migration path for the
+                // NLL-based MIR-borrowck.
+                //
+                // If we are in the migration path, we have already
+                // reported these errors as warnings to the user. So
+                // we will just ignore them here.
+                assert!(tcx.migrate_borrowck());
+                move_data
+            }
+        };
         let elaborate_patch = {
             let mir = &*mir;
             let env = MoveDataParamEnv {
@@ -66,7 +66,7 @@ impl MirPass for ElaborateDrops {
                 env: &env,
                 flow_inits,
                 flow_uninits,
-                drop_flags: FxHashMap(),
+                drop_flags: Default::default(),
                 patch: MirPatch::new(mir),
             }.elaborate()
         };
@@ -82,12 +82,12 @@ fn find_dead_unwinds<'a, 'tcx>(
     mir: &Mir<'tcx>,
     id: ast::NodeId,
     env: &MoveDataParamEnv<'tcx, 'tcx>)
-    -> IdxSetBuf<BasicBlock>
+    -> BitSet<BasicBlock>
 {
     debug!("find_dead_unwinds({:?})", mir.span);
     // We only need to do this pass once, because unwind edges can only
     // reach cleanup blocks, which can't have unwind edges themselves.
-    let mut dead_unwinds = IdxSetBuf::new_empty(mir.basic_blocks().len());
+    let mut dead_unwinds = BitSet::new_empty(mir.basic_blocks().len());
     let flow_inits =
         do_dataflow(tcx, mir, id, &[], &dead_unwinds,
                     MaybeInitializedPlaces::new(tcx, mir, &env),
@@ -101,7 +101,7 @@ fn find_dead_unwinds<'a, 'tcx>(
 
         let mut init_data = InitializationData {
             live: flow_inits.sets().on_entry_set_for(bb.index()).to_owned(),
-            dead: IdxSetBuf::new_empty(env.move_data.move_paths.len()),
+            dead: BitSet::new_empty(env.move_data.move_paths.len()),
         };
         debug!("find_dead_unwinds @ {:?}: {:?}; init_data={:?}",
                bb, bb_data, init_data.live);
@@ -128,7 +128,7 @@ fn find_dead_unwinds<'a, 'tcx>(
 
         debug!("find_dead_unwinds @ {:?}: maybe_live={}", bb, maybe_live);
         if !maybe_live {
-            dead_unwinds.add(&bb);
+            dead_unwinds.insert(bb);
         }
     }
 
@@ -136,8 +136,8 @@ fn find_dead_unwinds<'a, 'tcx>(
 }
 
 struct InitializationData {
-    live: IdxSetBuf<MovePathIndex>,
-    dead: IdxSetBuf<MovePathIndex>
+    live: BitSet<MovePathIndex>,
+    dead: BitSet<MovePathIndex>
 }
 
 impl InitializationData {
@@ -152,19 +152,19 @@ impl InitializationData {
                    loc, path, df);
             match df {
                 DropFlagState::Present => {
-                    self.live.add(&path);
-                    self.dead.remove(&path);
+                    self.live.insert(path);
+                    self.dead.remove(path);
                 }
                 DropFlagState::Absent => {
-                    self.dead.add(&path);
-                    self.live.remove(&path);
+                    self.dead.insert(path);
+                    self.live.remove(path);
                 }
             }
         });
     }
 
     fn state(&self, path: MovePathIndex) -> (bool, bool) {
-        (self.live.contains(&path), self.dead.contains(&path))
+        (self.live.contains(path), self.dead.contains(path))
     }
 }
 
@@ -174,7 +174,7 @@ struct Elaborator<'a, 'b: 'a, 'tcx: 'b> {
 }
 
 impl<'a, 'b, 'tcx> fmt::Debug for Elaborator<'a, 'b, 'tcx> {
-    fn fmt(&self, _f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+    fn fmt(&self, _f: &mut fmt::Formatter) -> fmt::Result {
         Ok(())
     }
 }
@@ -273,7 +273,7 @@ impl<'a, 'b, 'tcx> DropElaborator<'a, 'tcx> for Elaborator<'a, 'b, 'tcx> {
         })
     }
 
-    fn downcast_subpath(&self, path: Self::Path, variant: usize) -> Option<Self::Path> {
+    fn downcast_subpath(&self, path: Self::Path, variant: VariantIdx) -> Option<Self::Path> {
         dataflow::move_path_children_matching(self.ctxt.move_data(), path, |p| {
             match p {
                 &Projection {
@@ -293,8 +293,8 @@ struct ElaborateDropsCtxt<'a, 'tcx: 'a> {
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     mir: &'a Mir<'tcx>,
     env: &'a MoveDataParamEnv<'tcx, 'tcx>,
-    flow_inits: DataflowResults<MaybeInitializedPlaces<'a, 'tcx, 'tcx>>,
-    flow_uninits:  DataflowResults<MaybeUninitializedPlaces<'a, 'tcx, 'tcx>>,
+    flow_inits: DataflowResults<'tcx, MaybeInitializedPlaces<'a, 'tcx, 'tcx>>,
+    flow_uninits:  DataflowResults<'tcx, MaybeUninitializedPlaces<'a, 'tcx, 'tcx>>,
     drop_flags: FxHashMap<MovePathIndex, Local>,
     patch: MirPatch<'tcx>,
 }
@@ -444,7 +444,7 @@ impl<'b, 'tcx> ElaborateDropsCtxt<'b, 'tcx> {
     }
 
     /// Elaborate a MIR `replace` terminator. This instruction
-    /// is not directly handled by translation, and therefore
+    /// is not directly handled by codegen, and therefore
     /// must be desugared.
     ///
     /// The desugaring drops the location if needed, and then writes
@@ -469,11 +469,11 @@ impl<'b, 'tcx> ElaborateDropsCtxt<'b, 'tcx> {
         assert!(!data.is_cleanup, "DropAndReplace in unwind path not supported");
 
         let assign = Statement {
-            kind: StatementKind::Assign(location.clone(), Rvalue::Use(value.clone())),
+            kind: StatementKind::Assign(location.clone(), box Rvalue::Use(value.clone())),
             source_info: terminator.source_info
         };
 
-        let unwind = unwind.unwrap_or(self.patch.resume_block());
+        let unwind = unwind.unwrap_or_else(|| self.patch.resume_block());
         let unwind = self.patch.new_block(BasicBlockData {
             statements: vec![assign.clone()],
             terminator: Some(Terminator {
@@ -486,7 +486,7 @@ impl<'b, 'tcx> ElaborateDropsCtxt<'b, 'tcx> {
         let target = self.patch.new_block(BasicBlockData {
             statements: vec![assign],
             terminator: Some(Terminator {
-                kind: TerminatorKind::Goto { target: target },
+                kind: TerminatorKind::Goto { target },
                 ..*terminator
             }),
             is_cleanup: false,
@@ -532,12 +532,10 @@ impl<'b, 'tcx> ElaborateDropsCtxt<'b, 'tcx> {
         Rvalue::Use(Operand::Constant(Box::new(Constant {
             span,
             ty: self.tcx.types.bool,
-            literal: Literal::Value {
-                value: self.tcx.mk_const(ty::Const {
-                    val: ConstVal::Value(Value::ByVal(PrimVal::Bytes(val as u128))),
-                    ty: self.tcx.types.bool
-                })
-            }
+            user_ty: None,
+            literal: self.tcx.intern_lazy_const(ty::LazyConst::Evaluated(
+                ty::Const::from_bool(self.tcx, val),
+            )),
         })))
     }
 
@@ -550,7 +548,7 @@ impl<'b, 'tcx> ElaborateDropsCtxt<'b, 'tcx> {
     }
 
     fn drop_flags_on_init(&mut self) {
-        let loc = Location { block: START_BLOCK, statement_index: 0 };
+        let loc = Location::START;
         let span = self.patch.source_info_for_location(self.mir, loc).span;
         let false_ = self.constant_bool(span, false);
         for flag in self.drop_flags.values() {
@@ -576,7 +574,7 @@ impl<'b, 'tcx> ElaborateDropsCtxt<'b, 'tcx> {
     }
 
     fn drop_flags_for_args(&mut self) {
-        let loc = Location { block: START_BLOCK, statement_index: 0 };
+        let loc = Location::START;
         dataflow::drop_flag_effects_for_function_entry(
             self.tcx, self.mir, self.env, |path, ds| {
                 self.set_drop_flag(loc, path, ds);

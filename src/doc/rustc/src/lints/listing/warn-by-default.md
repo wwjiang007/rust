@@ -24,7 +24,7 @@ warning: attempt to add with overflow
 
 ## dead-code
 
-This lint detects detect unused, unexported items. Some
+This lint detects unused, unexported items. Some
 example code that triggers this lint:
 
 ```rust
@@ -44,7 +44,7 @@ warning: function is never used: `foo`
 
 ## deprecated
 
-This lint detects detects use of deprecated items. Some
+This lint detects use of deprecated items. Some
 example code that triggers this lint:
 
 ```rust
@@ -117,50 +117,9 @@ warning: found struct without foreign-function-safe representation annotation in
   |
 ```
 
-## incoherent-fundamental-impls
-
-This lint detects potentially-conflicting impls that were erroneously allowed. Some
-example code that triggers this lint:
-
-```rust
-pub trait Trait1<X> {
-    type Output;
-}
-
-pub trait Trait2<X> {}
-
-pub struct A;
-
-impl<X, T> Trait1<X> for T where T: Trait2<X> {
-    type Output = ();
-}
-
-impl<X> Trait1<Box<X>> for A {
-    type Output = i32;
-}
-```
-
-This will produce:
-
-```text
-warning: conflicting implementations of trait `Trait1<std::boxed::Box<_>>` for type `A`: (E0119)
-  --> src/main.rs:13:1
-   |
-9  | impl<X, T> Trait1<X> for T where T: Trait2<X> {
-   | --------------------------------------------- first implementation here
-...
-13 | impl<X> Trait1<Box<X>> for A {
-   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ conflicting implementation for `A`
-   |
-   = note: #[warn(incoherent_fundamental_impls)] on by default
-   = warning: this was previously accepted by the compiler but is being phased out; it will become a hard error in a future release!
-   = note: for more information, see issue #46205 <https://github.com/rust-lang/rust/issues/46205>
-   = note: downstream crates may implement trait `Trait2<std::boxed::Box<_>>` for type `A`
-```
-
 ## late-bound-lifetime-arguments
 
-This lint detects detects generic lifetime arguments in path segments with
+This lint detects generic lifetime arguments in path segments with
 late bound lifetime parameters. Some example code that triggers this lint:
 
 ```rust
@@ -320,7 +279,7 @@ warning: functions generic over types must be mangled
 1 |   #[no_mangle]
   |   ------------ help: remove this attribute
 2 | / fn foo<T>(t: T) {
-3 | |     
+3 | |
 4 | | }
   | |_^
   |
@@ -422,7 +381,7 @@ extern crate macro_crate_test;
 
 ## private-in-public
 
-This lint detects detect private items in public interfaces not caught by the old implementation. Some
+This lint detects private items in public interfaces not caught by the old implementation. Some
 example code that triggers this lint:
 
 ```rust,ignore
@@ -554,7 +513,7 @@ This will produce:
 warning: borrow of packed field requires unsafe function or block (error E0133)
   --> src/main.rs:11:13
    |
-11 |     let y = &x.data.0; 
+11 |     let y = &x.data.0;
    |             ^^^^^^^^^
    |
    = note: #[warn(safe_packed_borrows)] on by default
@@ -644,11 +603,11 @@ fn foo() {
 This will produce:
 
 ```text
-warning: function cannot return without recurring
+warning: function cannot return without recursing
  --> src/main.rs:1:1
   |
 1 | fn foo() {
-  | ^^^^^^^^ cannot return without recurring
+  | ^^^^^^^^ cannot return without recursing
 2 |     foo();
   |     ----- recursive call site
   |
@@ -700,7 +659,7 @@ warning: unknown lint: `not_a_real_lint`
 
 ## unreachable-code
 
-This lint detects detects unreachable code paths. Some example code that
+This lint detects unreachable code paths. Some example code that
 triggers this lint:
 
 ```rust,no_run
@@ -722,7 +681,7 @@ warning: unreachable statement
 
 ## unreachable-patterns
 
-This lint detects detects unreachable patterns. Some
+This lint detects unreachable patterns. Some
 example code that triggers this lint:
 
 ```rust
@@ -757,11 +716,11 @@ annotations now.
 
 ## unused-allocation
 
-This lint detects detects unnecessary allocations that can be eliminated.
+This lint detects unnecessary allocations that can be eliminated.
 
 ## unused-assignments
 
-This lint detects detect assignments that will never be read. Some
+This lint detects assignments that will never be read. Some
 example code that triggers this lint:
 
 ```rust
@@ -782,7 +741,7 @@ warning: value assigned to `x` is never read
 
 ## unused-attributes
 
-This lint detects detects attributes that were not used by the compiler. Some
+This lint detects attributes that were not used by the compiler. Some
 example code that triggers this lint:
 
 ```rust
@@ -826,7 +785,7 @@ warning: comparison is useless due to type limits
 
 ## unused-doc-comment
 
-This lint detects detects doc comments that aren't used by rustdoc. Some
+This lint detects doc comments that aren't used by rustdoc. Some
 example code that triggers this lint:
 
 ```rust
@@ -872,7 +831,7 @@ warning: unused import: `std::collections::HashMap`
 
 ## unused-macros
 
-This lint detects detects macros that were not used. Some example code that
+This lint detects macros that were not used. Some example code that
 triggers this lint:
 
 ```rust
@@ -915,7 +874,7 @@ fn main() {
 This will produce:
 
 ```text
-warning: unused `std::result::Result` which must be used
+warning: unused `std::result::Result` that must be used
  --> src/main.rs:6:5
   |
 6 |     returns_result();
@@ -925,7 +884,7 @@ warning: unused `std::result::Result` which must be used
 
 ## unused-mut
 
-This lint detects detect mut variables which don't need to be mutable. Some
+This lint detects mut variables which don't need to be mutable. Some
 example code that triggers this lint:
 
 ```rust
@@ -987,7 +946,7 @@ warning: unnecessary `unsafe` block
 
 ## unused-variables
 
-This lint detects detect variables which are not used in any way. Some
+This lint detects variables which are not used in any way. Some
 example code that triggers this lint:
 
 ```rust

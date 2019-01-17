@@ -1,17 +1,7 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use schema::*;
 
 use rustc::hir::def_id::{DefId, DefIndex, DefIndexAddressSpace};
-use std::io::{Cursor, Write};
+use rustc_serialize::opaque::Encoder;
 use std::slice;
 use std::u32;
 
@@ -54,15 +44,15 @@ impl Index {
         self.positions[space_index][array_index] = position.to_le();
     }
 
-    pub fn write_index(&self, buf: &mut Cursor<Vec<u8>>) -> LazySeq<Index> {
+    pub fn write_index(&self, buf: &mut Encoder) -> LazySeq<Index> {
         let pos = buf.position();
 
         // First we write the length of the lower range ...
-        buf.write_all(words_to_bytes(&[(self.positions[0].len() as u32).to_le()])).unwrap();
+        buf.emit_raw_bytes(words_to_bytes(&[(self.positions[0].len() as u32).to_le()]));
         // ... then the values in the lower range ...
-        buf.write_all(words_to_bytes(&self.positions[0][..])).unwrap();
+        buf.emit_raw_bytes(words_to_bytes(&self.positions[0][..]));
         // ... then the values in the higher range.
-        buf.write_all(words_to_bytes(&self.positions[1][..])).unwrap();
+        buf.emit_raw_bytes(words_to_bytes(&self.positions[1][..]));
         LazySeq::with_position_and_length(pos as usize,
             self.positions[0].len() + self.positions[1].len() + 1)
     }

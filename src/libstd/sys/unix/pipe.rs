@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use io;
 use libc::{self, c_int};
 use mem;
@@ -22,7 +12,7 @@ use sys::{cvt, cvt_r};
 pub struct AnonPipe(FileDesc);
 
 pub fn anon_pipe() -> io::Result<(AnonPipe, AnonPipe)> {
-    weak! { fn pipe2(*mut c_int, c_int) -> c_int }
+    syscall! { fn pipe2(fds: *mut c_int, flags: c_int) -> c_int }
     static INVALID: AtomicBool = ATOMIC_BOOL_INIT;
 
     let mut fds = [0; 2];
@@ -39,22 +29,20 @@ pub fn anon_pipe() -> io::Result<(AnonPipe, AnonPipe)> {
        !INVALID.load(Ordering::SeqCst)
     {
 
-        if let Some(pipe) = pipe2.get() {
-            // Note that despite calling a glibc function here we may still
-            // get ENOSYS. Glibc has `pipe2` since 2.9 and doesn't try to
-            // emulate on older kernels, so if you happen to be running on
-            // an older kernel you may see `pipe2` as a symbol but still not
-            // see the syscall.
-            match cvt(unsafe { pipe(fds.as_mut_ptr(), libc::O_CLOEXEC) }) {
-                Ok(_) => {
-                    return Ok((AnonPipe(FileDesc::new(fds[0])),
-                               AnonPipe(FileDesc::new(fds[1]))));
-                }
-                Err(ref e) if e.raw_os_error() == Some(libc::ENOSYS) => {
-                    INVALID.store(true, Ordering::SeqCst);
-                }
-                Err(e) => return Err(e),
+        // Note that despite calling a glibc function here we may still
+        // get ENOSYS. Glibc has `pipe2` since 2.9 and doesn't try to
+        // emulate on older kernels, so if you happen to be running on
+        // an older kernel you may see `pipe2` as a symbol but still not
+        // see the syscall.
+        match cvt(unsafe { pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }) {
+            Ok(_) => {
+                return Ok((AnonPipe(FileDesc::new(fds[0])),
+                            AnonPipe(FileDesc::new(fds[1]))));
             }
+            Err(ref e) if e.raw_os_error() == Some(libc::ENOSYS) => {
+                INVALID.store(true, Ordering::SeqCst);
+            }
+            Err(e) => return Err(e),
         }
     }
     cvt(unsafe { libc::pipe(fds.as_mut_ptr()) })?;
@@ -100,24 +88,6 @@ pub fn read2(p1: AnonPipe,
         // wait for either pipe to become readable using `poll`
         cvt_r(|| unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) })?;
 
-        // Read as much as we can from each pipe, ignoring EWOULDBLOCK or
-        // EAGAIN. If we hit EOF, then this will happen because the underlying
-        // reader will return Ok(0), in which case we'll see `Ok` ourselves. In
-        // this case we flip the other fd back into blocking mode and read
-        // whatever's leftover on that file descriptor.
-        let read = |fd: &FileDesc, dst: &mut Vec<u8>| {
-            match fd.read_to_end(dst) {
-                Ok(_) => Ok(true),
-                Err(e) => {
-                    if e.raw_os_error() == Some(libc::EWOULDBLOCK) ||
-                       e.raw_os_error() == Some(libc::EAGAIN) {
-                        Ok(false)
-                    } else {
-                        Err(e)
-                    }
-                }
-            }
-        };
         if fds[0].revents != 0 && read(&p1, v1)? {
             p2.set_nonblocking(false)?;
             return p2.read_to_end(v2).map(|_| ());
@@ -125,6 +95,25 @@ pub fn read2(p1: AnonPipe,
         if fds[1].revents != 0 && read(&p2, v2)? {
             p1.set_nonblocking(false)?;
             return p1.read_to_end(v1).map(|_| ());
+        }
+    }
+
+    // Read as much as we can from each pipe, ignoring EWOULDBLOCK or
+    // EAGAIN. If we hit EOF, then this will happen because the underlying
+    // reader will return Ok(0), in which case we'll see `Ok` ourselves. In
+    // this case we flip the other fd back into blocking mode and read
+    // whatever's leftover on that file descriptor.
+    fn read(fd: &FileDesc, dst: &mut Vec<u8>) -> Result<bool, io::Error> {
+        match fd.read_to_end(dst) {
+            Ok(_) => Ok(true),
+            Err(e) => {
+                if e.raw_os_error() == Some(libc::EWOULDBLOCK) ||
+                   e.raw_os_error() == Some(libc::EAGAIN) {
+                    Ok(false)
+                } else {
+                    Err(e)
+                }
+            }
         }
     }
 }

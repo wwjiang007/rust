@@ -1,13 +1,3 @@
-# Copyright 2015-2016 The Rust Project Developers. See the COPYRIGHT
-# file at the top-level directory of this distribution and at
-# http://rust-lang.org/COPYRIGHT.
-#
-# Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-# http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-# <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-# option. This file may not be copied, modified, or distributed
-# except according to those terms.
-
 from __future__ import absolute_import, division, print_function
 import argparse
 import contextlib
@@ -79,8 +69,8 @@ def _download(path, url, probably_big, verbose, exception):
     # see http://serverfault.com/questions/301128/how-to-download
     if sys.platform == 'win32':
         run(["PowerShell.exe", "/nologo", "-Command",
-             "(New-Object System.Net.WebClient)"
-             ".DownloadFile('{}', '{}')".format(url, path)],
+             "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;",
+             "(New-Object System.Net.WebClient).DownloadFile('{}', '{}')".format(url, path)],
             verbose=verbose,
             exception=exception)
     else:
@@ -88,7 +78,10 @@ def _download(path, url, probably_big, verbose, exception):
             option = "-#"
         else:
             option = "-s"
-        run(["curl", option, "--retry", "3", "-Sf", "-o", path, url],
+        run(["curl", option,
+             "-y", "30", "-Y", "10",    # timeout if speed is < 10 bytes/sec for > 30 seconds
+             "--connect-timeout", "30", # timeout if cannot connect within 30 seconds
+             "--retry", "3", "-Sf", "-o", path, url],
             verbose=verbose,
             exception=exception)
 
@@ -303,6 +296,19 @@ def default_build_triple():
     return "{}-{}".format(cputype, ostype)
 
 
+@contextlib.contextmanager
+def output(filepath):
+    tmp = filepath + '.tmp'
+    with open(tmp, 'w') as f:
+        yield f
+    try:
+        os.remove(filepath)  # PermissionError/OSError on Win32 if in use
+        os.rename(tmp, filepath)
+    except OSError:
+        shutil.copy2(tmp, filepath)
+        os.remove(tmp)
+
+
 class RustBuild(object):
     """Provide all the methods required to build Rust"""
     def __init__(self):
@@ -346,7 +352,7 @@ class RustBuild(object):
             self._download_stage0_helper(filename, "rustc")
             self.fix_executable("{}/bin/rustc".format(self.bin_root()))
             self.fix_executable("{}/bin/rustdoc".format(self.bin_root()))
-            with open(self.rustc_stamp(), 'w') as rust_stamp:
+            with output(self.rustc_stamp()) as rust_stamp:
                 rust_stamp.write(self.date)
 
             # This is required so that we don't mix incompatible MinGW
@@ -363,7 +369,7 @@ class RustBuild(object):
             filename = "cargo-{}-{}.tar.gz".format(cargo_channel, self.build)
             self._download_stage0_helper(filename, "cargo")
             self.fix_executable("{}/bin/cargo".format(self.bin_root()))
-            with open(self.cargo_stamp(), 'w') as cargo_stamp:
+            with output(self.cargo_stamp()) as cargo_stamp:
                 cargo_stamp.write(self.date)
 
     def _download_stage0_helper(self, filename, pattern):
@@ -489,7 +495,7 @@ class RustBuild(object):
         """
         return os.path.join(self.build_dir, self.build, "stage0")
 
-    def get_toml(self, key):
+    def get_toml(self, key, section=None):
         """Returns the value of the given key in config.toml, otherwise returns None
 
         >>> rb = RustBuild()
@@ -501,12 +507,29 @@ class RustBuild(object):
 
         >>> rb.get_toml("key3") is None
         True
+
+        Optionally also matches the section the key appears in
+
+        >>> rb.config_toml = '[a]\\nkey = "value1"\\n[b]\\nkey = "value2"'
+        >>> rb.get_toml('key', 'a')
+        'value1'
+        >>> rb.get_toml('key', 'b')
+        'value2'
+        >>> rb.get_toml('key', 'c') is None
+        True
         """
+
+        cur_section = None
         for line in self.config_toml.splitlines():
+            section_match = re.match(r'^\s*\[(.*)\]\s*$', line)
+            if section_match is not None:
+                cur_section = section_match.group(1)
+
             match = re.match(r'^{}\s*=(.*)$'.format(key), line)
             if match is not None:
                 value = match.group(1)
-                return self.get_string(value) or value.strip()
+                if section is None or section == cur_section:
+                    return self.get_string(value) or value.strip()
         return None
 
     def cargo(self):
@@ -561,7 +584,7 @@ class RustBuild(object):
         return ''
 
     def bootstrap_binary(self):
-        """Return the path of the boostrap binary
+        """Return the path of the bootstrap binary
 
         >>> rb = RustBuild()
         >>> rb.build_dir = "build"
@@ -589,7 +612,20 @@ class RustBuild(object):
         env["LIBRARY_PATH"] = os.path.join(self.bin_root(), "lib") + \
             (os.pathsep + env["LIBRARY_PATH"]) \
             if "LIBRARY_PATH" in env else ""
-        env["RUSTFLAGS"] = "-Cdebuginfo=2"
+        env["RUSTFLAGS"] = "-Cdebuginfo=2 "
+
+        build_section = "target.{}".format(self.build_triple())
+        target_features = []
+        if self.get_toml("crt-static", build_section) == "true":
+            target_features += ["+crt-static"]
+        elif self.get_toml("crt-static", build_section) == "false":
+            target_features += ["-crt-static"]
+        if target_features:
+            env["RUSTFLAGS"] += "-C target-feature=" + (",".join(target_features)) + " "
+        target_linker = self.get_toml("linker", build_section)
+        if target_linker is not None:
+            env["RUSTFLAGS"] += "-C linker=" + target_linker + " "
+
         env["PATH"] = os.path.join(self.bin_root(), "bin") + \
             os.pathsep + env["PATH"]
         if not os.path.isfile(self.cargo()):
@@ -635,7 +671,7 @@ class RustBuild(object):
         run(["git", "submodule", "-q", "sync", module],
             cwd=self.rust_root, verbose=self.verbose)
         run(["git", "submodule", "update",
-            "--init", "--recursive", module],
+            "--init", "--recursive", "--progress", module],
             cwd=self.rust_root, verbose=self.verbose)
         run(["git", "reset", "-q", "--hard"],
             cwd=module_path, verbose=self.verbose)
@@ -669,13 +705,12 @@ class RustBuild(object):
                 backends = self.get_toml('codegen-backends')
                 if backends is None or not 'emscripten' in backends:
                     continue
-            if module.endswith("jemalloc"):
-                if self.get_toml('use-jemalloc') == 'false':
-                    continue
-                if self.get_toml('jemalloc'):
-                    continue
             if module.endswith("lld"):
                 config = self.get_toml('lld')
+                if config is None or config == 'false':
+                    continue
+            if module.endswith("lldb") or module.endswith("clang"):
+                config = self.get_toml('lldb')
                 if config is None or config == 'false':
                     continue
             check = self.check_submodule(module, slow_submodules)
@@ -749,14 +784,14 @@ def bootstrap(help_triggered):
     if build.use_vendored_sources:
         if not os.path.exists('.cargo'):
             os.makedirs('.cargo')
-        with open('.cargo/config', 'w') as cargo_config:
+        with output('.cargo/config') as cargo_config:
             cargo_config.write("""
                 [source.crates-io]
                 replace-with = 'vendored-sources'
                 registry = 'https://example.com'
 
                 [source.vendored-sources]
-                directory = '{}/src/vendor'
+                directory = '{}/vendor'
             """.format(build.rust_root))
     else:
         if os.path.exists('.cargo'):
@@ -788,12 +823,20 @@ def bootstrap(help_triggered):
     env["BOOTSTRAP_PARENT_ID"] = str(os.getpid())
     env["BOOTSTRAP_PYTHON"] = sys.executable
     env["BUILD_DIR"] = build.build_dir
+    env["RUSTC_BOOTSTRAP"] = '1'
+    env["CARGO"] = build.cargo()
+    env["RUSTC"] = build.rustc()
     run(args, env=env, verbose=build.verbose)
 
 
 def main():
     """Entry point for the bootstrap process"""
     start_time = time()
+
+    # x.py help <cmd> ...
+    if len(sys.argv) > 1 and sys.argv[1] == 'help':
+        sys.argv = sys.argv[:1] + [sys.argv[2], '-h'] + sys.argv[3:]
+
     help_triggered = (
         '-h' in sys.argv) or ('--help' in sys.argv) or (len(sys.argv) == 1)
     try:

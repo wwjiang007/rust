@@ -1,17 +1,7 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Unwinding implementation of top of native Win64 SEH,
 //! however the unwind handler data (aka LSDA) uses GCC-compatible encoding.
 
-#![allow(bad_style)]
+#![allow(nonstandard_style)]
 #![allow(private_no_mangle_fns)]
 
 use alloc::boxed::Box;
@@ -37,11 +27,11 @@ const RUST_PANIC: c::DWORD = ETYPE | (1 << 24) | MAGIC;
 
 #[repr(C)]
 struct PanicData {
-    data: Box<Any + Send>,
+    data: Box<dyn Any + Send>,
 }
 
-pub unsafe fn panic(data: Box<Any + Send>) -> u32 {
-    let panic_ctx = Box::new(PanicData { data: data });
+pub unsafe fn panic(data: Box<dyn Any + Send>) -> u32 {
+    let panic_ctx = Box::new(PanicData { data });
     let params = [Box::into_raw(panic_ctx) as c::ULONG_PTR];
     c::RaiseException(RUST_PANIC,
                       c::EXCEPTION_NONCONTINUABLE,
@@ -54,7 +44,7 @@ pub fn payload() -> *mut u8 {
     ptr::null_mut()
 }
 
-pub unsafe fn cleanup(ptr: *mut u8) -> Box<Any + Send> {
+pub unsafe fn cleanup(ptr: *mut u8) -> Box<dyn Any + Send> {
     let panic_ctx = Box::from_raw(ptr as *mut PanicData);
     return panic_ctx.data;
 }

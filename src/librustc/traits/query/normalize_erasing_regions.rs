@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Methods for normalizing when you don't care about regions (and
 //! aren't doing type inference). If either of those things don't
 //! apply to you, use `infcx.normalize(...)`.
@@ -57,7 +47,7 @@ impl<'cx, 'tcx> TyCtxt<'cx, 'tcx, 'tcx> {
     ///
     /// NB. Currently, higher-ranked type bounds inhibit
     /// normalization. Therefore, each time we erase them in
-    /// translation, we need to normalize the contents.
+    /// codegen, we need to normalize the contents.
     pub fn normalize_erasing_late_bound_regions<T>(
         self,
         param_env: ty::ParamEnv<'tcx>,

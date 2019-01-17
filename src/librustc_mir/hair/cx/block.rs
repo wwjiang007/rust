@@ -1,18 +1,9 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use hair::*;
 use hair::cx::Cx;
 use hair::cx::to_ref::ToRef;
-use rustc::middle::region::{self, BlockRemainder};
+use rustc::middle::region;
 use rustc::hir;
+use rustc::ty;
 
 use rustc_data_structures::indexed_vec::Idx;
 
@@ -20,14 +11,17 @@ impl<'tcx> Mirror<'tcx> for &'tcx hir::Block {
     type Output = Block<'tcx>;
 
     fn make_mirror<'a, 'gcx>(self, cx: &mut Cx<'a, 'gcx, 'tcx>) -> Block<'tcx> {
-        // We have to eagerly translate the "spine" of the statements
+        // We have to eagerly lower the "spine" of the statements
         // in order to get the lexical scoping correctly.
         let stmts = mirror_stmts(cx, self.hir_id.local_id, &*self.stmts);
         let opt_destruction_scope =
             cx.region_scope_tree.opt_destruction_scope(self.hir_id.local_id);
         Block {
             targeted_by_break: self.targeted_by_break,
-            region_scope: region::Scope::Node(self.hir_id.local_id),
+            region_scope: region::Scope {
+                id: self.hir_id.local_id,
+                data: region::ScopeData::Node
+            },
             opt_destruction_scope,
             span: self.span,
             stmts,
@@ -52,42 +46,67 @@ fn mirror_stmts<'a, 'gcx, 'tcx>(cx: &mut Cx<'a, 'gcx, 'tcx>,
                                 -> Vec<StmtRef<'tcx>> {
     let mut result = vec![];
     for (index, stmt) in stmts.iter().enumerate() {
-        let hir_id = cx.tcx.hir.node_to_hir_id(stmt.node.id());
+        let hir_id = cx.tcx.hir().node_to_hir_id(stmt.node.id());
         let opt_dxn_ext = cx.region_scope_tree.opt_destruction_scope(hir_id.local_id);
+        let stmt_span = StatementSpan(cx.tcx.hir().span(stmt.node.id()));
         match stmt.node {
-            hir::StmtExpr(ref expr, _) |
-            hir::StmtSemi(ref expr, _) => {
+            hir::StmtKind::Expr(ref expr, _) |
+            hir::StmtKind::Semi(ref expr, _) => {
                 result.push(StmtRef::Mirror(Box::new(Stmt {
                     kind: StmtKind::Expr {
-                        scope: region::Scope::Node(hir_id.local_id),
+                        scope: region::Scope {
+                            id: hir_id.local_id,
+                            data: region::ScopeData::Node
+                        },
                         expr: expr.to_ref(),
                     },
                     opt_destruction_scope: opt_dxn_ext,
+                    span: stmt_span,
                 })))
             }
-            hir::StmtDecl(ref decl, _) => {
+            hir::StmtKind::Decl(ref decl, _) => {
                 match decl.node {
-                    hir::DeclItem(..) => {
+                    hir::DeclKind::Item(..) => {
                         // ignore for purposes of the MIR
                     }
-                    hir::DeclLocal(ref local) => {
-                        let remainder_scope = region::Scope::Remainder(BlockRemainder {
-                            block: block_id,
-                            first_statement_index: region::FirstStatementIndex::new(index),
-                        });
+                    hir::DeclKind::Local(ref local) => {
+                        let remainder_scope = region::Scope {
+                            id: block_id,
+                            data: region::ScopeData::Remainder(
+                                region::FirstStatementIndex::new(index)),
+                        };
 
-                        let ty = local.ty.clone().map(|ty| ty.hir_id);
-                        let pattern = cx.pattern_from_hir(&local.pat);
+                        let mut pattern = cx.pattern_from_hir(&local.pat);
+
+                        if let Some(ty) = &local.ty {
+                            if let Some(&user_ty) = cx.tables.user_provided_types().get(ty.hir_id) {
+                                debug!("mirror_stmts: user_ty={:?}", user_ty);
+                                pattern = Pattern {
+                                    ty: pattern.ty,
+                                    span: pattern.span,
+                                    kind: Box::new(PatternKind::AscribeUserType {
+                                        user_ty: PatternTypeProjection::from_user_type(user_ty),
+                                        user_ty_span: ty.span,
+                                        subpattern: pattern,
+                                        variance: ty::Variance::Covariant,
+                                    })
+                                };
+                            }
+                        }
+
                         result.push(StmtRef::Mirror(Box::new(Stmt {
                             kind: StmtKind::Let {
                                 remainder_scope: remainder_scope,
-                                init_scope: region::Scope::Node(hir_id.local_id),
+                                init_scope: region::Scope {
+                                    id: hir_id.local_id,
+                                    data: region::ScopeData::Node
+                                },
                                 pattern,
-                                ty,
                                 initializer: local.init.to_ref(),
                                 lint_level: cx.lint_level_of(local.id),
                             },
                             opt_destruction_scope: opt_dxn_ext,
+                            span: stmt_span,
                         })));
                     }
                 }

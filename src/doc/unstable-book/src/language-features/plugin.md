@@ -137,8 +137,6 @@ of extensions.  See `Registry::register_syntax_extension` and the
 
 ## Tips and tricks
 
-Some of the [macro debugging tips](../book/first-edition/macros.html#debugging-macro-code) are applicable.
-
 You can use `syntax::parse` to turn token trees into
 higher-level syntax elements like expressions:
 
@@ -208,7 +206,7 @@ impl LintPass for Pass {
 
 impl EarlyLintPass for Pass {
     fn check_item(&mut self, cx: &EarlyContext, it: &ast::Item) {
-        if it.ident.name.as_str() == "lintme" {
+        if it.ident.as_str() == "lintme" {
             cx.span_lint(TEST_LINT, it.span, "item is named 'lintme'");
         }
     }

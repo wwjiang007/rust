@@ -1,20 +1,11 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! As part of generating the regions, if you enable `-Zdump-mir=nll`,
 //! we will generate an annotated copy of the MIR that includes the
 //! state of region inference. This code handles emitting the region
 //! context internal state.
 
+use rustc::infer::NLLRegionVariableOrigin;
 use std::io::{self, Write};
-use super::{Constraint, RegionInferenceContext};
+use super::{OutlivesConstraint, RegionInferenceContext};
 
 // Room for "'_#NNNNr" before things get misaligned.
 // Easy enough to fix if this ever doesn't seem like
@@ -27,17 +18,20 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         writeln!(out, "| Free Region Mapping")?;
 
         for region in self.regions() {
-            if self.definitions[region].is_universal {
-                let classification = self.universal_regions.region_classification(region).unwrap();
-                let outlived_by = self.universal_regions.regions_outlived_by(region);
+            if let NLLRegionVariableOrigin::FreeRegion = self.definitions[region].origin {
+                let classification = self
+                    .universal_regions
+                    .region_classification(region)
+                    .unwrap();
+                let outlived_by = self.universal_region_relations.regions_outlived_by(region);
                 writeln!(
                     out,
-                    "| {r:rw$} | {c:cw$} | {ob}",
-                    r = format!("{:?}", region),
+                    "| {r:rw$?} | {c:cw$?} | {ob:?}",
+                    r = region,
                     rw = REGION_WIDTH,
-                    c = format!("{:?}", classification),
+                    c = classification,
                     cw = 8, // "External" at most
-                    ob = format!("{:?}", outlived_by)
+                    ob = outlived_by
                 )?;
             }
         }
@@ -47,9 +41,10 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         for region in self.regions() {
             writeln!(
                 out,
-                "| {r:rw$} | {v}",
-                r = format!("{:?}", region),
+                "| {r:rw$?} | {ui:4?} | {v}",
+                r = region,
                 rw = REGION_WIDTH,
+                ui = self.region_universe(region),
                 v = self.region_value_str(region),
             )?;
         }
@@ -79,19 +74,18 @@ impl<'tcx> RegionInferenceContext<'tcx> {
         let mut constraints: Vec<_> = self.constraints.iter().collect();
         constraints.sort();
         for constraint in &constraints {
-            let Constraint {
+            let OutlivesConstraint {
                 sup,
                 sub,
-                point,
-                span,
-                next: _,
+                locations,
+                category,
             } = constraint;
             with_msg(&format!(
-                "{:?}: {:?} @ {:?} due to {:?}",
+                "{:?}: {:?} due to {:?} at {:?}",
                 sup,
                 sub,
-                point,
-                span
+                category,
+                locations,
             ))?;
         }
 

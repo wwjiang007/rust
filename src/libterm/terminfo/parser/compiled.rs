@@ -1,13 +1,3 @@
-// Copyright 2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(non_upper_case_globals, missing_docs)]
 
 //! ncurses-compatible compiled terminfo format parsing (term(5))
@@ -164,7 +154,7 @@ pub static stringnames: &'static[&'static str] = &[ "cbt", "_", "cr", "csr", "tb
     "OTG3", "OTG1", "OTG4", "OTGR", "OTGL", "OTGU", "OTGD", "OTGH", "OTGV", "OTGC", "meml", "memu",
     "box1"];
 
-fn read_le_u16(r: &mut io::Read) -> io::Result<u16> {
+fn read_le_u16(r: &mut dyn io::Read) -> io::Result<u16> {
     let mut b = [0; 2];
     let mut amt = 0;
     while amt < b.len() {
@@ -176,7 +166,7 @@ fn read_le_u16(r: &mut io::Read) -> io::Result<u16> {
     Ok((b[0] as u16) | ((b[1] as u16) << 8))
 }
 
-fn read_byte(r: &mut io::Read) -> io::Result<u8> {
+fn read_byte(r: &mut dyn io::Read) -> io::Result<u8> {
     match r.bytes().next() {
         Some(s) => s,
         None => Err(io::Error::new(io::ErrorKind::Other, "end of file")),
@@ -185,11 +175,11 @@ fn read_byte(r: &mut io::Read) -> io::Result<u8> {
 
 /// Parse a compiled terminfo entry, using long capability names if `longnames`
 /// is true
-pub fn parse(file: &mut io::Read, longnames: bool) -> Result<TermInfo, String> {
+pub fn parse(file: &mut dyn io::Read, longnames: bool) -> Result<TermInfo, String> {
     macro_rules! t( ($e:expr) => (
         match $e {
             Ok(e) => e,
-            Err(e) => return Err(format!("{}", e))
+            Err(e) => return Err(e.to_string())
         }
     ) );
 

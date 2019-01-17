@@ -1,13 +1,3 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Spans are encoded using 1-bit tag and 2 different encoding formats (one for each tag value).
 // One format is used for keeping span data inline,
 // another contains index into an out-of-line span interner.
@@ -31,11 +21,13 @@ pub struct Span(u32);
 
 impl Copy for Span {}
 impl Clone for Span {
+    #[inline]
     fn clone(&self) -> Span {
         *self
     }
 }
 impl PartialEq for Span {
+    #[inline]
     fn eq(&self, other: &Span) -> bool {
         let a = self.0;
         let b = other.0;
@@ -44,6 +36,7 @@ impl PartialEq for Span {
 }
 impl Eq for Span {}
 impl Hash for Span {
+    #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
         let a = self.0;
         a.hash(state)
@@ -97,7 +90,7 @@ const INTERNED_INDEX_OFFSET: u32 = 1;
 
 #[inline]
 fn encode(sd: &SpanData) -> Span {
-    let (base, len, ctxt) = (sd.lo.0, sd.hi.0 - sd.lo.0, sd.ctxt.0);
+    let (base, len, ctxt) = (sd.lo.0, sd.hi.0 - sd.lo.0, sd.ctxt.as_u32());
 
     let val = if (base >> INLINE_SIZES[BASE_INDEX]) == 0 &&
                  (len >> INLINE_SIZES[LEN_INDEX]) == 0 &&
@@ -129,7 +122,7 @@ fn decode(span: Span) -> SpanData {
         let index = extract(INTERNED_INDEX_OFFSET, INTERNED_INDEX_SIZE);
         return with_span_interner(|interner| *interner.get(index));
     };
-    SpanData { lo: BytePos(base), hi: BytePos(base + len), ctxt: SyntaxContext(ctxt) }
+    SpanData { lo: BytePos(base), hi: BytePos(base + len), ctxt: SyntaxContext::from_u32(ctxt) }
 }
 
 #[derive(Default)]

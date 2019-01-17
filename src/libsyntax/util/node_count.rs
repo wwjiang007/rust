@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // Simply gives a rought count of the number of nodes in an AST.
 
 use visit::*;
@@ -95,9 +85,9 @@ impl<'ast> Visitor<'ast> for NodeCounter {
         self.count += 1;
         walk_trait_ref(self, t)
     }
-    fn visit_ty_param_bound(&mut self, bounds: &TyParamBound) {
+    fn visit_param_bound(&mut self, bounds: &GenericBound) {
         self.count += 1;
-        walk_ty_param_bound(self, bounds)
+        walk_param_bound(self, bounds)
     }
     fn visit_poly_trait_ref(&mut self, t: &PolyTraitRef, m: &TraitBoundModifier) {
         self.count += 1;
@@ -137,9 +127,9 @@ impl<'ast> Visitor<'ast> for NodeCounter {
         self.count += 1;
         walk_use_tree(self, use_tree, id)
     }
-    fn visit_path_parameters(&mut self, path_span: Span, path_parameters: &PathParameters) {
+    fn visit_generic_args(&mut self, path_span: Span, generic_args: &GenericArgs) {
         self.count += 1;
-        walk_path_parameters(self, path_span, path_parameters)
+        walk_generic_args(self, path_span, generic_args)
     }
     fn visit_assoc_type_binding(&mut self, type_binding: &TypeBinding) {
         self.count += 1;

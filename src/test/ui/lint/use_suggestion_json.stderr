@@ -73,10 +73,10 @@ mod foo {
   "spans": [
     {
       "file_name": "$DIR/use_suggestion_json.rs",
-      "byte_start": 907,
-      "byte_end": 911,
-      "line_start": 21,
-      "line_end": 21,
+      "byte_start": 440,
+      "byte_end": 444,
+      "line_start": 11,
+      "line_end": 11,
       "column_start": 12,
       "column_end": 16,
       "is_primary": true,
@@ -89,6 +89,7 @@ mod foo {
       ],
       "label": "not found in this scope",
       "suggested_replacement": null,
+      "suggestion_applicability": null,
       "expansion": null
     }
   ],
@@ -100,10 +101,10 @@ mod foo {
       "spans": [
         {
           "file_name": "$DIR/use_suggestion_json.rs",
-          "byte_start": 884,
-          "byte_end": 884,
-          "line_start": 20,
-          "line_end": 20,
+          "byte_start": 417,
+          "byte_end": 417,
+          "line_start": 10,
+          "line_end": 10,
           "column_start": 1,
           "column_end": 1,
           "is_primary": true,
@@ -118,14 +119,15 @@ mod foo {
           "suggested_replacement": "use std::collections::binary_heap::Iter;
 
 ",
+          "suggestion_applicability": "Unspecified",
           "expansion": null
         },
         {
           "file_name": "$DIR/use_suggestion_json.rs",
-          "byte_start": 884,
-          "byte_end": 884,
-          "line_start": 20,
-          "line_end": 20,
+          "byte_start": 417,
+          "byte_end": 417,
+          "line_start": 10,
+          "line_end": 10,
           "column_start": 1,
           "column_end": 1,
           "is_primary": true,
@@ -140,14 +142,15 @@ mod foo {
           "suggested_replacement": "use std::collections::btree_map::Iter;
 
 ",
+          "suggestion_applicability": "Unspecified",
           "expansion": null
         },
         {
           "file_name": "$DIR/use_suggestion_json.rs",
-          "byte_start": 884,
-          "byte_end": 884,
-          "line_start": 20,
-          "line_end": 20,
+          "byte_start": 417,
+          "byte_end": 417,
+          "line_start": 10,
+          "line_end": 10,
           "column_start": 1,
           "column_end": 1,
           "is_primary": true,
@@ -162,14 +165,15 @@ mod foo {
           "suggested_replacement": "use std::collections::btree_set::Iter;
 
 ",
+          "suggestion_applicability": "Unspecified",
           "expansion": null
         },
         {
           "file_name": "$DIR/use_suggestion_json.rs",
-          "byte_start": 884,
-          "byte_end": 884,
-          "line_start": 20,
-          "line_end": 20,
+          "byte_start": 417,
+          "byte_end": 417,
+          "line_start": 10,
+          "line_end": 10,
           "column_start": 1,
           "column_end": 1,
           "is_primary": true,
@@ -184,14 +188,15 @@ mod foo {
           "suggested_replacement": "use std::collections::hash_map::Iter;
 
 ",
+          "suggestion_applicability": "Unspecified",
           "expansion": null
         },
         {
           "file_name": "$DIR/use_suggestion_json.rs",
-          "byte_start": 884,
-          "byte_end": 884,
-          "line_start": 20,
-          "line_end": 20,
+          "byte_start": 417,
+          "byte_end": 417,
+          "line_start": 10,
+          "line_end": 10,
           "column_start": 1,
           "column_end": 1,
           "is_primary": true,
@@ -206,14 +211,15 @@ mod foo {
           "suggested_replacement": "use std::collections::hash_set::Iter;
 
 ",
+          "suggestion_applicability": "Unspecified",
           "expansion": null
         },
         {
           "file_name": "$DIR/use_suggestion_json.rs",
-          "byte_start": 884,
-          "byte_end": 884,
-          "line_start": 20,
-          "line_end": 20,
+          "byte_start": 417,
+          "byte_end": 417,
+          "line_start": 10,
+          "line_end": 10,
           "column_start": 1,
           "column_end": 1,
           "is_primary": true,
@@ -228,14 +234,15 @@ mod foo {
           "suggested_replacement": "use std::collections::linked_list::Iter;
 
 ",
+          "suggestion_applicability": "Unspecified",
           "expansion": null
         },
         {
           "file_name": "$DIR/use_suggestion_json.rs",
-          "byte_start": 884,
-          "byte_end": 884,
-          "line_start": 20,
-          "line_end": 20,
+          "byte_start": 417,
+          "byte_end": 417,
+          "line_start": 10,
+          "line_end": 10,
           "column_start": 1,
           "column_end": 1,
           "is_primary": true,
@@ -250,14 +257,15 @@ mod foo {
           "suggested_replacement": "use std::collections::vec_deque::Iter;
 
 ",
+          "suggestion_applicability": "Unspecified",
           "expansion": null
         },
         {
           "file_name": "$DIR/use_suggestion_json.rs",
-          "byte_start": 884,
-          "byte_end": 884,
-          "line_start": 20,
-          "line_end": 20,
+          "byte_start": 417,
+          "byte_end": 417,
+          "line_start": 10,
+          "line_end": 10,
           "column_start": 1,
           "column_end": 1,
           "is_primary": true,
@@ -272,14 +280,15 @@ mod foo {
           "suggested_replacement": "use std::option::Iter;
 
 ",
+          "suggestion_applicability": "Unspecified",
           "expansion": null
         },
         {
           "file_name": "$DIR/use_suggestion_json.rs",
-          "byte_start": 884,
-          "byte_end": 884,
-          "line_start": 20,
-          "line_end": 20,
+          "byte_start": 417,
+          "byte_end": 417,
+          "line_start": 10,
+          "line_end": 10,
           "column_start": 1,
           "column_end": 1,
           "is_primary": true,
@@ -294,14 +303,15 @@ mod foo {
           "suggested_replacement": "use std::path::Iter;
 
 ",
+          "suggestion_applicability": "Unspecified",
           "expansion": null
         },
         {
           "file_name": "$DIR/use_suggestion_json.rs",
-          "byte_start": 884,
-          "byte_end": 884,
-          "line_start": 20,
-          "line_end": 20,
+          "byte_start": 417,
+          "byte_end": 417,
+          "line_start": 10,
+          "line_end": 10,
           "column_start": 1,
           "column_end": 1,
           "is_primary": true,
@@ -316,14 +326,15 @@ mod foo {
           "suggested_replacement": "use std::result::Iter;
 
 ",
+          "suggestion_applicability": "Unspecified",
           "expansion": null
         },
         {
           "file_name": "$DIR/use_suggestion_json.rs",
-          "byte_start": 884,
-          "byte_end": 884,
-          "line_start": 20,
-          "line_end": 20,
+          "byte_start": 417,
+          "byte_end": 417,
+          "line_start": 10,
+          "line_end": 10,
           "column_start": 1,
           "column_end": 1,
           "is_primary": true,
@@ -338,14 +349,15 @@ mod foo {
           "suggested_replacement": "use std::slice::Iter;
 
 ",
+          "suggestion_applicability": "Unspecified",
           "expansion": null
         },
         {
           "file_name": "$DIR/use_suggestion_json.rs",
-          "byte_start": 884,
-          "byte_end": 884,
-          "line_start": 20,
-          "line_end": 20,
+          "byte_start": 417,
+          "byte_end": 417,
+          "line_start": 10,
+          "line_end": 10,
           "column_start": 1,
           "column_end": 1,
           "is_primary": true,
@@ -360,6 +372,7 @@ mod foo {
           "suggested_replacement": "use std::sync::mpsc::Iter;
 
 ",
+          "suggestion_applicability": "Unspecified",
           "expansion": null
         }
       ],
@@ -368,7 +381,7 @@ mod foo {
     }
   ],
   "rendered": "error[E0412]: cannot find type `Iter` in this scope
-  --> $DIR/use_suggestion_json.rs:21:12
+  --> $DIR/use_suggestion_json.rs:11:12
    |
 LL |     let x: Iter;
    |            ^^^^ not found in this scope

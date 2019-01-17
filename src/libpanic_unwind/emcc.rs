@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Unwinding for emscripten
 //!
 //! Whereas Rust's usual unwinding implementation for Unix platforms
@@ -29,20 +19,20 @@ pub fn payload() -> *mut u8 {
     ptr::null_mut()
 }
 
-pub unsafe fn cleanup(ptr: *mut u8) -> Box<Any + Send> {
+pub unsafe fn cleanup(ptr: *mut u8) -> Box<dyn Any + Send> {
     assert!(!ptr.is_null());
     let ex = ptr::read(ptr as *mut _);
     __cxa_free_exception(ptr as *mut _);
     ex
 }
 
-pub unsafe fn panic(data: Box<Any + Send>) -> u32 {
+pub unsafe fn panic(data: Box<dyn Any + Send>) -> u32 {
     let sz = mem::size_of_val(&data);
     let exception = __cxa_allocate_exception(sz);
     if exception == ptr::null_mut() {
         return uw::_URC_FATAL_PHASE1_ERROR as u32;
     }
-    let exception = exception as *mut Box<Any + Send>;
+    let exception = exception as *mut Box<dyn Any + Send>;
     ptr::write(exception, data);
     __cxa_throw(exception as *mut _, ptr::null_mut(), ptr::null_mut());
 

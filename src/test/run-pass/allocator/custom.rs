@@ -1,21 +1,13 @@
-// Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
+// run-pass
 
 // aux-build:helper.rs
 // no-prefer-dynamic
 
-#![feature(global_allocator, heap_api, allocator_api)]
+#![feature(allocator_api)]
 
 extern crate helper;
 
-use std::alloc::{self, Global, Alloc, System, Layout, Opaque};
+use std::alloc::{self, Global, Alloc, System, Layout};
 use std::sync::atomic::{AtomicUsize, Ordering, ATOMIC_USIZE_INIT};
 
 static HITS: AtomicUsize = ATOMIC_USIZE_INIT;
@@ -23,12 +15,12 @@ static HITS: AtomicUsize = ATOMIC_USIZE_INIT;
 struct A;
 
 unsafe impl alloc::GlobalAlloc for A {
-    unsafe fn alloc(&self, layout: Layout) -> *mut Opaque {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         HITS.fetch_add(1, Ordering::SeqCst);
         System.alloc(layout)
     }
 
-    unsafe fn dealloc(&self, ptr: *mut Opaque, layout: Layout) {
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         HITS.fetch_add(1, Ordering::SeqCst);
         System.dealloc(ptr, layout)
     }

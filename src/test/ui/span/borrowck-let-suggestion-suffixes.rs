@@ -1,12 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
 #![feature(rustc_attrs)]
 fn id<T>(x: T) -> T { x }
 
@@ -40,7 +31,7 @@ fn f() {
         //~| NOTE temporary value does not live long enough
         //~| NOTE temporary value dropped here while still borrowed
         //~| NOTE consider using a `let` binding to increase its lifetime
-
+        v4.use_ref();
     }                       // (statement 7)
     //~^ NOTE temporary value needs to live until here
 
@@ -53,6 +44,8 @@ fn f() {
     //~| NOTE consider using a `let` binding to increase its lifetime
 
     v1.push(&old[0]);
+
+    (v1, v2, v3, /* v4 is above. */ v5).use_ref();
 }
 //~^ NOTE `young[..]` dropped here while still borrowed
 //~| NOTE temporary value needs to live until here
@@ -61,3 +54,6 @@ fn f() {
 fn main() { #![rustc_error] // rust-lang/rust#49855
     f();
 }
+
+trait Fake { fn use_mut(&mut self) { } fn use_ref(&self) { }  }
+impl<T> Fake for T { }

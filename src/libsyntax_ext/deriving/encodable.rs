@@ -1,13 +1,3 @@
-// Copyright 2012-2013 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! The compiler code necessary to implement the `#[derive(Encodable)]`
 //! (and `Decodable`, in decodable.rs) extension.  The idea here is that
 //! type-defining items may be tagged with `#[derive(Encodable, Decodable)]`.
@@ -108,7 +98,7 @@ pub fn expand_deriving_rustc_encodable(cx: &mut ExtCtxt,
                                        span: Span,
                                        mitem: &MetaItem,
                                        item: &Annotatable,
-                                       push: &mut FnMut(Annotatable)) {
+                                       push: &mut dyn FnMut(Annotatable)) {
     expand_deriving_encodable_imp(cx, span, mitem, item, push, "rustc_serialize")
 }
 
@@ -116,7 +106,7 @@ pub fn expand_deriving_encodable(cx: &mut ExtCtxt,
                                  span: Span,
                                  mitem: &MetaItem,
                                  item: &Annotatable,
-                                 push: &mut FnMut(Annotatable)) {
+                                 push: &mut dyn FnMut(Annotatable)) {
     warn_if_deprecated(cx, span, "Encodable");
     expand_deriving_encodable_imp(cx, span, mitem, item, push, "serialize")
 }
@@ -125,7 +115,7 @@ fn expand_deriving_encodable_imp(cx: &mut ExtCtxt,
                                  span: Span,
                                  mitem: &MetaItem,
                                  item: &Annotatable,
-                                 push: &mut FnMut(Annotatable),
+                                 push: &mut dyn FnMut(Annotatable),
                                  krate: &'static str) {
     let typaram = &*deriving::hygienic_type_parameter(item, "__S");
 
@@ -190,7 +180,7 @@ fn encodable_substructure(cx: &mut ExtCtxt,
         Struct(_, ref fields) => {
             let emit_struct_field = cx.ident_of("emit_struct_field");
             let mut stmts = Vec::new();
-            for (i, &FieldInfo { name, ref self_, span, attrs, .. }) in fields.iter().enumerate() {
+            for (i, &FieldInfo { name, ref self_, span, .. }) in fields.iter().enumerate() {
                 let name = match name {
                     Some(id) => id.name,
                     None => Symbol::intern(&format!("_field{}", i)),
@@ -213,17 +203,7 @@ fn encodable_substructure(cx: &mut ExtCtxt,
                     cx.expr(span, ExprKind::Ret(Some(call)))
                 };
 
-                // This exists for https://github.com/rust-lang/rust/pull/47540
-                //
-                // If we decide to stabilize that flag this can be removed
-                let expr = if attrs.iter().any(|a| a.check_name("rustc_serialize_exclude_null")) {
-                    let is_some = cx.ident_of("is_some");
-                    let condition = cx.expr_method_call(span, self_.clone(), is_some, vec![]);
-                    cx.expr_if(span, condition, call, None)
-                } else {
-                    call
-                };
-                let stmt = cx.stmt_expr(expr);
+                let stmt = cx.stmt_expr(call);
                 stmts.push(stmt);
             }
 

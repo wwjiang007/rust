@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Filesystem manipulation operations.
 //!
 //! This module contains basic methods to manipulate the contents of the local
@@ -195,9 +185,10 @@ pub struct OpenOptions(fs_imp::OpenOptions);
 /// This module only currently provides one bit of information, [`readonly`],
 /// which is exposed on all currently supported platforms. Unix-specific
 /// functionality, such as mode bits, is available through the
-/// `os::unix::PermissionsExt` trait.
+/// [`PermissionsExt`] trait.
 ///
 /// [`readonly`]: struct.Permissions.html#method.readonly
+/// [`PermissionsExt`]: ../os/unix/fs/trait.PermissionsExt.html
 #[derive(Clone, PartialEq, Eq, Debug)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Permissions(fs_imp::FilePermissions);
@@ -256,7 +247,7 @@ fn initial_buffer_size(file: &File) -> usize {
 /// use std::fs;
 /// use std::net::SocketAddr;
 ///
-/// fn main() -> Result<(), Box<std::error::Error + 'static>> {
+/// fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
 ///     let foo: SocketAddr = String::from_utf8_lossy(&fs::read("address.txt")?).parse()?;
 ///     Ok(())
 /// }
@@ -295,12 +286,10 @@ pub fn read<P: AsRef<Path>>(path: P) -> io::Result<Vec<u8>> {
 /// # Examples
 ///
 /// ```no_run
-/// #![feature(fs_read_write)]
-///
 /// use std::fs;
 /// use std::net::SocketAddr;
 ///
-/// fn main() -> Result<(), Box<std::error::Error + 'static>> {
+/// fn main() -> Result<(), Box<dyn std::error::Error + 'static>> {
 ///     let foo: SocketAddr = fs::read_to_string("address.txt")?.parse()?;
 ///     Ok(())
 /// }
@@ -331,6 +320,7 @@ pub fn read_to_string<P: AsRef<Path>>(path: P) -> io::Result<String> {
 ///
 /// fn main() -> std::io::Result<()> {
 ///     fs::write("foo.txt", b"Lorem ipsum")?;
+///     fs::write("bar.txt", "dolor sit")?;
 ///     Ok(())
 /// }
 /// ```
@@ -357,9 +347,9 @@ impl File {
     /// use std::fs::File;
     ///
     /// fn main() -> std::io::Result<()> {
-    /// let mut f = File::open("foo.txt")?;
-    /// # Ok(())
-    /// # }
+    ///     let mut f = File::open("foo.txt")?;
+    ///     Ok(())
+    /// }
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<File> {
@@ -727,7 +717,7 @@ impl OpenOptions {
     /// If a file is opened with both read and append access, beware that after
     /// opening, and after every write, the position for reading may be set at the
     /// end of the file. So, before writing, save the current position (using
-    /// [`seek`]`(`[`SeekFrom`]`::`[`Current`]`(0))`, and restore it before the next read.
+    /// [`seek`]`(`[`SeekFrom`]`::`[`Current`]`(0))`), and restore it before the next read.
     ///
     /// ## Note
     ///
@@ -878,7 +868,7 @@ impl OpenOptions {
 
     fn _open(&self, path: &Path) -> io::Result<File> {
         let inner = fs_imp::File::open(path, &self.0)?;
-        Ok(File { inner: inner })
+        Ok(File { inner })
     }
 }
 
@@ -1407,7 +1397,7 @@ impl AsInner<fs_imp::DirEntry> for DirEntry {
 /// Removes a file from the filesystem.
 ///
 /// Note that there is no
-/// guarantee that the file is immediately deleted (e.g. depending on
+/// guarantee that the file is immediately deleted (e.g., depending on
 /// platform, other open file descriptors may prevent immediate removal).
 ///
 /// # Platform-specific behavior
@@ -1567,6 +1557,12 @@ pub fn rename<P: AsRef<Path>, Q: AsRef<Path>>(from: P, to: Q) -> io::Result<()> 
 /// On success, the total number of bytes copied is returned and it is equal to
 /// the length of the `to` file as reported by `metadata`.
 ///
+/// If you’re wanting to copy the contents of one file to another and you’re
+/// working with [`File`]s, see the [`io::copy`] function.
+///
+/// [`io::copy`]: ../io/fn.copy.html
+/// [`File`]: ./struct.File.html
+///
 /// # Platform-specific behavior
 ///
 /// This function currently corresponds to the `open` function in Unix
@@ -1699,8 +1695,8 @@ pub fn read_link<P: AsRef<Path>>(path: P) -> io::Result<PathBuf> {
     fs_imp::readlink(path.as_ref())
 }
 
-/// Returns the canonical form of a path with all intermediate components
-/// normalized and symbolic links resolved.
+/// Returns the canonical, absolute form of a path with all intermediate
+/// components normalized and symbolic links resolved.
 ///
 /// # Platform-specific behavior
 ///
@@ -1708,7 +1704,14 @@ pub fn read_link<P: AsRef<Path>>(path: P) -> io::Result<PathBuf> {
 /// and the `CreateFile` and `GetFinalPathNameByHandle` functions on Windows.
 /// Note that, this [may change in the future][changes].
 ///
+/// On Windows, this converts the path to use [extended length path][path]
+/// syntax, which allows your program to use longer path names, but means you
+/// can only join backslash-delimited paths to it, and it may be incompatible
+/// with other applications (if passed to the application on the command-line,
+/// or written to a file another application may read).
+///
 /// [changes]: ../io/index.html#platform-specific-behavior
+/// [path]: https://msdn.microsoft.com/en-us/library/windows/desktop/aa365247(v=vs.85).aspx#maxpath
 ///
 /// # Errors
 ///
@@ -1716,7 +1719,7 @@ pub fn read_link<P: AsRef<Path>>(path: P) -> io::Result<PathBuf> {
 /// limited to just these cases:
 ///
 /// * `path` does not exist.
-/// * A component in path is not a directory.
+/// * A non-final component in path is not a directory.
 ///
 /// # Examples
 ///
@@ -1743,12 +1746,19 @@ pub fn canonicalize<P: AsRef<Path>>(path: P) -> io::Result<PathBuf> {
 ///
 /// [changes]: ../io/index.html#platform-specific-behavior
 ///
+/// **NOTE**: If a parent of the given path doesn't exist, this function will
+/// return an error. To create a directory and all its missing parents at the
+/// same time, use the [`create_dir_all`] function.
+///
 /// # Errors
 ///
 /// This function will return an error in the following situations, but is not
 /// limited to just these cases:
 ///
 /// * User lacks permissions to create directory at `path`.
+/// * A parent of the given path doesn't exist. (To create a directory and all
+///   its missing parents at the same time, use the [`create_dir_all`]
+///   function.)
 /// * `path` already exists.
 ///
 /// # Examples
@@ -2046,7 +2056,7 @@ impl DirBuilder {
             Err(e) => return Err(e),
         }
         match path.parent() {
-            Some(p) => try!(self.create_dir_all(p)),
+            Some(p) => self.create_dir_all(p)?,
             None => return Err(io::Error::new(io::ErrorKind::Other, "failed to create whole tree")),
         }
         match self.inner.mkdir(path) {
@@ -2070,7 +2080,7 @@ mod tests {
     use fs::{self, File, OpenOptions};
     use io::{ErrorKind, SeekFrom};
     use path::Path;
-    use rand::{StdRng, Rng};
+    use rand::{rngs::StdRng, FromEntropy, RngCore};
     use str;
     use sys_common::io::test::{TempDir, tmpdir};
     use thread;
@@ -3104,7 +3114,7 @@ mod tests {
     #[test]
     fn binary_file() {
         let mut bytes = [0; 1024];
-        StdRng::new().unwrap().fill_bytes(&mut bytes);
+        StdRng::from_entropy().fill_bytes(&mut bytes);
 
         let tmpdir = tmpdir();
 
@@ -3117,7 +3127,7 @@ mod tests {
     #[test]
     fn write_then_read() {
         let mut bytes = [0; 1024];
-        StdRng::new().unwrap().fill_bytes(&mut bytes);
+        StdRng::from_entropy().fill_bytes(&mut bytes);
 
         let tmpdir = tmpdir();
 

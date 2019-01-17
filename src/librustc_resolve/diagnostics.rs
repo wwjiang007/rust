@@ -1,13 +1,3 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(non_snake_case)]
 
 // Error messages for EXXXX errors.  Each message should start and end with a
@@ -202,7 +192,7 @@ use foo::core;  // error: an extern crate named `core` has already
 fn main() {}
 ```
 
-To fix issue issue, you have to rename at least one of the two imports.
+To fix this issue, you have to rename at least one of the two imports.
 Example:
 
 ```
@@ -295,9 +285,8 @@ that has been imported into the current module.
 Erroneous code example:
 
 ```compile_fail,E0259
-# #![feature(libc)]
 extern crate core;
-extern crate libc as core;
+extern crate std as core;
 
 fn main() {}
 ```
@@ -308,9 +297,8 @@ external crate imported into the current module.
 Correct example:
 
 ```
-# #![feature(libc)]
 extern crate core;
-extern crate libc as other_name;
+extern crate std as other_name;
 
 fn main() {}
 ```
@@ -770,17 +758,18 @@ match x {
 "##,
 
 E0411: r##"
-The `Self` keyword was used outside an impl or a trait.
+The `Self` keyword was used outside an impl, trait, or type definition.
 
 Erroneous code example:
 
 ```compile_fail,E0411
-<Self>::foo; // error: use of `Self` outside of an impl or trait
+<Self>::foo; // error: use of `Self` outside of an impl, trait, or type
+             // definition
 ```
 
 The `Self` keyword represents the current type, which explains why it can only
-be used inside an impl or a trait. It gives access to the associated items of a
-type:
+be used inside an impl, trait, or type definition. It gives access to the
+associated items of a type:
 
 ```
 trait Foo {
@@ -967,16 +956,18 @@ one.
 "##,
 
 E0423: r##"
-A `struct` variant name was used like a function name.
+An identifier was used like a function name or a value was expected and the
+identifier exists but it belongs to a different namespace.
 
-Erroneous code example:
+For (an erroneous) example, here a `struct` variant name were used as a
+function:
 
 ```compile_fail,E0423
 struct Foo { a: bool };
 
 let f = Foo();
-// error: `Foo` is a struct variant name, but this expression uses
-//        it like a function name
+// error: expected function, found `Foo`
+// `Foo` is a struct name, but this expression uses it like a function name
 ```
 
 Please verify you didn't misspell the name of what you actually wanted to use
@@ -986,6 +977,30 @@ here. Example:
 fn Foo() -> u32 { 0 }
 
 let f = Foo(); // ok!
+```
+
+It is common to forget the trailing `!` on macro invocations, which would also
+yield this error:
+
+```compile_fail,E0423
+println("");
+// error: expected function, found macro `println`
+// did you mean `println!(...)`? (notice the trailing `!`)
+```
+
+Another case where this error is emitted is when a value is expected, but
+something else is found:
+
+```compile_fail,E0423
+pub mod a {
+    pub const I: i32 = 1;
+}
+
+fn h1() -> i32 {
+    a.I
+    //~^ ERROR expected value, found module `a`
+    // did you mean `a::I`?
+}
 ```
 "##,
 
@@ -1226,11 +1241,11 @@ Erroneous code example:
 
 ```compile_fail,E0433
 let map = HashMap::new();
-// error: failed to resolve. Use of undeclared type or module `HashMap`
+// error: failed to resolve: use of undeclared type or module `HashMap`
 ```
 
 Please verify you didn't misspell the type/module's name or that you didn't
-forgot to import it:
+forget to import it:
 
 
 ```
@@ -1555,7 +1570,7 @@ mod SomeModule {
                                             // `SomeModule` module.
 }
 
-println!("const value: {}", SomeModule::PRIVATE); // error: constant `CONSTANT`
+println!("const value: {}", SomeModule::PRIVATE); // error: constant `PRIVATE`
                                                   //        is private
 ```
 

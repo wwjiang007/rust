@@ -1,13 +1,3 @@
-# Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-# file at the top-level directory of this distribution and at
-# http://rust-lang.org/COPYRIGHT.
-#
-# Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-# http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-# <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-# option. This file may not be copied, modified, or distributed
-# except according to those terms.
-
 set -ex
 
 hide_output() {
@@ -32,7 +22,7 @@ shift
 
 export CFLAGS="-fPIC $CFLAGS"
 
-MUSL=musl-1.1.18
+MUSL=musl-1.1.20
 
 # may have been downloaded in a previous run
 if [ ! -d $MUSL ]; then
@@ -51,7 +41,7 @@ hide_output make clean
 
 cd ..
 
-LLVM=60
+LLVM=70
 
 # may have been downloaded in a previous run
 if [ ! -d libunwind-release_$LLVM ]; then

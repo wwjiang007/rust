@@ -1,14 +1,4 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
-#![allow(non_camel_case_types)]
+#![allow(non_camel_case_types, unused)]
 
 use convert::TryInto;
 use io;
@@ -117,75 +107,36 @@ extern {
                               avail: *mut size_t) -> zx_status_t;
 }
 
-// From `enum special_handles` in system/ulib/launchpad/launchpad.c
-// HND_LOADER_SVC = 0
-// HND_EXEC_VMO = 1
-// HND_SEGMENTS_VMAR = 2
-const HND_SPECIAL_COUNT: c_int = 3;
-
+#[derive(Default)]
 #[repr(C)]
-pub struct launchpad_t {
-    argc: u32,
-    envc: u32,
-    args: *const c_char,
-    args_len: size_t,
-    env: *const c_char,
-    env_len: size_t,
-
-    handles: *mut zx_handle_t,
-    handles_info: *mut u32,
-    handle_count: size_t,
-    handle_alloc: size_t,
-
-    entry: zx_vaddr_t,
-    base: zx_vaddr_t,
-    vdso_base: zx_vaddr_t,
-
-    stack_size: size_t,
-
-    special_handles: [zx_handle_t; HND_SPECIAL_COUNT as usize],
-    loader_message: bool,
+pub struct fdio_spawn_action_t {
+    pub action: u32,
+    pub reserved0: u32,
+    pub local_fd: i32,
+    pub target_fd: i32,
+    pub reserved1: u64,
 }
 
 extern {
-    pub fn launchpad_create(job: zx_handle_t, name: *const c_char,
-                            lp: *mut *mut launchpad_t) -> zx_status_t;
-
-    pub fn launchpad_go(lp: *mut launchpad_t,
-                        proc_handle: *mut zx_handle_t,
-                        err_msg: *mut *const c_char) -> zx_status_t;
-
-    pub fn launchpad_destroy(lp: *mut launchpad_t);
-
-    pub fn launchpad_set_args(lp: *mut launchpad_t, argc: c_int,
-                               argv: *const *const c_char) -> zx_status_t;
-
-    pub fn launchpad_set_environ(lp: *mut launchpad_t, envp: *const *const c_char) -> zx_status_t;
-
-    pub fn launchpad_clone(lp: *mut launchpad_t, what: u32) -> zx_status_t;
-
-    pub fn launchpad_clone_fd(lp: *mut launchpad_t, fd: c_int, target_fd: c_int) -> zx_status_t;
-
-    pub fn launchpad_transfer_fd(lp: *mut launchpad_t, fd: c_int, target_fd: c_int) -> zx_status_t;
-
-    pub fn launchpad_elf_load(lp: *mut launchpad_t, vmo: zx_handle_t) -> zx_status_t;
-
-    pub fn launchpad_add_vdso_vmo(lp: *mut launchpad_t) -> zx_status_t;
-
-    pub fn launchpad_load_vdso(lp: *mut launchpad_t, vmo: zx_handle_t) -> zx_status_t;
-
-    pub fn launchpad_vmo_from_file(filename: *const c_char) -> zx_handle_t;
+    pub fn fdio_spawn_etc(job: zx_handle_t, flags: u32, path: *const c_char,
+                          argv: *const *const c_char, envp: *const *const c_char,
+                          action_count: u64, actions: *const fdio_spawn_action_t,
+                          process: *mut zx_handle_t, err_msg: *mut c_char) -> zx_status_t;
 }
 
-// Launchpad clone constants
+// fdio_spawn_etc flags
 
-pub const LP_CLONE_FDIO_NAMESPACE: u32 = 0x0001;
-pub const LP_CLONE_FDIO_CWD: u32 = 0x0002;
-// LP_CLONE_FDIO_STDIO = 0x0004
-// LP_CLONE_FDIO_ALL = 0x00FF
-// LP_CLONE_ENVIRON = 0x0100
-// LP_CLONE_DEFAULT_JOB = 0x0200
-// LP_CLONE_ALL = 0xFFFF
+pub const FDIO_SPAWN_CLONE_JOB: u32 = 0x0001;
+pub const FDIO_SPAWN_CLONE_LDSVC: u32 = 0x0002;
+pub const FDIO_SPAWN_CLONE_NAMESPACE: u32 = 0x0004;
+pub const FDIO_SPAWN_CLONE_STDIO: u32 = 0x0008;
+pub const FDIO_SPAWN_CLONE_ENVIRON: u32 = 0x0010;
+pub const FDIO_SPAWN_CLONE_ALL: u32 = 0xFFFF;
+
+// fdio_spawn_etc actions
+
+pub const FDIO_SPAWN_ACTION_CLONE_FD: u32 = 0x0001;
+pub const FDIO_SPAWN_ACTION_TRANSFER_FD: u32 = 0x0002;
 
 // Errors
 
@@ -254,7 +205,7 @@ pub const LP_CLONE_FDIO_CWD: u32 = 0x0002;
 // and has a closed remote end will return ERR_REMOTE_CLOSED.
 #[allow(unused)] pub const ERR_SHOULD_WAIT: zx_status_t = -22;
 
-// ERR_CANCELED: The in-progress operation (e.g. a wait) has been
+// ERR_CANCELED: The in-progress operation (e.g., a wait) has been
 // // canceled.
 #[allow(unused)] pub const ERR_CANCELED: zx_status_t = -23;
 

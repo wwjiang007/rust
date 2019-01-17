@@ -1,13 +1,3 @@
-// Copyright 2012-2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use super::_match::{MatchCheckCtxt, Matrix, expand_pattern, is_useful};
 use super::_match::Usefulness::*;
 use super::_match::WitnessPreference::*;
@@ -17,13 +7,13 @@ use super::{Pattern, PatternContext, PatternError, PatternKind};
 use rustc::middle::expr_use_visitor::{ConsumeMode, Delegate, ExprUseVisitor};
 use rustc::middle::expr_use_visitor::{LoanCause, MutateMode};
 use rustc::middle::expr_use_visitor as euv;
-use rustc::middle::mem_categorization::{cmt};
+use rustc::middle::mem_categorization::cmt_;
 use rustc::middle::region;
 use rustc::session::Session;
 use rustc::ty::{self, Ty, TyCtxt};
 use rustc::ty::subst::Substs;
 use rustc::lint;
-use rustc_errors::DiagnosticBuilder;
+use rustc_errors::{Applicability, DiagnosticBuilder};
 use rustc::util::common::ErrorReported;
 
 use rustc::hir::def::*;
@@ -31,28 +21,29 @@ use rustc::hir::def_id::DefId;
 use rustc::hir::intravisit::{self, Visitor, NestedVisitorMap};
 use rustc::hir::{self, Pat, PatKind};
 
+use smallvec::smallvec;
 use std::slice;
 
 use syntax::ast;
 use syntax::ptr::P;
-use syntax_pos::{Span, DUMMY_SP};
+use syntax_pos::{Span, DUMMY_SP, MultiSpan};
 
 struct OuterVisitor<'a, 'tcx: 'a> { tcx: TyCtxt<'a, 'tcx, 'tcx> }
 
 impl<'a, 'tcx> Visitor<'tcx> for OuterVisitor<'a, 'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
-        NestedVisitorMap::OnlyBodies(&self.tcx.hir)
+        NestedVisitorMap::OnlyBodies(&self.tcx.hir())
     }
 
     fn visit_body(&mut self, body: &'tcx hir::Body) {
         intravisit::walk_body(self, body);
-        let def_id = self.tcx.hir.body_owner_def_id(body.id());
+        let def_id = self.tcx.hir().body_owner_def_id(body.id());
         let _ = self.tcx.check_match(def_id);
     }
 }
 
 pub fn check_crate<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) {
-    tcx.hir.krate().visit_all_item_likes(&mut OuterVisitor { tcx: tcx }.as_deep_visitor());
+    tcx.hir().krate().visit_all_item_likes(&mut OuterVisitor { tcx }.as_deep_visitor());
     tcx.sess.abort_if_errors();
 }
 
@@ -60,8 +51,8 @@ pub(crate) fn check_match<'a, 'tcx>(
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     def_id: DefId,
 ) -> Result<(), ErrorReported> {
-    let body_id = if let Some(id) = tcx.hir.as_local_node_id(def_id) {
-        tcx.hir.body_owned_by(id)
+    let body_id = if let Some(id) = tcx.hir().as_local_node_id(def_id) {
+        tcx.hir().body_owned_by(id)
     } else {
         return Ok(());
     };
@@ -73,7 +64,7 @@ pub(crate) fn check_match<'a, 'tcx>(
             region_scope_tree: &tcx.region_scope_tree(def_id),
             param_env: tcx.param_env(def_id),
             identity_substs: Substs::identity_for_item(tcx, def_id),
-        }.visit_body(tcx.hir.body(body_id));
+        }.visit_body(tcx.hir().body(body_id));
     })
 }
 
@@ -98,7 +89,7 @@ impl<'a, 'tcx> Visitor<'tcx> for MatchVisitor<'a, 'tcx> {
         intravisit::walk_expr(self, ex);
 
         match ex.node {
-            hir::ExprMatch(ref scrut, ref arms, source) => {
+            hir::ExprKind::Match(ref scrut, ref arms, source) => {
                 self.check_match(scrut, arms, source);
             }
             _ => {}
@@ -140,14 +131,14 @@ impl<'a, 'tcx> PatternContext<'a, 'tcx> {
                 }
                 PatternError::FloatBug => {
                     // FIXME(#31407) this is only necessary because float parsing is buggy
-                    ::rustc::middle::const_val::struct_error(
-                        self.tcx, pat_span,
+                    ::rustc::mir::interpret::struct_error(
+                        self.tcx.at(pat_span),
                         "could not evaluate float literal (see issue #31407)",
                     ).emit();
                 }
                 PatternError::NonConstPath(span) => {
-                    ::rustc::middle::const_val::struct_error(
-                        self.tcx, span,
+                    ::rustc::mir::interpret::struct_error(
+                        self.tcx.at(span),
                         "runtime values cannot be referenced in patterns",
                     ).emit();
                 }
@@ -181,17 +172,19 @@ impl<'a, 'tcx> MatchVisitor<'a, 'tcx> {
             // Second, if there is a guard on each arm, make sure it isn't
             // assigning or borrowing anything mutably.
             if let Some(ref guard) = arm.guard {
-                check_for_mutation_in_guard(self, &guard);
+                if self.tcx.check_for_mutation_in_guard_via_ast_walk() {
+                    check_for_mutation_in_guard(self, &guard);
+                }
             }
 
             // Third, perform some lints.
             for pat in &arm.pats {
-                check_for_bindings_named_the_same_as_variants(self, pat);
+                check_for_bindings_named_same_as_variants(self, pat);
             }
         }
 
-        let module = self.tcx.hir.get_module_parent(scrut.id);
-        MatchCheckCtxt::create_and_enter(self.tcx, module, |ref mut cx| {
+        let module = self.tcx.hir().get_module_parent(scrut.id);
+        MatchCheckCtxt::create_and_enter(self.tcx, self.param_env, module, |ref mut cx| {
             let mut have_errors = false;
 
             let inlined_arms : Vec<(Vec<_>, _)> = arms.iter().map(|arm| (
@@ -206,7 +199,9 @@ impl<'a, 'tcx> MatchVisitor<'a, 'tcx> {
                     }
                     (pattern, &**pat)
                 }).collect(),
-                arm.guard.as_ref().map(|e| &**e)
+                arm.guard.as_ref().map(|g| match g {
+                    hir::Guard::If(ref e) => &**e,
+                })
             )).collect();
 
             // Bail out early if inlining failed.
@@ -220,22 +215,26 @@ impl<'a, 'tcx> MatchVisitor<'a, 'tcx> {
             // Then, if the match has no arms, check whether the scrutinee
             // is uninhabited.
             let pat_ty = self.tables.node_id_to_type(scrut.hir_id);
-            let module = self.tcx.hir.get_module_parent(scrut.id);
+            let module = self.tcx.hir().get_module_parent(scrut.id);
             if inlined_arms.is_empty() {
                 let scrutinee_is_uninhabited = if self.tcx.features().exhaustive_patterns {
                     self.tcx.is_ty_uninhabited_from(module, pat_ty)
                 } else {
-                    self.conservative_is_uninhabited(pat_ty)
+                    match pat_ty.sty {
+                        ty::Never => true,
+                        ty::Adt(def, _) => def.variants.is_empty(),
+                        _ => false
+                    }
                 };
                 if !scrutinee_is_uninhabited {
                     // We know the type is inhabited, so this must be wrong
                     let mut err = create_e0004(self.tcx.sess, scrut.span,
-                                               format!("non-exhaustive patterns: type {} \
+                                               format!("non-exhaustive patterns: type `{}` \
                                                         is non-empty",
                                                        pat_ty));
                     span_help!(&mut err, scrut.span,
-                               "Please ensure that all possible cases are being handled; \
-                                possibly adding wildcards or more match arms.");
+                               "ensure that all possible cases are being handled, \
+                                possibly by adding wildcards or more match arms");
                     err.emit();
                 }
                 // If the type *is* uninhabited, it's vacuously exhaustive
@@ -246,31 +245,22 @@ impl<'a, 'tcx> MatchVisitor<'a, 'tcx> {
                 .iter()
                 .filter(|&&(_, guard)| guard.is_none())
                 .flat_map(|arm| &arm.0)
-                .map(|pat| vec![pat.0])
+                .map(|pat| smallvec![pat.0])
                 .collect();
             let scrut_ty = self.tables.node_id_to_type(scrut.hir_id);
             check_exhaustive(cx, scrut_ty, scrut.span, &matrix);
         })
     }
 
-    fn conservative_is_uninhabited(&self, scrutinee_ty: Ty<'tcx>) -> bool {
-        // "rustc-1.0-style" uncontentious uninhabitableness check
-        match scrutinee_ty.sty {
-            ty::TyNever => true,
-            ty::TyAdt(def, _) => def.variants.is_empty(),
-            _ => false
-        }
-    }
-
     fn check_irrefutable(&self, pat: &'tcx Pat, origin: &str) {
-        let module = self.tcx.hir.get_module_parent(pat.id);
-        MatchCheckCtxt::create_and_enter(self.tcx, module, |ref mut cx| {
+        let module = self.tcx.hir().get_module_parent(pat.id);
+        MatchCheckCtxt::create_and_enter(self.tcx, self.param_env, module, |ref mut cx| {
             let mut patcx = PatternContext::new(self.tcx,
                                                 self.param_env.and(self.identity_substs),
                                                 self.tables);
             let pattern = patcx.lower_pattern(pat);
             let pattern_ty = pattern.ty;
-            let pats : Matrix = vec![vec![
+            let pats: Matrix = vec![smallvec![
                 expand_pattern(cx, pattern)
             ]].into_iter().collect();
 
@@ -293,8 +283,9 @@ impl<'a, 'tcx> MatchVisitor<'a, 'tcx> {
             );
             let label_msg = match pat.node {
                 PatKind::Path(hir::QPath::Resolved(None, ref path))
-                        if path.segments.len() == 1 && path.segments[0].parameters.is_none() => {
-                    format!("interpreted as a {} pattern, not new variable", path.def.kind_name())
+                        if path.segments.len() == 1 && path.segments[0].args.is_none() => {
+                    format!("interpreted as {} {} pattern, not new variable",
+                            path.def.article(), path.def.kind_name())
                 }
                 _ => format!("pattern `{}` not covered", pattern_string),
             };
@@ -304,34 +295,35 @@ impl<'a, 'tcx> MatchVisitor<'a, 'tcx> {
     }
 }
 
-fn check_for_bindings_named_the_same_as_variants(cx: &MatchVisitor, pat: &Pat) {
+fn check_for_bindings_named_same_as_variants(cx: &MatchVisitor, pat: &Pat) {
     pat.walk(|p| {
-        if let PatKind::Binding(_, _, name, None) = p.node {
-            let bm = *cx.tables
-                        .pat_binding_modes()
-                        .get(p.hir_id)
-                        .expect("missing binding mode");
-
-            if bm != ty::BindByValue(hir::MutImmutable) {
-                // Nothing to check.
-                return true;
-            }
-            let pat_ty = cx.tables.pat_ty(p);
-            if let ty::TyAdt(edef, _) = pat_ty.sty {
-                if edef.is_enum() && edef.variants.iter().any(|variant| {
-                    variant.name == name.node && variant.ctor_kind == CtorKind::Const
-                }) {
-                    let ty_path = cx.tcx.item_path_str(edef.did);
-                    let mut err = struct_span_warn!(cx.tcx.sess, p.span, E0170,
-                        "pattern binding `{}` is named the same as one \
-                         of the variants of the type `{}`",
-                        name.node, ty_path);
-                    help!(err,
-                        "if you meant to match on a variant, \
-                        consider making the path in the pattern qualified: `{}::{}`",
-                        ty_path, name.node);
-                    err.emit();
+        if let PatKind::Binding(_, _, ident, None) = p.node {
+            if let Some(&bm) = cx.tables.pat_binding_modes().get(p.hir_id) {
+                if bm != ty::BindByValue(hir::MutImmutable) {
+                    // Nothing to check.
+                    return true;
                 }
+                let pat_ty = cx.tables.pat_ty(p);
+                if let ty::Adt(edef, _) = pat_ty.sty {
+                    if edef.is_enum() && edef.variants.iter().any(|variant| {
+                        variant.ident == ident && variant.ctor_kind == CtorKind::Const
+                    }) {
+                        let ty_path = cx.tcx.item_path_str(edef.did);
+                        let mut err = struct_span_warn!(cx.tcx.sess, p.span, E0170,
+                            "pattern binding `{}` is named the same as one \
+                            of the variants of the type `{}`",
+                            ident, ty_path);
+                        err.span_suggestion_with_applicability(
+                            p.span,
+                            "to match on the variant, qualify the path",
+                            format!("{}::{}", ty_path, ident),
+                            Applicability::MachineApplicable
+                        );
+                        err.emit();
+                    }
+                }
+            } else {
+                cx.tcx.sess.delay_span_bug(p.span, "missing binding mode");
             }
         }
         true
@@ -358,52 +350,40 @@ fn check_arms<'a, 'tcx>(cx: &mut MatchCheckCtxt<'a, 'tcx>,
 {
     let mut seen = Matrix::empty();
     let mut catchall = None;
-    let mut printed_if_let_err = false;
     for (arm_index, &(ref pats, guard)) in arms.iter().enumerate() {
         for &(pat, hir_pat) in pats {
-            let v = vec![pat];
+            let v = smallvec![pat];
 
             match is_useful(cx, &seen, &v, LeaveOutWitness) {
                 NotUseful => {
                     match source {
                         hir::MatchSource::IfLetDesugar { .. } => {
-                            if printed_if_let_err {
-                                // we already printed an irrefutable if-let pattern error.
-                                // We don't want two, that's just confusing.
-                            } else {
-                                // find the first arm pattern so we can use its span
-                                let &(ref first_arm_pats, _) = &arms[0];
-                                let first_pat = &first_arm_pats[0];
-                                let span = first_pat.0.span;
-                                struct_span_err!(cx.tcx.sess, span, E0162,
-                                                "irrefutable if-let pattern")
-                                    .span_label(span, "irrefutable pattern")
-                                    .emit();
-                                printed_if_let_err = true;
-                            }
-                        },
+                            cx.tcx.lint_node(
+                                lint::builtin::IRREFUTABLE_LET_PATTERNS,
+                                hir_pat.id,
+                                pat.span,
+                                "irrefutable if-let pattern",
+                            );
+                        }
 
                         hir::MatchSource::WhileLetDesugar => {
-                            // find the first arm pattern so we can use its span
-                            let &(ref first_arm_pats, _) = &arms[0];
-                            let first_pat = &first_arm_pats[0];
-                            let span = first_pat.0.span;
-
                             // check which arm we're on.
                             match arm_index {
                                 // The arm with the user-specified pattern.
                                 0 => {
                                     cx.tcx.lint_node(
-                                            lint::builtin::UNREACHABLE_PATTERNS,
+                                        lint::builtin::UNREACHABLE_PATTERNS,
                                         hir_pat.id, pat.span,
                                         "unreachable pattern");
                                 },
                                 // The arm with the wildcard pattern.
                                 1 => {
-                                    struct_span_err!(cx.tcx.sess, span, E0165,
-                                                     "irrefutable while-let pattern")
-                                        .span_label(span, "irrefutable pattern")
-                                        .emit();
+                                    cx.tcx.lint_node(
+                                        lint::builtin::IRREFUTABLE_LET_PATTERNS,
+                                        hir_pat.id,
+                                        pat.span,
+                                        "irrefutable while-let pattern",
+                                    );
                                 },
                                 _ => bug!(),
                             }
@@ -443,10 +423,10 @@ fn check_arms<'a, 'tcx>(cx: &mut MatchCheckCtxt<'a, 'tcx>,
     }
 }
 
-fn check_exhaustive<'a, 'tcx>(cx: &mut MatchCheckCtxt<'a, 'tcx>,
+fn check_exhaustive<'p, 'a: 'p, 'tcx: 'a>(cx: &mut MatchCheckCtxt<'a, 'tcx>,
                               scrut_ty: Ty<'tcx>,
                               sp: Span,
-                              matrix: &Matrix<'a, 'tcx>) {
+                              matrix: &Matrix<'p, 'tcx>) {
     let wild_pattern = Pattern {
         ty: scrut_ty,
         span: DUMMY_SP,
@@ -464,7 +444,7 @@ fn check_exhaustive<'a, 'tcx>(cx: &mut MatchCheckCtxt<'a, 'tcx>,
             let joined_patterns = match witnesses.len() {
                 0 => bug!(),
                 1 => format!("`{}`", witnesses[0]),
-                2...LIMIT => {
+                2..=LIMIT => {
                     let (tail, head) = witnesses.split_last().unwrap();
                     let head: Vec<_> = head.iter().map(|w| w.to_string()).collect();
                     format!("`{}` and `{}`", head.join("`, `"), tail)
@@ -499,19 +479,18 @@ fn check_legality_of_move_bindings(cx: &MatchVisitor,
                                    pats: &[P<Pat>]) {
     let mut by_ref_span = None;
     for pat in pats {
-        pat.each_binding(|_, id, span, _path| {
-            let hir_id = cx.tcx.hir.node_to_hir_id(id);
-            let bm = *cx.tables
-                        .pat_binding_modes()
-                        .get(hir_id)
-                        .expect("missing binding mode");
-            if let ty::BindByReference(..) = bm {
-                by_ref_span = Some(span);
+        pat.each_binding(|_, hir_id, span, _path| {
+            if let Some(&bm) = cx.tables.pat_binding_modes().get(hir_id) {
+                if let ty::BindByReference(..) = bm {
+                    by_ref_span = Some(span);
+                }
+            } else {
+                cx.tcx.sess.delay_span_bug(pat.span, "missing binding mode");
             }
         })
     }
-
-    let check_move = |p: &Pat, sub: Option<&Pat>| {
+    let span_vec = &mut Vec::new();
+    let check_move = |p: &Pat, sub: Option<&Pat>, span_vec: &mut Vec<Span>| {
         // check legality of moving out of the enum
 
         // x @ Foo(..) is legal, but x @ Foo(y) isn't.
@@ -520,39 +499,53 @@ fn check_legality_of_move_bindings(cx: &MatchVisitor,
                              "cannot bind by-move with sub-bindings")
                 .span_label(p.span, "binds an already bound by-move value by moving it")
                 .emit();
-        } else if has_guard {
-            struct_span_err!(cx.tcx.sess, p.span, E0008,
-                      "cannot bind by-move into a pattern guard")
-                .span_label(p.span, "moves value into pattern guard")
-                .emit();
-        } else if by_ref_span.is_some() {
-            struct_span_err!(cx.tcx.sess, p.span, E0009,
-                            "cannot bind by-move and by-ref in the same pattern")
-                    .span_label(p.span, "by-move pattern here")
-                    .span_label(by_ref_span.unwrap(), "both by-ref and by-move used")
-                    .emit();
+        } else if has_guard && !cx.tcx.allow_bind_by_move_patterns_with_guards() {
+            let mut err = struct_span_err!(cx.tcx.sess, p.span, E0008,
+                                           "cannot bind by-move into a pattern guard");
+            err.span_label(p.span, "moves value into pattern guard");
+            if cx.tcx.sess.opts.unstable_features.is_nightly_build() && cx.tcx.use_mir_borrowck() {
+                err.help("add #![feature(bind_by_move_pattern_guards)] to the \
+                          crate attributes to enable");
+            }
+            err.emit();
+        } else if let Some(_by_ref_span) = by_ref_span {
+            span_vec.push(p.span);
         }
     };
 
     for pat in pats {
         pat.walk(|p| {
             if let PatKind::Binding(_, _, _, ref sub) = p.node {
-                let bm = *cx.tables
-                            .pat_binding_modes()
-                            .get(p.hir_id)
-                            .expect("missing binding mode");
-                match bm {
-                    ty::BindByValue(..) => {
-                        let pat_ty = cx.tables.node_id_to_type(p.hir_id);
-                        if pat_ty.moves_by_default(cx.tcx, cx.param_env, pat.span) {
-                            check_move(p, sub.as_ref().map(|p| &**p));
+                if let Some(&bm) = cx.tables.pat_binding_modes().get(p.hir_id) {
+                    match bm {
+                        ty::BindByValue(..) => {
+                            let pat_ty = cx.tables.node_id_to_type(p.hir_id);
+                            if !pat_ty.is_copy_modulo_regions(cx.tcx, cx.param_env, pat.span) {
+                                check_move(p, sub.as_ref().map(|p| &**p), span_vec);
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
+                } else {
+                    cx.tcx.sess.delay_span_bug(pat.span, "missing binding mode");
                 }
             }
             true
         });
+    }
+    if !span_vec.is_empty(){
+        let span = MultiSpan::from_spans(span_vec.clone());
+        let mut err = struct_span_err!(
+            cx.tcx.sess,
+            span,
+            E0009,
+            "cannot bind by-move and by-ref in the same pattern",
+        );
+        err.span_label(by_ref_span.unwrap(), "both by-ref and by-move used");
+        for span in span_vec.iter(){
+            err.span_label(*span, "by-move pattern here");
+        }
+        err.emit();
     }
 }
 
@@ -560,12 +553,19 @@ fn check_legality_of_move_bindings(cx: &MatchVisitor,
 /// assign.
 ///
 /// FIXME: this should be done by borrowck.
-fn check_for_mutation_in_guard(cx: &MatchVisitor, guard: &hir::Expr) {
+fn check_for_mutation_in_guard(cx: &MatchVisitor, guard: &hir::Guard) {
     let mut checker = MutationChecker {
         cx,
     };
-    ExprUseVisitor::new(&mut checker, cx.tcx, cx.param_env, cx.region_scope_tree, cx.tables, None)
-        .walk_expr(guard);
+    match guard {
+        hir::Guard::If(expr) =>
+            ExprUseVisitor::new(&mut checker,
+                                cx.tcx,
+                                cx.param_env,
+                                cx.region_scope_tree,
+                                cx.tables,
+                                None).walk_expr(expr),
+    };
 }
 
 struct MutationChecker<'a, 'tcx: 'a> {
@@ -573,28 +573,34 @@ struct MutationChecker<'a, 'tcx: 'a> {
 }
 
 impl<'a, 'tcx> Delegate<'tcx> for MutationChecker<'a, 'tcx> {
-    fn matched_pat(&mut self, _: &Pat, _: cmt, _: euv::MatchMode) {}
-    fn consume(&mut self, _: ast::NodeId, _: Span, _: cmt, _: ConsumeMode) {}
-    fn consume_pat(&mut self, _: &Pat, _: cmt, _: ConsumeMode) {}
+    fn matched_pat(&mut self, _: &Pat, _: &cmt_, _: euv::MatchMode) {}
+    fn consume(&mut self, _: ast::NodeId, _: Span, _: &cmt_, _: ConsumeMode) {}
+    fn consume_pat(&mut self, _: &Pat, _: &cmt_, _: ConsumeMode) {}
     fn borrow(&mut self,
               _: ast::NodeId,
               span: Span,
-              _: cmt,
+              _: &cmt_,
               _: ty::Region<'tcx>,
               kind:ty:: BorrowKind,
               _: LoanCause) {
         match kind {
             ty::MutBorrow => {
-                struct_span_err!(self.cx.tcx.sess, span, E0301,
-                          "cannot mutably borrow in a pattern guard")
-                    .span_label(span, "borrowed mutably in pattern guard")
-                    .emit();
+                let mut err = struct_span_err!(self.cx.tcx.sess, span, E0301,
+                          "cannot mutably borrow in a pattern guard");
+                err.span_label(span, "borrowed mutably in pattern guard");
+                if self.cx.tcx.sess.opts.unstable_features.is_nightly_build() &&
+                    self.cx.tcx.use_mir_borrowck()
+                {
+                    err.help("add #![feature(bind_by_move_pattern_guards)] to the \
+                              crate attributes to enable");
+                }
+                err.emit();
             }
             ty::ImmBorrow | ty::UniqueImmBorrow => {}
         }
     }
     fn decl_without_init(&mut self, _: ast::NodeId, _: Span) {}
-    fn mutate(&mut self, _: ast::NodeId, span: Span, _: cmt, mode: MutateMode) {
+    fn mutate(&mut self, _: ast::NodeId, span: Span, _: &cmt_, mode: MutateMode) {
         match mode {
             MutateMode::JustWrite | MutateMode::WriteAndRead => {
                 struct_span_err!(self.cx.tcx.sess, span, E0302, "cannot assign in a pattern guard")

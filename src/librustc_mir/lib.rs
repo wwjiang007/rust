@@ -1,46 +1,44 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 /*!
 
 Rust MIR: a lowered representation of Rust. Also: an experiment!
 
 */
 
+#![feature(nll)]
+#![feature(in_band_lifetimes)]
 #![feature(slice_patterns)]
 #![feature(slice_sort_by_cached_key)]
-#![feature(from_ref)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
-#![feature(catch_expr)]
 #![feature(crate_visibility_modifier)]
-#![feature(const_fn)]
 #![feature(core_intrinsics)]
+#![feature(const_fn)]
 #![feature(decl_macro)]
-#![cfg_attr(stage0, feature(dyn_trait))]
-#![feature(fs_read_write)]
-#![feature(macro_vis_matcher)]
 #![feature(exhaustive_patterns)]
 #![feature(range_contains)]
 #![feature(rustc_diagnostic_macros)]
-#![feature(nonzero)]
-#![feature(inclusive_range_methods)]
-#![feature(crate_visibility_modifier)]
+#![feature(rustc_attrs)]
 #![feature(never_type)]
-#![cfg_attr(stage0, feature(try_trait))]
+#![feature(specialization)]
+#![feature(try_trait)]
+#![feature(unicode_internals)]
+#![feature(step_trait)]
+#![feature(slice_concat_ext)]
+#![cfg_attr(stage0, feature(if_while_or_patterns))]
+#![feature(try_from)]
+#![feature(reverse_bits)]
+#![cfg_attr(stage0, feature(underscore_imports))]
+
+#![recursion_limit="256"]
 
 extern crate arena;
+
 #[macro_use]
 extern crate bitflags;
 #[macro_use] extern crate log;
+extern crate either;
 extern crate graphviz as dot;
+extern crate polonius_engine;
 #[macro_use]
 extern crate rustc;
 #[macro_use] extern crate rustc_data_structures;
@@ -53,15 +51,15 @@ extern crate rustc_target;
 extern crate log_settings;
 extern crate rustc_apfloat;
 extern crate byteorder;
+extern crate core;
+extern crate smallvec;
 
-#[cfg(stage0)]
-macro_rules! do_catch {
-  ($t:expr) => { (|| ::std::ops::Try::from_ok($t) )() }
-}
-
-#[cfg(not(stage0))]
-macro_rules! do_catch {
-  ($t:expr) => { do catch { $t } }
+// Once we can use edition 2018 in the compiler,
+// replace this with real try blocks.
+macro_rules! try_block {
+    ($($inside:tt)*) => (
+        (||{ ::std::ops::Try::from_ok({ $($inside)* }) })()
+    )
 }
 
 mod diagnostics;
@@ -70,20 +68,24 @@ mod borrow_check;
 mod build;
 mod dataflow;
 mod hair;
+mod lints;
 mod shim;
 pub mod transform;
 pub mod util;
 pub mod interpret;
 pub mod monomorphize;
+pub mod const_eval;
 
 pub use hair::pattern::check_crate as matchck_crate;
-use rustc::ty::maps::Providers;
+use rustc::ty::query::Providers;
 
 pub fn provide(providers: &mut Providers) {
     borrow_check::provide(providers);
     shim::provide(providers);
     transform::provide(providers);
-    providers.const_eval = interpret::const_eval_provider;
+    monomorphize::partitioning::provide(providers);
+    providers.const_eval = const_eval::const_eval_provider;
+    providers.const_eval_raw = const_eval::const_eval_raw_provider;
     providers.check_match = hair::pattern::check_match;
 }
 

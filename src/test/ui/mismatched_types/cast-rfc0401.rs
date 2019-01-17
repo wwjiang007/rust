@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 fn illegal_cast<U:?Sized,V:?Sized>(u: *const U) -> *const V
 {
     u as *const V //~ ERROR is invalid
@@ -60,7 +50,7 @@ fn main()
 
     let _ = 42usize as *const [u8]; //~ ERROR is invalid
     let _ = v as *const [u8]; //~ ERROR cannot cast
-    let _ = fat_v as *const Foo; //~ ERROR is not satisfied
+    let _ = fat_v as *const Foo; //~ ERROR the size for values of type
     let _ = foo as *const str; //~ ERROR is invalid
     let _ = foo as *mut str; //~ ERROR is invalid
     let _ = main as *mut str; //~ ERROR is invalid
@@ -69,7 +59,7 @@ fn main()
     let _ = fat_sv as usize; //~ ERROR is invalid
 
     let a : *const str = "hello";
-    let _ = a as *const Foo; //~ ERROR is not satisfied
+    let _ = a as *const Foo; //~ ERROR the size for values of type
 
     // check no error cascade
     let _ = main.f as *const u32; //~ ERROR no field

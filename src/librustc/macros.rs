@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // ignore-tidy-linelength
 
 macro_rules! enum_from_u32 {
@@ -51,79 +41,93 @@ macro_rules! enum_from_u32 {
 macro_rules! bug {
     () => ( bug!("impossible case reached") );
     ($($message:tt)*) => ({
-        $crate::session::bug_fmt(file!(), line!(), format_args!($($message)*))
+        $crate::util::bug::bug_fmt(file!(), line!(), format_args!($($message)*))
     })
 }
 
 #[macro_export]
 macro_rules! span_bug {
     ($span:expr, $($message:tt)*) => ({
-        $crate::session::span_bug_fmt(file!(), line!(), $span, format_args!($($message)*))
+        $crate::util::bug::span_bug_fmt(file!(), line!(), $span, format_args!($($message)*))
     })
 }
 
 #[macro_export]
 macro_rules! __impl_stable_hash_field {
-    (DECL IGNORED) => (_);
-    (DECL $name:ident) => (ref $name);
-    (USE IGNORED $ctx:expr, $hasher:expr) => ({});
-    (USE $name:ident, $ctx:expr, $hasher:expr) => ($name.hash_stable($ctx, $hasher));
+    ($field:ident, $ctx:expr, $hasher:expr) => ($field.hash_stable($ctx, $hasher));
+    ($field:ident, $ctx:expr, $hasher:expr, _) => ({ let _ = $field; });
+    ($field:ident, $ctx:expr, $hasher:expr, $delegate:expr) => ($delegate.hash_stable($ctx, $hasher));
 }
 
 #[macro_export]
 macro_rules! impl_stable_hash_for {
-    (enum $enum_name:path { $( $variant:ident $( ( $($arg:ident),* ) )* ),* $(,)* }) => {
-        impl<'a, 'tcx> ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>> for $enum_name {
+    // Enums
+    // FIXME(mark-i-m): Some of these should be `?` rather than `*`. See the git blame and change
+    // them back when `?` is supported again.
+    (enum $enum_name:path {
+        $( $variant:ident
+           // this incorrectly allows specifying both tuple-like and struct-like fields, as in `Variant(a,b){c,d}`,
+           // when it should be only one or the other
+           $( ( $($field:ident $(-> $delegate:tt)*),* ) )*
+           $( { $($named_field:ident $(-> $named_delegate:tt)*),* } )*
+        ),* $(,)*
+    }) => {
+        impl_stable_hash_for!(
+            impl<> for enum $enum_name [ $enum_name ] { $( $variant
+                $( ( $($field $(-> $delegate)*),* ) )*
+                $( { $($named_field $(-> $named_delegate)*),* } )*
+            ),* }
+        );
+    };
+    // We want to use the enum name both in the `impl ... for $enum_name` as well as for
+    // importing all the variants. Unfortunately it seems we have to take the name
+    // twice for this purpose
+    (impl<$($lt:lifetime $(: $lt_bound:lifetime)* ),* $(,)* $($T:ident),* $(,)*>
+        for enum $enum_name:path
+        [ $enum_path:path ]
+    {
+        $( $variant:ident
+           // this incorrectly allows specifying both tuple-like and struct-like fields, as in `Variant(a,b){c,d}`,
+           // when it should be only one or the other
+           $( ( $($field:ident $(-> $delegate:tt)*),* ) )*
+           $( { $($named_field:ident $(-> $named_delegate:tt)*),* } )*
+        ),* $(,)*
+    }) => {
+        impl<'a, $($lt $(: $lt_bound)*,)* $($T,)*>
+            ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>>
+            for $enum_name
+            where $($T: ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>>),*
+        {
             #[inline]
             fn hash_stable<W: ::rustc_data_structures::stable_hasher::StableHasherResult>(&self,
                                                   __ctx: &mut $crate::ich::StableHashingContext<'a>,
                                                   __hasher: &mut ::rustc_data_structures::stable_hasher::StableHasher<W>) {
-                use $enum_name::*;
+                use $enum_path::*;
                 ::std::mem::discriminant(self).hash_stable(__ctx, __hasher);
 
                 match *self {
                     $(
-                        $variant $( ( $( __impl_stable_hash_field!(DECL $arg) ),* ) )* => {
-                            $($( __impl_stable_hash_field!(USE $arg, __ctx, __hasher) );*)*
+                        $variant $( ( $(ref $field),* ) )* $( { $(ref $named_field),* } )* => {
+                            $($( __impl_stable_hash_field!($field, __ctx, __hasher $(, $delegate)*) );*)*
+                            $($( __impl_stable_hash_field!($named_field, __ctx, __hasher $(, $named_delegate)*) );*)*
                         }
                     )*
                 }
             }
         }
     };
-    (struct $struct_name:path { $($field:ident),* }) => {
-        impl<'a, 'tcx> ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>> for $struct_name {
-            #[inline]
-            fn hash_stable<W: ::rustc_data_structures::stable_hasher::StableHasherResult>(&self,
-                                                  __ctx: &mut $crate::ich::StableHashingContext<'a>,
-                                                  __hasher: &mut ::rustc_data_structures::stable_hasher::StableHasher<W>) {
-                let $struct_name {
-                    $(ref $field),*
-                } = *self;
-
-                $( $field.hash_stable(__ctx, __hasher));*
-            }
-        }
+    // Structs
+    // FIXME(mark-i-m): same here.
+    (struct $struct_name:path { $($field:ident $(-> $delegate:tt)*),*  $(,)* }) => {
+        impl_stable_hash_for!(
+            impl<'tcx> for struct $struct_name { $($field $(-> $delegate)*),* }
+        );
     };
-    (tuple_struct $struct_name:path { $($field:ident),* }) => {
-        impl<'a, 'tcx> ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>> for $struct_name {
-            #[inline]
-            fn hash_stable<W: ::rustc_data_structures::stable_hasher::StableHasherResult>(&self,
-                                                  __ctx: &mut $crate::ich::StableHashingContext<'a>,
-                                                  __hasher: &mut ::rustc_data_structures::stable_hasher::StableHasher<W>) {
-                let $struct_name (
-                    $(ref $field),*
-                ) = *self;
-
-                $( $field.hash_stable(__ctx, __hasher));*
-            }
-        }
-    };
-
-    (impl<$tcx:lifetime $(, $T:ident)*> for struct $struct_name:path {
-        $($field:ident),* $(,)*
+    (impl<$($lt:lifetime $(: $lt_bound:lifetime)* ),* $(,)* $($T:ident),* $(,)*> for struct $struct_name:path {
+        $($field:ident $(-> $delegate:tt)*),* $(,)*
     }) => {
-        impl<'a, $tcx, $($T,)*> ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>> for $struct_name
+        impl<'a, $($lt $(: $lt_bound)*,)* $($T,)*>
+            ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>> for $struct_name
             where $($T: ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>>),*
         {
             #[inline]
@@ -134,7 +138,33 @@ macro_rules! impl_stable_hash_for {
                     $(ref $field),*
                 } = *self;
 
-                $( $field.hash_stable(__ctx, __hasher));*
+                $( __impl_stable_hash_field!($field, __ctx, __hasher $(, $delegate)*) );*
+            }
+        }
+    };
+    // Tuple structs
+    // We cannot use normale parentheses here, the parser won't allow it
+    // FIXME(mark-i-m): same here.
+    (tuple_struct $struct_name:path { $($field:ident $(-> $delegate:tt)*),*  $(,)* }) => {
+        impl_stable_hash_for!(
+            impl<'tcx> for tuple_struct $struct_name { $($field $(-> $delegate)*),* }
+        );
+    };
+    (impl<$($lt:lifetime $(: $lt_bound:lifetime)* ),* $(,)* $($T:ident),* $(,)*>
+     for tuple_struct $struct_name:path { $($field:ident $(-> $delegate:tt)*),*  $(,)* }) => {
+        impl<'a, $($lt $(: $lt_bound)*,)* $($T,)*>
+            ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>> for $struct_name
+            where $($T: ::rustc_data_structures::stable_hasher::HashStable<$crate::ich::StableHashingContext<'a>>),*
+        {
+            #[inline]
+            fn hash_stable<W: ::rustc_data_structures::stable_hasher::StableHasherResult>(&self,
+                                                  __ctx: &mut $crate::ich::StableHashingContext<'a>,
+                                                  __hasher: &mut ::rustc_data_structures::stable_hasher::StableHasher<W>) {
+                let $struct_name (
+                    $(ref $field),*
+                ) = *self;
+
+                $( __impl_stable_hash_field!($field, __ctx, __hasher $(, $delegate)*) );*
             }
         }
     };
@@ -144,7 +174,7 @@ macro_rules! impl_stable_hash_for {
 macro_rules! impl_stable_hash_for_spanned {
     ($T:path) => (
 
-        impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for ::syntax::codemap::Spanned<$T>
+        impl<'a, 'tcx> HashStable<StableHashingContext<'a>> for ::syntax::source_map::Spanned<$T>
         {
             #[inline]
             fn hash_stable<W: StableHasherResult>(&self,
@@ -250,10 +280,7 @@ macro_rules! BraceStructLiftImpl {
 macro_rules! EnumLiftImpl {
     (impl<$($p:tt),*> Lift<$tcx:tt> for $s:path {
         type Lifted = $lifted:ty;
-        $(
-            ($variant:path) ( $( $variant_arg:ident),* )
-        ),*
-        $(,)*
+        $($variants:tt)*
     } $(where $($wc:tt)*)*) => {
         impl<$($p),*> $crate::ty::Lift<$tcx> for $s
             $(where $($wc)*)*
@@ -261,13 +288,43 @@ macro_rules! EnumLiftImpl {
             type Lifted = $lifted;
 
             fn lift_to_tcx<'b, 'gcx>(&self, tcx: TyCtxt<'b, 'gcx, 'tcx>) -> Option<$lifted> {
-                match self {
-                    $($variant ( $($variant_arg),* ) => {
-                        Some($variant ( $(tcx.lift($variant_arg)?),* ))
-                    })*
-                }
+                EnumLiftImpl!(@Variants(self, tcx) input($($variants)*) output())
             }
         }
+    };
+
+    (@Variants($this:expr, $tcx:expr) input() output($($output:tt)*)) => {
+        match $this {
+            $($output)*
+        }
+    };
+
+    (@Variants($this:expr, $tcx:expr)
+     input( ($variant:path) ( $($variant_arg:ident),* ) , $($input:tt)*)
+     output( $($output:tt)*) ) => {
+        EnumLiftImpl!(
+            @Variants($this, $tcx)
+                input($($input)*)
+                output(
+                    $variant ( $($variant_arg),* ) => {
+                        Some($variant ( $($tcx.lift($variant_arg)?),* ))
+                    }
+                    $($output)*
+                )
+        )
+    };
+
+    (@Variants($this:expr, $tcx:expr)
+     input( ($variant:path), $($input:tt)*)
+     output( $($output:tt)*) ) => {
+        EnumLiftImpl!(
+            @Variants($this, $tcx)
+                input($($input)*)
+                output(
+                    $variant => { Some($variant) }
+                    $($output)*
+                )
+        )
     };
 }
 

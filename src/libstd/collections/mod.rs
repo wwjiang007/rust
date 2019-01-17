@@ -1,13 +1,3 @@
-// Copyright 2013-2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Collection types.
 //!
 //! Rust's standard collection library provides efficient implementations of the
@@ -424,29 +414,21 @@
 #[doc(hidden)]
 pub use ops::Bound;
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use alloc_crate::{BinaryHeap, BTreeMap, BTreeSet};
+pub use alloc_crate::collections::{BinaryHeap, BTreeMap, BTreeSet};
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use alloc_crate::{LinkedList, VecDeque};
+pub use alloc_crate::collections::{LinkedList, VecDeque};
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use alloc_crate::{binary_heap, btree_map, btree_set};
+pub use alloc_crate::collections::{binary_heap, btree_map, btree_set};
 #[stable(feature = "rust1", since = "1.0.0")]
-pub use alloc_crate::{linked_list, vec_deque};
+pub use alloc_crate::collections::{linked_list, vec_deque};
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::hash_map::HashMap;
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::hash_set::HashSet;
 
-#[unstable(feature = "collections_range", issue = "30877")]
-#[rustc_deprecated(reason = "renamed and moved to `std::ops::RangeBounds`", since = "1.26.0")]
-#[doc(hidden)]
-/// Range syntax
-pub mod range {
-    pub use ops::RangeBounds as RangeArgument;
-}
-
 #[unstable(feature = "try_reserve", reason = "new API", issue="48043")]
-pub use heap::CollectionAllocErr;
+pub use alloc_crate::collections::CollectionAllocErr;
 
 mod hash;
 

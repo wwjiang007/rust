@@ -1,13 +1,3 @@
-// Copyright 2016 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 use os::unix::prelude::*;
 
 use ffi::{OsString, OsStr, CString, CStr};
@@ -52,7 +42,7 @@ pub struct Command {
     uid: Option<uid_t>,
     gid: Option<gid_t>,
     saw_nul: bool,
-    closures: Vec<Box<FnMut() -> io::Result<()> + Send + Sync>>,
+    closures: Vec<Box<dyn FnMut() -> io::Result<()> + Send + Sync>>,
     stdin: Option<Stdio>,
     stdout: Option<Stdio>,
     stderr: Option<Stdio>,
@@ -155,12 +145,12 @@ impl Command {
         self.gid
     }
 
-    pub fn get_closures(&mut self) -> &mut Vec<Box<FnMut() -> io::Result<()> + Send + Sync>> {
+    pub fn get_closures(&mut self) -> &mut Vec<Box<dyn FnMut() -> io::Result<()> + Send + Sync>> {
         &mut self.closures
     }
 
     pub fn before_exec(&mut self,
-                       f: Box<FnMut() -> io::Result<()> + Send + Sync>) {
+                       f: Box<dyn FnMut() -> io::Result<()> + Send + Sync>) {
         self.closures.push(f);
     }
 

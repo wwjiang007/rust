@@ -1,45 +1,29 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![feature(allocator_api)]
-#![feature(alloc_system)]
-#![feature(attr_literals)]
 #![feature(box_syntax)]
-#![feature(const_fn)]
 #![feature(drain_filter)]
 #![feature(exact_size_is_empty)]
-#![feature(iterator_step_by)]
 #![feature(pattern)]
-#![feature(rand)]
+#![feature(repeat_generic_slice)]
 #![feature(slice_sort_by_cached_key)]
-#![feature(splice)]
 #![feature(str_escape)]
-#![feature(string_retain)]
 #![feature(try_reserve)]
 #![feature(unboxed_closures)]
-#![feature(exact_chunks)]
-#![feature(inclusive_range_methods)]
+#![feature(vecdeque_rotate)]
 
-extern crate alloc_system;
 extern crate core;
 extern crate rand;
 
 use std::hash::{Hash, Hasher};
 use std::collections::hash_map::DefaultHasher;
 
+mod arc;
 mod binary_heap;
 mod btree;
 mod cow_str;
 mod fmt;
 mod heap;
 mod linked_list;
+mod rc;
 mod slice;
 mod str;
 mod string;
@@ -63,7 +47,7 @@ fn test_boxed_hasher() {
     5u32.hash(&mut hasher_1);
     assert_eq!(ordinary_hash, hasher_1.finish());
 
-    let mut hasher_2 = Box::new(DefaultHasher::new()) as Box<Hasher>;
+    let mut hasher_2 = Box::new(DefaultHasher::new()) as Box<dyn Hasher>;
     5u32.hash(&mut hasher_2);
     assert_eq!(ordinary_hash, hasher_2.finish());
 }

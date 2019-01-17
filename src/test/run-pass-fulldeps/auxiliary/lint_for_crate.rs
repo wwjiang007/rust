@@ -1,18 +1,7 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // force-host
 
 #![feature(plugin_registrar, rustc_private)]
 #![feature(box_syntax)]
-#![feature(macro_vis_matcher)]
 
 #[macro_use] extern crate rustc;
 extern crate rustc_plugin;
@@ -56,19 +45,19 @@ declare_lint!(CRATE_NOT_GREEN, Warn, "crate not marked with #![crate_green]");
 fake_lint_pass! {
     PassOkay,
     lint_array!(CRATE_NOT_OKAY), // Single lint
-    "crate_okay"
+    "rustc_crate_okay"
 }
 
 fake_lint_pass! {
     PassRedBlue,
     lint_array!(CRATE_NOT_RED, CRATE_NOT_BLUE), // Multiple lints
-    "crate_red", "crate_blue"
+    "rustc_crate_red", "rustc_crate_blue"
 }
 
 fake_lint_pass! {
     PassGreyGreen,
     lint_array!(CRATE_NOT_GREY, CRATE_NOT_GREEN, ), // Trailing comma
-    "crate_grey", "crate_green"
+    "rustc_crate_grey", "rustc_crate_green"
 }
 
 #[plugin_registrar]

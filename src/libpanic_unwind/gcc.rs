@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! Implementation of panics backed by libgcc/libunwind (in some form)
 //!
 //! For background on exception handling and stack unwinding please see
@@ -25,7 +15,7 @@
 //!
 //! In both phases the unwinder walks stack frames from top to bottom using
 //! information from the stack frame unwind sections of the current process's
-//! modules ("module" here refers to an OS module, i.e. an executable or a
+//! modules ("module" here refers to an OS module, i.e., an executable or a
 //! dynamic library).
 //!
 //! For each stack frame, it invokes the associated "personality routine", whose
@@ -67,10 +57,10 @@ use dwarf::eh::{self, EHContext, EHAction};
 #[repr(C)]
 struct Exception {
     _uwe: uw::_Unwind_Exception,
-    cause: Option<Box<Any + Send>>,
+    cause: Option<Box<dyn Any + Send>>,
 }
 
-pub unsafe fn panic(data: Box<Any + Send>) -> u32 {
+pub unsafe fn panic(data: Box<dyn Any + Send>) -> u32 {
     let exception = Box::new(Exception {
         _uwe: uw::_Unwind_Exception {
             exception_class: rust_exception_class(),
@@ -94,7 +84,7 @@ pub fn payload() -> *mut u8 {
     ptr::null_mut()
 }
 
-pub unsafe fn cleanup(ptr: *mut u8) -> Box<Any + Send> {
+pub unsafe fn cleanup(ptr: *mut u8) -> Box<dyn Any + Send> {
     let my_ep = ptr as *mut Exception;
     let cause = (*my_ep).cause.take();
     uw::_Unwind_DeleteException(ptr as *mut _);
@@ -143,7 +133,7 @@ const UNWIND_DATA_REG: (i32, i32) = (24, 25); // I0, I1
 // The personality routine for most of our targets, except ARM, which has a slightly different ABI
 // (however, iOS goes here as it uses SjLj unwinding).  Also, the 64-bit Windows implementation
 // lives in seh64_gnu.rs
-#[cfg(all(any(target_os = "ios", not(target_arch = "arm"))))]
+#[cfg(all(any(target_os = "ios", target_os = "netbsd", not(target_arch = "arm"))))]
 #[lang = "eh_personality"]
 #[no_mangle]
 #[allow(unused)]
@@ -184,7 +174,7 @@ unsafe extern "C" fn rust_eh_personality(version: c_int,
 
 // ARM EHABI personality routine.
 // http://infocenter.arm.com/help/topic/com.arm.doc.ihi0038b/IHI0038B_ehabi.pdf
-#[cfg(all(target_arch = "arm", not(target_os = "ios")))]
+#[cfg(all(target_arch = "arm", not(target_os = "ios"), not(target_os = "netbsd")))]
 #[lang = "eh_personality"]
 #[no_mangle]
 unsafe extern "C" fn rust_eh_personality(state: uw::_Unwind_State,
@@ -296,7 +286,7 @@ unsafe extern "C" fn rust_eh_unwind_resume(panic_ctx: *mut u8) -> ! {
 // Each module's image contains a frame unwind info section (usually
 // ".eh_frame").  When a module is loaded/unloaded into the process, the
 // unwinder must be informed about the location of this section in memory. The
-// methods of achieving that vary by the platform.  On some (e.g. Linux), the
+// methods of achieving that vary by the platform.  On some (e.g., Linux), the
 // unwinder can discover unwind info sections on its own (by dynamically
 // enumerating currently loaded modules via the dl_iterate_phdr() API and
 // finding their ".eh_frame" sections); Others, like Windows, require modules

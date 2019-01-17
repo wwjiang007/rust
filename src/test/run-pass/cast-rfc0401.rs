@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 #![allow(dead_code)]
 
 use std::vec;
@@ -166,7 +156,12 @@ fn main()
 
     assert!(foo as usize != bar as usize);
 
-    assert_eq!(foo as i16, foo as usize as i16);
+    // Taking a few bits of a function's address is totally pointless and we detect that
+    // Disabling the lint to ensure that the assertion can still be run
+    #[allow(const_err)]
+    {
+        assert_eq!(foo as i16, foo as usize as i16);
+    }
 
     // fptr-ptr-cast
 

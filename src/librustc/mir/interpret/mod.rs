@@ -7,41 +7,37 @@ macro_rules! err {
 
 mod error;
 mod value;
+mod allocation;
+mod pointer;
 
-pub use self::error::{EvalError, EvalResult, EvalErrorKind, AssertMessage};
+pub use self::error::{
+    EvalError, EvalResult, EvalErrorKind, AssertMessage, ConstEvalErr, struct_error,
+    FrameInfo, ConstEvalRawResult, ConstEvalResult, ErrorHandled,
+};
 
-pub use self::value::{PrimVal, PrimValKind, Value, Pointer};
+pub use self::value::{Scalar, ScalarMaybeUndef, RawConst, ConstValue};
 
-use std::collections::BTreeMap;
+pub use self::allocation::{
+    InboundsCheck, Allocation, AllocationExtra,
+    Relocations, UndefMask,
+};
+
+pub use self::pointer::{Pointer, PointerArithmetic};
+
 use std::fmt;
 use mir;
 use hir::def_id::DefId;
-use ty::{self, TyCtxt};
-use ty::layout::{self, Align, HasDataLayout};
-use middle::region;
-use std::iter;
-use syntax::ast::Mutability;
-use rustc_serialize::{Encoder, Decoder, Decodable, Encodable};
-
-#[derive(Clone, Debug, PartialEq, RustcEncodable, RustcDecodable)]
-pub enum Lock {
-    NoLock,
-    WriteLock(DynamicLifetime),
-    /// This should never be empty -- that would be a read lock held and nobody there to release it...
-    ReadLock(Vec<DynamicLifetime>),
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
-pub struct DynamicLifetime {
-    pub frame: usize,
-    pub region: Option<region::Scope>, // "None" indicates "until the function ends"
-}
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, RustcEncodable, RustcDecodable)]
-pub enum AccessKind {
-    Read,
-    Write,
-}
+use ty::{self, TyCtxt, Instance};
+use ty::layout::{self, Size};
+use std::io;
+use rustc_serialize::{Encoder, Decodable, Encodable};
+use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::sync::{Lock as Mutex, HashMapExt};
+use rustc_data_structures::tiny_list::TinyList;
+use byteorder::{WriteBytesExt, ReadBytesExt, LittleEndian, BigEndian};
+use ty::codec::TyDecoder;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::num::NonZeroU32;
 
 /// Uniquely identifies a specific constant or static.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash, RustcEncodable, RustcDecodable)]
@@ -54,108 +50,14 @@ pub struct GlobalId<'tcx> {
     pub promoted: Option<mir::Promoted>,
 }
 
-////////////////////////////////////////////////////////////////////////////////
-// Pointer arithmetic
-////////////////////////////////////////////////////////////////////////////////
-
-pub trait PointerArithmetic: layout::HasDataLayout {
-    // These are not supposed to be overridden.
-
-    //// Trunace the given value to the pointer size; also return whether there was an overflow
-    fn truncate_to_ptr(self, val: u128) -> (u64, bool) {
-        let max_ptr_plus_1 = 1u128 << self.data_layout().pointer_size.bits();
-        ((val % max_ptr_plus_1) as u64, val >= max_ptr_plus_1)
-    }
-
-    // Overflow checking only works properly on the range from -u64 to +u64.
-    fn overflowing_signed_offset(self, val: u64, i: i128) -> (u64, bool) {
-        // FIXME: is it possible to over/underflow here?
-        if i < 0 {
-            // trickery to ensure that i64::min_value() works fine
-            // this formula only works for true negative values, it panics for zero!
-            let n = u64::max_value() - (i as u64) + 1;
-            val.overflowing_sub(n)
-        } else {
-            self.overflowing_offset(val, i as u64)
-        }
-    }
-
-    fn overflowing_offset(self, val: u64, i: u64) -> (u64, bool) {
-        let (res, over1) = val.overflowing_add(i);
-        let (res, over2) = self.truncate_to_ptr(res as u128);
-        (res, over1 || over2)
-    }
-
-    fn signed_offset<'tcx>(self, val: u64, i: i64) -> EvalResult<'tcx, u64> {
-        let (res, over) = self.overflowing_signed_offset(val, i as i128);
-        if over { err!(Overflow(mir::BinOp::Add)) } else { Ok(res) }
-    }
-
-    fn offset<'tcx>(self, val: u64, i: u64) -> EvalResult<'tcx, u64> {
-        let (res, over) = self.overflowing_offset(val, i);
-        if over { err!(Overflow(mir::BinOp::Add)) } else { Ok(res) }
-    }
-
-    fn wrapping_signed_offset(self, val: u64, i: i64) -> u64 {
-        self.overflowing_signed_offset(val, i as i128).0
-    }
-}
-
-impl<T: layout::HasDataLayout> PointerArithmetic for T {}
-
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq, RustcEncodable, RustcDecodable, Hash)]
-pub struct MemoryPointer {
-    pub alloc_id: AllocId,
-    pub offset: u64,
-}
-
-impl<'tcx> MemoryPointer {
-    pub fn new(alloc_id: AllocId, offset: u64) -> Self {
-        MemoryPointer { alloc_id, offset }
-    }
-
-    pub(crate) fn wrapping_signed_offset<C: HasDataLayout>(self, i: i64, cx: C) -> Self {
-        MemoryPointer::new(
-            self.alloc_id,
-            cx.data_layout().wrapping_signed_offset(self.offset, i),
-        )
-    }
-
-    pub fn overflowing_signed_offset<C: HasDataLayout>(self, i: i128, cx: C) -> (Self, bool) {
-        let (res, over) = cx.data_layout().overflowing_signed_offset(self.offset, i);
-        (MemoryPointer::new(self.alloc_id, res), over)
-    }
-
-    pub(crate) fn signed_offset<C: HasDataLayout>(self, i: i64, cx: C) -> EvalResult<'tcx, Self> {
-        Ok(MemoryPointer::new(
-            self.alloc_id,
-            cx.data_layout().signed_offset(self.offset, i)?,
-        ))
-    }
-
-    pub fn overflowing_offset<C: HasDataLayout>(self, i: u64, cx: C) -> (Self, bool) {
-        let (res, over) = cx.data_layout().overflowing_offset(self.offset, i);
-        (MemoryPointer::new(self.alloc_id, res), over)
-    }
-
-    pub fn offset<C: HasDataLayout>(self, i: u64, cx: C) -> EvalResult<'tcx, Self> {
-        Ok(MemoryPointer::new(
-            self.alloc_id,
-            cx.data_layout().offset(self.offset, i)?,
-        ))
-    }
-}
-
-
-#[derive(Copy, Clone, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Debug)]
+#[derive(Copy, Clone, Eq, Hash, Ord, PartialEq, PartialOrd, Debug)]
 pub struct AllocId(pub u64);
 
 impl ::rustc_serialize::UseSpecializedEncodable for AllocId {}
 impl ::rustc_serialize::UseSpecializedDecodable for AllocId {}
 
 #[derive(RustcDecodable, RustcEncodable)]
-enum AllocKind {
+enum AllocDiscriminant {
     Alloc,
     Fn,
     Static,
@@ -169,189 +71,351 @@ pub fn specialized_encode_alloc_id<
     tcx: TyCtxt<'a, 'tcx, 'tcx>,
     alloc_id: AllocId,
 ) -> Result<(), E::Error> {
-    if let Some(alloc) = tcx.interpret_interner.get_alloc(alloc_id) {
-        trace!("encoding {:?} with {:#?}", alloc_id, alloc);
-        AllocKind::Alloc.encode(encoder)?;
-        alloc.encode(encoder)?;
-    } else if let Some(fn_instance) = tcx.interpret_interner.get_fn(alloc_id) {
-        trace!("encoding {:?} with {:#?}", alloc_id, fn_instance);
-        AllocKind::Fn.encode(encoder)?;
-        fn_instance.encode(encoder)?;
-    } else if let Some(did) = tcx.interpret_interner.get_static(alloc_id) {
-        // referring to statics doesn't need to know about their allocations, just about its DefId
-        AllocKind::Static.encode(encoder)?;
-        did.encode(encoder)?;
-    } else {
-        bug!("alloc id without corresponding allocation: {}", alloc_id);
+    let alloc_kind: AllocKind<'tcx> =
+        tcx.alloc_map.lock().get(alloc_id).expect("no value for AllocId");
+    match alloc_kind {
+        AllocKind::Memory(alloc) => {
+            trace!("encoding {:?} with {:#?}", alloc_id, alloc);
+            AllocDiscriminant::Alloc.encode(encoder)?;
+            alloc.encode(encoder)?;
+        }
+        AllocKind::Function(fn_instance) => {
+            trace!("encoding {:?} with {:#?}", alloc_id, fn_instance);
+            AllocDiscriminant::Fn.encode(encoder)?;
+            fn_instance.encode(encoder)?;
+        }
+        AllocKind::Static(did) => {
+            // referring to statics doesn't need to know about their allocations,
+            // just about its DefId
+            AllocDiscriminant::Static.encode(encoder)?;
+            did.encode(encoder)?;
+        }
     }
     Ok(())
 }
 
-pub fn specialized_decode_alloc_id<
-    'a, 'tcx,
-    D: Decoder,
-    CACHE: FnOnce(&mut D, AllocId),
->(
-    decoder: &mut D,
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
-    cache: CACHE,
-) -> Result<AllocId, D::Error> {
-    match AllocKind::decode(decoder)? {
-        AllocKind::Alloc => {
-            let alloc_id = tcx.interpret_interner.reserve();
-            trace!("creating alloc id {:?}", alloc_id);
-            // insert early to allow recursive allocs
-            cache(decoder, alloc_id);
+// Used to avoid infinite recursion when decoding cyclic allocations.
+type DecodingSessionId = NonZeroU32;
 
-            let allocation = Allocation::decode(decoder)?;
-            trace!("decoded alloc {:?} {:#?}", alloc_id, allocation);
-            let allocation = tcx.intern_const_alloc(allocation);
-            tcx.interpret_interner.intern_at_reserved(alloc_id, allocation);
+#[derive(Clone)]
+enum State {
+    Empty,
+    InProgressNonAlloc(TinyList<DecodingSessionId>),
+    InProgress(TinyList<DecodingSessionId>, AllocId),
+    Done(AllocId),
+}
 
-            Ok(alloc_id)
-        },
-        AllocKind::Fn => {
-            trace!("creating fn alloc id");
-            let instance = ty::Instance::decode(decoder)?;
-            trace!("decoded fn alloc instance: {:?}", instance);
-            let id = tcx.interpret_interner.create_fn_alloc(instance);
-            trace!("created fn alloc id: {:?}", id);
-            cache(decoder, id);
-            Ok(id)
-        },
-        AllocKind::Static => {
-            trace!("creating extern static alloc id at");
-            let did = DefId::decode(decoder)?;
-            let alloc_id = tcx.interpret_interner.cache_static(did);
-            cache(decoder, alloc_id);
-            Ok(alloc_id)
-        },
+pub struct AllocDecodingState {
+    // For each AllocId we keep track of which decoding state it's currently in.
+    decoding_state: Vec<Mutex<State>>,
+    // The offsets of each allocation in the data stream.
+    data_offsets: Vec<u32>,
+}
+
+impl AllocDecodingState {
+
+    pub fn new_decoding_session(&self) -> AllocDecodingSession<'_> {
+        static DECODER_SESSION_ID: AtomicU32 = AtomicU32::new(0);
+        let counter = DECODER_SESSION_ID.fetch_add(1, Ordering::SeqCst);
+
+        // Make sure this is never zero
+        let session_id = DecodingSessionId::new((counter & 0x7FFFFFFF) + 1).unwrap();
+
+        AllocDecodingSession {
+            state: self,
+            session_id,
+        }
+    }
+
+    pub fn new(data_offsets: Vec<u32>) -> AllocDecodingState {
+        let decoding_state = vec![Mutex::new(State::Empty); data_offsets.len()];
+
+        AllocDecodingState {
+            decoding_state,
+            data_offsets,
+        }
+    }
+}
+
+#[derive(Copy, Clone)]
+pub struct AllocDecodingSession<'s> {
+    state: &'s AllocDecodingState,
+    session_id: DecodingSessionId,
+}
+
+impl<'s> AllocDecodingSession<'s> {
+
+    // Decodes an AllocId in a thread-safe way.
+    pub fn decode_alloc_id<'a, 'tcx, D>(&self,
+                                        decoder: &mut D)
+                                        -> Result<AllocId, D::Error>
+        where D: TyDecoder<'a, 'tcx>,
+              'tcx: 'a,
+    {
+        // Read the index of the allocation
+        let idx = decoder.read_u32()? as usize;
+        let pos = self.state.data_offsets[idx] as usize;
+
+        // Decode the AllocDiscriminant now so that we know if we have to reserve an
+        // AllocId.
+        let (alloc_kind, pos) = decoder.with_position(pos, |decoder| {
+            let alloc_kind = AllocDiscriminant::decode(decoder)?;
+            Ok((alloc_kind, decoder.position()))
+        })?;
+
+        // Check the decoding state, see if it's already decoded or if we should
+        // decode it here.
+        let alloc_id = {
+            let mut entry = self.state.decoding_state[idx].lock();
+
+            match *entry {
+                State::Done(alloc_id) => {
+                    return Ok(alloc_id);
+                }
+                ref mut entry @ State::Empty => {
+                    // We are allowed to decode
+                    match alloc_kind {
+                        AllocDiscriminant::Alloc => {
+                            // If this is an allocation, we need to reserve an
+                            // AllocId so we can decode cyclic graphs.
+                            let alloc_id = decoder.tcx().alloc_map.lock().reserve();
+                            *entry = State::InProgress(
+                                TinyList::new_single(self.session_id),
+                                alloc_id);
+                            Some(alloc_id)
+                        },
+                        AllocDiscriminant::Fn | AllocDiscriminant::Static => {
+                            // Fns and statics cannot be cyclic and their AllocId
+                            // is determined later by interning
+                            *entry = State::InProgressNonAlloc(
+                                TinyList::new_single(self.session_id));
+                            None
+                        }
+                    }
+                }
+                State::InProgressNonAlloc(ref mut sessions) => {
+                    if sessions.contains(&self.session_id) {
+                        bug!("This should be unreachable")
+                    } else {
+                        // Start decoding concurrently
+                        sessions.insert(self.session_id);
+                        None
+                    }
+                }
+                State::InProgress(ref mut sessions, alloc_id) => {
+                    if sessions.contains(&self.session_id) {
+                        // Don't recurse.
+                        return Ok(alloc_id)
+                    } else {
+                        // Start decoding concurrently
+                        sessions.insert(self.session_id);
+                        Some(alloc_id)
+                    }
+                }
+            }
+        };
+
+        // Now decode the actual data
+        let alloc_id = decoder.with_position(pos, |decoder| {
+            match alloc_kind {
+                AllocDiscriminant::Alloc => {
+                    let allocation = <&'tcx Allocation as Decodable>::decode(decoder)?;
+                    // We already have a reserved AllocId.
+                    let alloc_id = alloc_id.unwrap();
+                    trace!("decoded alloc {:?} {:#?}", alloc_id, allocation);
+                    decoder.tcx().alloc_map.lock().set_alloc_id_same_memory(alloc_id, allocation);
+                    Ok(alloc_id)
+                },
+                AllocDiscriminant::Fn => {
+                    assert!(alloc_id.is_none());
+                    trace!("creating fn alloc id");
+                    let instance = ty::Instance::decode(decoder)?;
+                    trace!("decoded fn alloc instance: {:?}", instance);
+                    let alloc_id = decoder.tcx().alloc_map.lock().create_fn_alloc(instance);
+                    Ok(alloc_id)
+                },
+                AllocDiscriminant::Static => {
+                    assert!(alloc_id.is_none());
+                    trace!("creating extern static alloc id at");
+                    let did = DefId::decode(decoder)?;
+                    let alloc_id = decoder.tcx().alloc_map.lock().intern_static(did);
+                    Ok(alloc_id)
+                }
+            }
+        })?;
+
+        self.state.decoding_state[idx].with_lock(|entry| {
+            *entry = State::Done(alloc_id);
+        });
+
+        Ok(alloc_id)
     }
 }
 
 impl fmt::Display for AllocId {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Hash, RustcEncodable, RustcDecodable)]
-pub struct Allocation {
-    /// The actual bytes of the allocation.
-    /// Note that the bytes of a pointer represent the offset of the pointer
-    pub bytes: Vec<u8>,
-    /// Maps from byte addresses to allocations.
-    /// Only the first byte of a pointer is inserted into the map.
-    pub relocations: BTreeMap<u64, AllocId>,
-    /// Denotes undefined memory. Reading from undefined memory is forbidden in miri
-    pub undef_mask: UndefMask,
-    /// The alignment of the allocation to detect unaligned reads.
-    pub align: Align,
-    /// Whether the allocation (of a static) should be put into mutable memory when translating
+#[derive(Debug, Clone, Eq, PartialEq, Hash, RustcDecodable, RustcEncodable)]
+pub enum AllocKind<'tcx> {
+    /// The alloc id is used as a function pointer
+    Function(Instance<'tcx>),
+    /// The alloc id points to a "lazy" static variable that did not get computed (yet).
+    /// This is also used to break the cycle in recursive statics.
+    Static(DefId),
+    /// The alloc id points to memory
+    Memory(&'tcx Allocation),
+}
+
+pub struct AllocMap<'tcx> {
+    /// Lets you know what an AllocId refers to
+    id_to_kind: FxHashMap<AllocId, AllocKind<'tcx>>,
+
+    /// Used to ensure that statics only get one associated AllocId
+    type_interner: FxHashMap<AllocKind<'tcx>, AllocId>,
+
+    /// The AllocId to assign to the next requested id.
+    /// Always incremented, never gets smaller.
+    next_id: AllocId,
+}
+
+impl<'tcx> AllocMap<'tcx> {
+    pub fn new() -> Self {
+        AllocMap {
+            id_to_kind: Default::default(),
+            type_interner: Default::default(),
+            next_id: AllocId(0),
+        }
+    }
+
+    /// Obtains a new allocation ID that can be referenced but does not
+    /// yet have an allocation backing it.
     ///
-    /// Only happens for `static mut` or `static` with interior mutability
-    pub runtime_mutability: Mutability,
-}
+    /// Make sure to call `set_alloc_id_memory` or `set_alloc_id_same_memory` before returning such
+    /// an `AllocId` from a query.
+    pub fn reserve(
+        &mut self,
+    ) -> AllocId {
+        let next = self.next_id;
+        self.next_id.0 = self.next_id.0
+            .checked_add(1)
+            .expect("You overflowed a u64 by incrementing by 1... \
+                     You've just earned yourself a free drink if we ever meet. \
+                     Seriously, how did you do that?!");
+        next
+    }
 
-impl Allocation {
-    pub fn from_bytes(slice: &[u8]) -> Self {
-        let mut undef_mask = UndefMask::new(0);
-        undef_mask.grow(slice.len() as u64, true);
-        Self {
-            bytes: slice.to_owned(),
-            relocations: BTreeMap::new(),
-            undef_mask,
-            align: Align::from_bytes(1, 1).unwrap(),
-            runtime_mutability: Mutability::Immutable,
+    fn intern(&mut self, alloc_kind: AllocKind<'tcx>) -> AllocId {
+        if let Some(&alloc_id) = self.type_interner.get(&alloc_kind) {
+            return alloc_id;
         }
+        let id = self.reserve();
+        debug!("creating alloc_kind {:?} with id {}", alloc_kind, id);
+        self.id_to_kind.insert(id, alloc_kind.clone());
+        self.type_interner.insert(alloc_kind, id);
+        id
+    }
+
+    /// Functions cannot be identified by pointers, as asm-equal functions can get deduplicated
+    /// by the linker and functions can be duplicated across crates.
+    /// We thus generate a new `AllocId` for every mention of a function. This means that
+    /// `main as fn() == main as fn()` is false, while `let x = main as fn(); x == x` is true.
+    pub fn create_fn_alloc(&mut self, instance: Instance<'tcx>) -> AllocId {
+        let id = self.reserve();
+        self.id_to_kind.insert(id, AllocKind::Function(instance));
+        id
+    }
+
+    /// Returns `None` in case the `AllocId` is dangling. An `EvalContext` can still have a
+    /// local `Allocation` for that `AllocId`, but having such an `AllocId` in a constant is
+    /// illegal and will likely ICE.
+    /// This function exists to allow const eval to detect the difference between evaluation-
+    /// local dangling pointers and allocations in constants/statics.
+    pub fn get(&self, id: AllocId) -> Option<AllocKind<'tcx>> {
+        self.id_to_kind.get(&id).cloned()
+    }
+
+    /// Panics if the `AllocId` does not refer to an `Allocation`
+    pub fn unwrap_memory(&self, id: AllocId) -> &'tcx Allocation {
+        match self.get(id) {
+            Some(AllocKind::Memory(mem)) => mem,
+            _ => bug!("expected allocation id {} to point to memory", id),
+        }
+    }
+
+    /// Generate an `AllocId` for a static or return a cached one in case this function has been
+    /// called on the same static before.
+    pub fn intern_static(&mut self, static_id: DefId) -> AllocId {
+        self.intern(AllocKind::Static(static_id))
+    }
+
+    /// Intern the `Allocation` and return a new `AllocId`, even if there's already an identical
+    /// `Allocation` with a different `AllocId`.
+    // FIXME: is this really necessary? Can we ensure `FOO` and `BAR` being different after codegen
+    // in `static FOO: u32 = 42; static BAR: u32 = 42;` even if they reuse the same allocation
+    // inside rustc?
+    pub fn allocate(&mut self, mem: &'tcx Allocation) -> AllocId {
+        let id = self.reserve();
+        self.set_alloc_id_memory(id, mem);
+        id
+    }
+
+    /// Freeze an `AllocId` created with `reserve` by pointing it at an `Allocation`. Trying to
+    /// call this function twice, even with the same `Allocation` will ICE the compiler.
+    pub fn set_alloc_id_memory(&mut self, id: AllocId, mem: &'tcx Allocation) {
+        if let Some(old) = self.id_to_kind.insert(id, AllocKind::Memory(mem)) {
+            bug!("tried to set allocation id {}, but it was already existing as {:#?}", id, old);
+        }
+    }
+
+    /// Freeze an `AllocId` created with `reserve` by pointing it at an `Allocation`. May be called
+    /// twice for the same `(AllocId, Allocation)` pair.
+    fn set_alloc_id_same_memory(&mut self, id: AllocId, mem: &'tcx Allocation) {
+        self.id_to_kind.insert_same(id, AllocKind::Memory(mem));
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Undefined byte tracking
+// Methods to access integers in the target endianness
 ////////////////////////////////////////////////////////////////////////////////
 
-type Block = u64;
-const BLOCK_SIZE: u64 = 64;
-
-#[derive(Clone, Debug, Eq, PartialEq, Hash, RustcEncodable, RustcDecodable)]
-pub struct UndefMask {
-    blocks: Vec<Block>,
-    len: u64,
-}
-
-impl_stable_hash_for!(struct mir::interpret::UndefMask{blocks, len});
-
-impl UndefMask {
-    pub fn new(size: u64) -> Self {
-        let mut m = UndefMask {
-            blocks: vec![],
-            len: 0,
-        };
-        m.grow(size, false);
-        m
-    }
-
-    /// Check whether the range `start..end` (end-exclusive) is entirely defined.
-    pub fn is_range_defined(&self, start: u64, end: u64) -> bool {
-        if end > self.len {
-            return false;
-        }
-        for i in start..end {
-            if !self.get(i) {
-                return false;
-            }
-        }
-        true
-    }
-
-    pub fn set_range(&mut self, start: u64, end: u64, new_state: bool) {
-        let len = self.len;
-        if end > len {
-            self.grow(end - len, new_state);
-        }
-        self.set_range_inbounds(start, end, new_state);
-    }
-
-    pub fn set_range_inbounds(&mut self, start: u64, end: u64, new_state: bool) {
-        for i in start..end {
-            self.set(i, new_state);
-        }
-    }
-
-    pub fn get(&self, i: u64) -> bool {
-        let (block, bit) = bit_index(i);
-        (self.blocks[block] & 1 << bit) != 0
-    }
-
-    pub fn set(&mut self, i: u64, new_state: bool) {
-        let (block, bit) = bit_index(i);
-        if new_state {
-            self.blocks[block] |= 1 << bit;
-        } else {
-            self.blocks[block] &= !(1 << bit);
-        }
-    }
-
-    pub fn grow(&mut self, amount: u64, new_state: bool) {
-        let unused_trailing_bits = self.blocks.len() as u64 * BLOCK_SIZE - self.len;
-        if amount > unused_trailing_bits {
-            let additional_blocks = amount / BLOCK_SIZE + 1;
-            assert_eq!(additional_blocks as usize as u64, additional_blocks);
-            self.blocks.extend(
-                iter::repeat(0).take(additional_blocks as usize),
-            );
-        }
-        let start = self.len;
-        self.len += amount;
-        self.set_range_inbounds(start, start + amount, new_state);
+pub fn write_target_uint(
+    endianness: layout::Endian,
+    mut target: &mut [u8],
+    data: u128,
+) -> Result<(), io::Error> {
+    let len = target.len();
+    match endianness {
+        layout::Endian::Little => target.write_uint128::<LittleEndian>(data, len),
+        layout::Endian::Big => target.write_uint128::<BigEndian>(data, len),
     }
 }
 
-fn bit_index(bits: u64) -> (usize, usize) {
-    let a = bits / BLOCK_SIZE;
-    let b = bits % BLOCK_SIZE;
-    assert_eq!(a as usize as u64, a);
-    assert_eq!(b as usize as u64, b);
-    (a as usize, b as usize)
+pub fn read_target_uint(endianness: layout::Endian, mut source: &[u8]) -> Result<u128, io::Error> {
+    match endianness {
+        layout::Endian::Little => source.read_uint128::<LittleEndian>(source.len()),
+        layout::Endian::Big => source.read_uint128::<BigEndian>(source.len()),
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Methods to facilitate working with signed integers stored in a u128
+////////////////////////////////////////////////////////////////////////////////
+
+pub fn sign_extend(value: u128, size: Size) -> u128 {
+    let size = size.bits();
+    // sign extend
+    let shift = 128 - size;
+    // shift the unsigned value to the left
+    // and back to the right as signed (essentially fills with FF on the left)
+    (((value << shift) as i128) >> shift) as u128
+}
+
+pub fn truncate(value: u128, size: Size) -> u128 {
+    let size = size.bits();
+    let shift = 128 - size;
+    // truncate (shift left to drop out leftover values, shift right to fill with zeroes)
+    (value << shift) >> shift
 }

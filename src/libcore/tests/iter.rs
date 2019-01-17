@@ -1,13 +1,4 @@
-// Copyright 2014 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
+use core::cell::Cell;
 use core::iter::*;
 use core::{i8, i16, isize};
 use core::usize;
@@ -229,7 +220,7 @@ fn test_iterator_step_by_nth_overflow() {
 
     #[derive(Clone)]
     struct Test(Bigger);
-    impl<'a> Iterator for &'a mut Test {
+    impl Iterator for &mut Test {
         type Item = i32;
         fn next(&mut self) -> Option<Self::Item> { Some(21) }
         fn nth(&mut self, n: usize) -> Option<Self::Item> {
@@ -1001,6 +992,10 @@ fn test_cycle() {
     let mut it = (0..).step_by(1).take(0).cycle();
     assert_eq!(it.size_hint(), (0, Some(0)));
     assert_eq!(it.next(), None);
+
+    assert_eq!(empty::<i32>().cycle().fold(0, |acc, x| acc + x), 0);
+
+    assert_eq!(once(1).cycle().skip(1).take(4).fold(0, |acc, x| acc + x), 4);
 }
 
 #[test]
@@ -1010,6 +1005,33 @@ fn test_iterator_nth() {
         assert_eq!(v.iter().nth(i).unwrap(), &v[i]);
     }
     assert_eq!(v.iter().nth(v.len()), None);
+}
+
+#[test]
+fn test_iterator_nth_back() {
+    let v: &[_] = &[0, 1, 2, 3, 4];
+    for i in 0..v.len() {
+        assert_eq!(v.iter().nth_back(i).unwrap(), &v[v.len() - 1 - i]);
+    }
+    assert_eq!(v.iter().nth_back(v.len()), None);
+}
+
+#[test]
+fn test_iterator_rev_nth_back() {
+    let v: &[_] = &[0, 1, 2, 3, 4];
+    for i in 0..v.len() {
+        assert_eq!(v.iter().rev().nth_back(i).unwrap(), &v[i]);
+    }
+    assert_eq!(v.iter().rev().nth_back(v.len()), None);
+}
+
+#[test]
+fn test_iterator_rev_nth() {
+    let v: &[_] = &[0, 1, 2, 3, 4];
+    for i in 0..v.len() {
+        assert_eq!(v.iter().rev().nth(i).unwrap(), &v[v.len() - 1 - i]);
+    }
+    assert_eq!(v.iter().rev().nth(v.len()), None);
 }
 
 #[test]
@@ -1233,6 +1255,23 @@ fn test_rev() {
 }
 
 #[test]
+fn test_copied() {
+    let xs = [2, 4, 6, 8];
+
+    let mut it = xs.iter().copied();
+    assert_eq!(it.len(), 4);
+    assert_eq!(it.next(), Some(2));
+    assert_eq!(it.len(), 3);
+    assert_eq!(it.next(), Some(4));
+    assert_eq!(it.len(), 2);
+    assert_eq!(it.next_back(), Some(8));
+    assert_eq!(it.len(), 1);
+    assert_eq!(it.next_back(), Some(6));
+    assert_eq!(it.len(), 0);
+    assert_eq!(it.next_back(), None);
+}
+
+#[test]
 fn test_cloned() {
     let xs = [2, 4, 6, 8];
 
@@ -1247,6 +1286,23 @@ fn test_cloned() {
     assert_eq!(it.next_back(), Some(6));
     assert_eq!(it.len(), 0);
     assert_eq!(it.next_back(), None);
+}
+
+#[test]
+fn test_cloned_side_effects() {
+    let mut count = 0;
+    {
+        let iter = [1, 2, 3]
+            .iter()
+            .map(|x| {
+                count += 1;
+                x
+            })
+            .cloned()
+            .zip(&[1]);
+        for _ in iter {}
+    }
+    assert_eq!(count, 2);
 }
 
 #[test]
@@ -1619,6 +1675,21 @@ fn test_range_step() {
 }
 
 #[test]
+fn test_step_by_skip() {
+    assert_eq!((0..640).step_by(128).skip(1).collect::<Vec<_>>(), [128, 256, 384, 512]);
+    assert_eq!((0..=50).step_by(10).nth(3), Some(30));
+    assert_eq!((200..=255u8).step_by(10).nth(3), Some(230));
+}
+
+#[test]
+fn test_range_inclusive_step() {
+    assert_eq!((0..=50).step_by(10).collect::<Vec<_>>(), [0, 10, 20, 30, 40, 50]);
+    assert_eq!((0..=5).step_by(1).collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5]);
+    assert_eq!((200..=255u8).step_by(10).collect::<Vec<_>>(), [200, 210, 220, 230, 240, 250]);
+    assert_eq!((250..=255u8).step_by(1).collect::<Vec<_>>(), [250, 251, 252, 253, 254, 255]);
+}
+
+#[test]
 fn test_range_last_max() {
     assert_eq!((0..20).last(), Some(19));
     assert_eq!((-20..0).last(), Some(-1));
@@ -1723,18 +1794,6 @@ fn test_repeat_with() {
 }
 
 #[test]
-fn test_repeat_with_rev() {
-    let mut curr = 1;
-    let mut pow2 = repeat_with(|| { let tmp = curr; curr *= 2; tmp })
-                    .rev().take(4);
-    assert_eq!(pow2.next(), Some(1));
-    assert_eq!(pow2.next(), Some(2));
-    assert_eq!(pow2.next(), Some(4));
-    assert_eq!(pow2.next(), Some(8));
-    assert_eq!(pow2.next(), None);
-}
-
-#[test]
 fn test_repeat_with_take() {
     let mut it = repeat_with(|| 42).take(3);
     assert_eq!(it.next(), Some(42));
@@ -1754,6 +1813,17 @@ fn test_repeat_with_take_collect() {
     let v: Vec<_> = repeat_with(|| { let tmp = curr; curr *= 2; tmp })
                       .take(5).collect();
     assert_eq!(v, vec![1, 2, 4, 8, 16]);
+}
+
+#[test]
+fn test_successors() {
+    let mut powers_of_10 = successors(Some(1_u16), |n| n.checked_mul(10));
+    assert_eq!(powers_of_10.by_ref().collect::<Vec<_>>(), &[1, 10, 100, 1_000, 10_000]);
+    assert_eq!(powers_of_10.next(), None);
+
+    let mut empty = successors(None::<u32>, |_| unimplemented!());
+    assert_eq!(empty.next(), None);
+    assert_eq!(empty.next(), None);
 }
 
 #[test]
@@ -1835,6 +1905,23 @@ fn test_once() {
     let mut it = once(42);
     assert_eq!(it.next(), Some(42));
     assert_eq!(it.next(), None);
+}
+
+#[test]
+fn test_once_with() {
+    let count = Cell::new(0);
+    let mut it = once_with(|| {
+        count.set(count.get() + 1);
+        42
+    });
+
+    assert_eq!(count.get(), 0);
+    assert_eq!(it.next(), Some(42));
+    assert_eq!(count.get(), 1);
+    assert_eq!(it.next(), None);
+    assert_eq!(count.get(), 1);
+    assert_eq!(it.next(), None);
+    assert_eq!(count.get(), 1);
 }
 
 #[test]

@@ -1,13 +1,4 @@
 #!/usr/bin/env bash
-# Copyright 2017 The Rust Project Developers. See the COPYRIGHT
-# file at the top-level directory of this distribution and at
-# http://rust-lang.org/COPYRIGHT.
-#
-# Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-# http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-# <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-# option. This file may not be copied, modified, or distributed
-# except according to those terms.
 
 # ignore-tidy-linelength
 
@@ -39,7 +30,7 @@ build() {
   esac
 
   hide_output make -j$(getconf _NPROCESSORS_ONLN) $tgt
-  dst=/usr/local/${arch}-unknown-fuchsia
+  dst=/usr/local/${arch}-fuchsia
   mkdir -p $dst
   cp -a build-${tgt}/sysroot/include $dst/
   cp -a build-${tgt}/sysroot/lib $dst/
@@ -55,11 +46,11 @@ rm -rf zircon
 
 for arch in x86_64 aarch64; do
   for tool in clang clang++; do
-    cat >/usr/local/bin/${arch}-unknown-fuchsia-${tool} <<EOF
+    cat >/usr/local/bin/${arch}-fuchsia-${tool} <<EOF
 #!/bin/sh
-${tool} --target=${arch}-unknown-fuchsia --sysroot=/usr/local/${arch}-unknown-fuchsia "\$@"
+${tool} --target=${arch}-fuchsia --sysroot=/usr/local/${arch}-fuchsia "\$@"
 EOF
-    chmod +x /usr/local/bin/${arch}-unknown-fuchsia-${tool}
+    chmod +x /usr/local/bin/${arch}-fuchsia-${tool}
   done
-  ln -s /usr/local/bin/llvm-ar /usr/local/bin/${arch}-unknown-fuchsia-ar
+  ln -s /usr/local/bin/llvm-ar /usr/local/bin/${arch}-fuchsia-ar
 done

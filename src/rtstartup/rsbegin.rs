@@ -1,13 +1,3 @@
-// Copyright 2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 // rsbegin.o and rsend.o are the so called "compiler runtime startup objects".
 // They contain code needed to correctly initialize the compiler runtime.
 //
@@ -23,7 +13,7 @@
 // of other runtime components (registered via yet another special image section).
 
 #![feature(no_core, lang_items, optin_builtin_traits)]
-#![crate_type="rlib"]
+#![crate_type = "rlib"]
 #![no_core]
 #![allow(non_camel_case_types)]
 
@@ -43,7 +33,7 @@ pub unsafe fn drop_in_place<T: ?Sized>(to_drop: *mut T) {
     drop_in_place(to_drop);
 }
 
-#[cfg(all(target_os="windows", target_arch = "x86", target_env="gnu"))]
+#[cfg(all(target_os = "windows", target_arch = "x86", target_env = "gnu"))]
 pub mod eh_frames {
     #[no_mangle]
     #[link_section = ".eh_frame"]
@@ -54,6 +44,21 @@ pub mod eh_frames {
     // This is defined as `struct object` in $GCC/libgcc/unwind-dw2-fde.h.
     static mut OBJ: [isize; 6] = [0; 6];
 
+    macro_rules! impl_copy {
+        ($($t:ty)*) => {
+            $(
+                impl ::Copy for $t {}
+            )*
+        }
+    }
+
+    impl_copy! {
+        usize u8 u16 u32 u64 u128
+        isize i8 i16 i32 i64 i128
+        f32 f64
+        bool char
+    }
+
     // Unwind info registration/deregistration routines.
     // See the docs of `unwind` module in libstd.
     extern "C" {
@@ -63,21 +68,25 @@ pub mod eh_frames {
 
     unsafe fn init() {
         // register unwind info on module startup
-        rust_eh_register_frames(&__EH_FRAME_BEGIN__ as *const u8,
-                                &mut OBJ as *mut _ as *mut u8);
+        rust_eh_register_frames(
+            &__EH_FRAME_BEGIN__ as *const u8,
+            &mut OBJ as *mut _ as *mut u8,
+        );
     }
 
     unsafe fn uninit() {
         // unregister on shutdown
-        rust_eh_unregister_frames(&__EH_FRAME_BEGIN__ as *const u8,
-                                  &mut OBJ as *mut _ as *mut u8);
+        rust_eh_unregister_frames(
+            &__EH_FRAME_BEGIN__ as *const u8,
+            &mut OBJ as *mut _ as *mut u8,
+        );
     }
 
     // MSVC-specific init/uninit routine registration
     pub mod ms_init {
         // .CRT$X?? sections are roughly analogous to ELF's .init_array and .fini_array,
         // except that they exploit the fact that linker will sort them alphabitically,
-        // so e.g. sections with names between .CRT$XIA and .CRT$XIZ are guaranteed to be
+        // so e.g., sections with names between .CRT$XIA and .CRT$XIZ are guaranteed to be
         // placed between those two, without requiring any ordering of objects on the linker
         // command line.
         // Note that ordering of same-named sections from different objects is not guaranteed.

@@ -1,14 +1,6 @@
-// Copyright 2012-2015 The Rust Project Developers. See the COPYRIGHT
-// file at the top-level directory of this distribution and at
-// http://rust-lang.org/COPYRIGHT.
-//
-// Licensed under the Apache License, Version 2.0 <LICENSE-APACHE or
-// http://www.apache.org/licenses/LICENSE-2.0> or the MIT license
-// <LICENSE-MIT or http://opensource.org/licenses/MIT>, at your
-// option. This file may not be copied, modified, or distributed
-// except according to those terms.
-
 //! A dynamically-sized view into a contiguous sequence, `[T]`.
+//!
+//! *[See also the slice primitive type](../../std/primitive.slice.html).*
 //!
 //! Slices are a view into a block of memory represented as a pointer and a
 //! length.
@@ -78,8 +70,6 @@
 //! * Further methods that return iterators are [`.split`], [`.splitn`],
 //!   [`.chunks`], [`.windows`] and more.
 //!
-//! *[See also the slice primitive type](../../std/primitive.slice.html).*
-//!
 //! [`Clone`]: ../../std/clone/trait.Clone.html
 //! [`Eq`]: ../../std/cmp/trait.Eq.html
 //! [`Ord`]: ../../std/cmp/trait.Ord.html
@@ -101,7 +91,6 @@ use core::cmp::Ordering::{self, Less};
 use core::mem::size_of;
 use core::mem;
 use core::ptr;
-#[cfg(stage0)] use core::slice::SliceExt;
 use core::{u8, u16, u32};
 
 use borrow::{Borrow, BorrowMut, ToOwned};
@@ -120,12 +109,14 @@ pub use core::slice::{SplitN, RSplitN, SplitNMut, RSplitNMut};
 pub use core::slice::{RSplit, RSplitMut};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::slice::{from_raw_parts, from_raw_parts_mut};
-#[unstable(feature = "from_ref", issue = "45703")]
-pub use core::slice::{from_ref, from_ref_mut};
-#[unstable(feature = "slice_get_slice", issue = "35729")]
+#[stable(feature = "from_ref", since = "1.28.0")]
+pub use core::slice::{from_ref, from_mut};
+#[stable(feature = "slice_get_slice", since = "1.28.0")]
 pub use core::slice::SliceIndex;
-#[unstable(feature = "exact_chunks", issue = "47115")]
-pub use core::slice::{ExactChunks, ExactChunksMut};
+#[stable(feature = "chunks_exact", since = "1.31.0")]
+pub use core::slice::{ChunksExact, ChunksExactMut};
+#[stable(feature = "rchunks", since = "1.31.0")]
+pub use core::slice::{RChunks, RChunksMut, RChunksExact, RChunksExactMut};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Basic slice extension methods
@@ -171,16 +162,12 @@ mod hack {
     }
 }
 
-#[cfg_attr(stage0, lang = "slice")]
-#[cfg_attr(not(stage0), lang = "slice_alloc")]
+#[lang = "slice_alloc"]
 #[cfg(not(test))]
 impl<T> [T] {
-    #[cfg(stage0)]
-    slice_core_methods!();
-
     /// Sorts the slice.
     ///
-    /// This sort is stable (i.e. does not reorder equal elements) and `O(n log n)` worst-case.
+    /// This sort is stable (i.e., does not reorder equal elements) and `O(n log n)` worst-case.
     ///
     /// When applicable, unstable sorting is preferred because it is generally faster than stable
     /// sorting and it doesn't allocate auxiliary memory.
@@ -214,7 +201,23 @@ impl<T> [T] {
 
     /// Sorts the slice with a comparator function.
     ///
-    /// This sort is stable (i.e. does not reorder equal elements) and `O(n log n)` worst-case.
+    /// This sort is stable (i.e., does not reorder equal elements) and `O(n log n)` worst-case.
+    ///
+    /// The comparator function must define a total ordering for the elements in the slice. If
+    /// the ordering is not total, the order of the elements is unspecified. An order is a
+    /// total order if it is (for all a, b and c):
+    ///
+    /// * total and antisymmetric: exactly one of a < b, a == b or a > b is true; and
+    /// * transitive, a < b and b < c implies a < c. The same must hold for both == and >.
+    ///
+    /// For example, while [`f64`] doesn't implement [`Ord`] because `NaN != NaN`, we can use
+    /// `partial_cmp` as our sort function when we know the slice doesn't contain a `NaN`.
+    ///
+    /// ```
+    /// let mut floats = [5f64, 4.0, 1.0, 3.0, 2.0];
+    /// floats.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    /// assert_eq!(floats, [1.0, 2.0, 3.0, 4.0, 5.0]);
+    /// ```
     ///
     /// When applicable, unstable sorting is preferred because it is generally faster than stable
     /// sorting and it doesn't allocate auxiliary memory.
@@ -251,7 +254,7 @@ impl<T> [T] {
 
     /// Sorts the slice with a key extraction function.
     ///
-    /// This sort is stable (i.e. does not reorder equal elements) and `O(m n log(m n))`
+    /// This sort is stable (i.e., does not reorder equal elements) and `O(m n log(m n))`
     /// worst-case, where the key function is `O(m)`.
     ///
     /// When applicable, unstable sorting is preferred because it is generally faster than stable
@@ -288,10 +291,10 @@ impl<T> [T] {
     ///
     /// During sorting, the key function is called only once per element.
     ///
-    /// This sort is stable (i.e. does not reorder equal elements) and `O(m n + n log n)`
+    /// This sort is stable (i.e., does not reorder equal elements) and `O(m n + n log n)`
     /// worst-case, where the key function is `O(m)`.
     ///
-    /// For simple key functions (e.g. functions that are property accesses or
+    /// For simple key functions (e.g., functions that are property accesses or
     /// basic operations), [`sort_by_key`](#method.sort_by_key) is likely to be
     /// faster.
     ///
@@ -397,6 +400,10 @@ impl<T> [T] {
 
     /// Creates a vector by repeating a slice `n` times.
     ///
+    /// # Panics
+    ///
+    /// This function will panic if the capacity would overflow.
+    ///
     /// # Examples
     ///
     /// Basic usage:
@@ -406,6 +413,16 @@ impl<T> [T] {
     ///
     /// fn main() {
     ///     assert_eq!([1, 2].repeat(3), vec![1, 2, 1, 2, 1, 2]);
+    /// }
+    /// ```
+    ///
+    /// A panic upon overflow:
+    ///
+    /// ```should_panic
+    /// #![feature(repeat_generic_slice)]
+    /// fn main() {
+    ///     // this will panic at runtime
+    ///     b"0123456789abcdef".repeat(usize::max_value());
     /// }
     /// ```
     #[unstable(feature = "repeat_generic_slice",
@@ -422,7 +439,7 @@ impl<T> [T] {
         // and `rem` is the remaining part of `n`.
 
         // Using `Vec` to access `set_len()`.
-        let mut buf = Vec::with_capacity(self.len() * n);
+        let mut buf = Vec::with_capacity(self.len().checked_mul(n).expect("capacity overflow"));
 
         // `2^expn` repetition is done by doubling `buf` `expn`-times.
         buf.extend(self);
@@ -467,8 +484,7 @@ impl<T> [T] {
     }
 }
 
-#[cfg_attr(stage0, lang = "slice_u8")]
-#[cfg_attr(not(stage0), lang = "slice_u8_alloc")]
+#[lang = "slice_u8_alloc"]
 #[cfg(not(test))]
 impl [u8] {
     /// Returns a vector containing a copy of this slice where each byte
@@ -504,9 +520,6 @@ impl [u8] {
         me.make_ascii_lowercase();
         me
     }
-
-    #[cfg(stage0)]
-    slice_u8_core_methods!();
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -566,7 +579,7 @@ impl<T: Clone, V: Borrow<[T]>> SliceConcatExt<T> for [V] {
     type Output = Vec<T>;
 
     fn concat(&self) -> Vec<T> {
-        let size = self.iter().fold(0, |acc, v| acc + v.borrow().len());
+        let size = self.iter().map(|slice| slice.borrow().len()).sum();
         let mut result = Vec::with_capacity(size);
         for v in self {
             result.extend_from_slice(v.borrow())
@@ -575,15 +588,17 @@ impl<T: Clone, V: Borrow<[T]>> SliceConcatExt<T> for [V] {
     }
 
     fn join(&self, sep: &T) -> Vec<T> {
-        let size = self.iter().fold(0, |acc, v| acc + v.borrow().len());
-        let mut result = Vec::with_capacity(size + self.len());
-        let mut first = true;
-        for v in self {
-            if first {
-                first = false
-            } else {
-                result.push(sep.clone())
-            }
+        let mut iter = self.iter();
+        let first = match iter.next() {
+            Some(first) => first,
+            None => return vec![],
+        };
+        let size = self.iter().map(|slice| slice.borrow().len()).sum::<usize>() + self.len() - 1;
+        let mut result = Vec::with_capacity(size);
+        result.extend_from_slice(first.borrow());
+
+        for v in iter {
+            result.push(sep.clone());
             result.extend_from_slice(v.borrow())
         }
         result
@@ -722,8 +737,8 @@ unsafe fn merge<T, F>(v: &mut [T], mid: usize, buf: *mut T, is_less: &mut F)
 {
     let len = v.len();
     let v = v.as_mut_ptr();
-    let v_mid = v.offset(mid as isize);
-    let v_end = v.offset(len as isize);
+    let v_mid = v.add(mid);
+    let v_end = v.add(len);
 
     // The merge process first copies the shorter run into `buf`. Then it traces the newly copied
     // run and the longer run forwards (or backwards), comparing their next unconsumed elements and
@@ -749,7 +764,7 @@ unsafe fn merge<T, F>(v: &mut [T], mid: usize, buf: *mut T, is_less: &mut F)
         ptr::copy_nonoverlapping(v, buf, mid);
         hole = MergeHole {
             start: buf,
-            end: buf.offset(mid as isize),
+            end: buf.add(mid),
             dest: v,
         };
 
@@ -773,7 +788,7 @@ unsafe fn merge<T, F>(v: &mut [T], mid: usize, buf: *mut T, is_less: &mut F)
         ptr::copy_nonoverlapping(v_mid, buf, len - mid);
         hole = MergeHole {
             start: buf,
-            end: buf.offset((len - mid) as isize),
+            end: buf.add(len - mid),
             dest: v_mid,
         };
 
