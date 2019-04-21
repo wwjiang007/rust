@@ -4,15 +4,15 @@
 //! library. Each macro is available for use when linking against the standard
 //! library.
 
-/// The entry point for panic of Rust threads.
+/// Panics the current thread.
 ///
 /// This allows a program to terminate immediately and provide feedback
 /// to the caller of the program. `panic!` should be used when a program reaches
-/// an unrecoverable problem.
+/// an unrecoverable state.
 ///
 /// This macro is the perfect way to assert conditions in example code and in
-/// tests.  `panic!` is closely tied with the `unwrap` method of both [`Option`]
-/// and [`Result`][runwrap] enums.  Both implementations call `panic!` when they are set
+/// tests. `panic!` is closely tied with the `unwrap` method of both [`Option`]
+/// and [`Result`][runwrap] enums. Both implementations call `panic!` when they are set
 /// to None or Err variants.
 ///
 /// This macro is used to inject panic into a Rust thread, causing the thread to
@@ -21,7 +21,7 @@
 /// is transmitted.
 ///
 /// [`Result`] enum is often a better solution for recovering from errors than
-/// using the `panic!` macro.  This macro should be used to avoid proceeding using
+/// using the `panic!` macro. This macro should be used to avoid proceeding using
 /// incorrect values, such as from external sources. Detailed information about
 /// error handling is found in the [book].
 ///
@@ -53,7 +53,7 @@
 /// ```
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(__rust_unstable_column, libstd_sys_internals)]
 macro_rules! panic {
     () => ({
         panic!("explicit panic")
@@ -70,7 +70,7 @@ macro_rules! panic {
     });
 }
 
-/// Macro for printing to the standard output.
+/// Prints to the standard output.
 ///
 /// Equivalent to the [`println!`] macro except that a newline is not printed at
 /// the end of the message.
@@ -79,7 +79,7 @@ macro_rules! panic {
 /// necessary to use [`io::stdout().flush()`][flush] to ensure the output is emitted
 /// immediately.
 ///
-/// Use `print!` only for the primary output of your program.  Use
+/// Use `print!` only for the primary output of your program. Use
 /// [`eprint!`] instead to print error and progress messages.
 ///
 /// [`println!`]: ../std/macro.println.html
@@ -111,12 +111,12 @@ macro_rules! panic {
 /// ```
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(print_internals)]
 macro_rules! print {
     ($($arg:tt)*) => ($crate::io::_print(format_args!($($arg)*)));
 }
 
-/// Macro for printing to the standard output, with a newline.
+/// Prints to the standard output, with a newline.
 ///
 /// On all platforms, the newline is the LINE FEED character (`\n`/`U+000A`) alone
 /// (no additional CARRIAGE RETURN (`\r`/`U+000D`).
@@ -124,7 +124,7 @@ macro_rules! print {
 /// Use the [`format!`] syntax to write data to the standard output.
 /// See [`std::fmt`] for more information.
 ///
-/// Use `println!` only for the primary output of your program.  Use
+/// Use `println!` only for the primary output of your program. Use
 /// [`eprintln!`] instead to print error and progress messages.
 ///
 /// [`format!`]: ../std/macro.format.html
@@ -143,7 +143,7 @@ macro_rules! print {
 /// ```
 #[macro_export]
 #[stable(feature = "rust1", since = "1.0.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(print_internals, format_args_nl)]
 macro_rules! println {
     () => (print!("\n"));
     ($($arg:tt)*) => ({
@@ -151,13 +151,13 @@ macro_rules! println {
     })
 }
 
-/// Macro for printing to the standard error.
+/// Prints to the standard error.
 ///
 /// Equivalent to the [`print!`] macro, except that output goes to
-/// [`io::stderr`] instead of `io::stdout`.  See [`print!`] for
+/// [`io::stderr`] instead of `io::stdout`. See [`print!`] for
 /// example usage.
 ///
-/// Use `eprint!` only for error and progress messages.  Use `print!`
+/// Use `eprint!` only for error and progress messages. Use `print!`
 /// instead for the primary output of your program.
 ///
 /// [`io::stderr`]: ../std/io/struct.Stderr.html
@@ -174,18 +174,18 @@ macro_rules! println {
 /// ```
 #[macro_export]
 #[stable(feature = "eprint", since = "1.19.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(print_internals)]
 macro_rules! eprint {
     ($($arg:tt)*) => ($crate::io::_eprint(format_args!($($arg)*)));
 }
 
-/// Macro for printing to the standard error, with a newline.
+/// Prints to the standard error, with a newline.
 ///
 /// Equivalent to the [`println!`] macro, except that output goes to
-/// [`io::stderr`] instead of `io::stdout`.  See [`println!`] for
+/// [`io::stderr`] instead of `io::stdout`. See [`println!`] for
 /// example usage.
 ///
-/// Use `eprintln!` only for error and progress messages.  Use `println!`
+/// Use `eprintln!` only for error and progress messages. Use `println!`
 /// instead for the primary output of your program.
 ///
 /// [`io::stderr`]: ../std/io/struct.Stderr.html
@@ -202,7 +202,7 @@ macro_rules! eprint {
 /// ```
 #[macro_export]
 #[stable(feature = "eprint", since = "1.19.0")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(print_internals, format_args_nl)]
 macro_rules! eprintln {
     () => (eprint!("\n"));
     ($($arg:tt)*) => ({
@@ -210,8 +210,10 @@ macro_rules! eprintln {
     })
 }
 
-/// A macro for quick and dirty debugging with which you can inspect
-/// the value of a given expression. An example:
+/// Prints and returns the value of a given expression for quick and dirty
+/// debugging.
+///
+/// An example:
 ///
 /// ```rust
 /// let a = 2;
@@ -231,10 +233,14 @@ macro_rules! eprintln {
 /// to give up ownership, you can instead borrow with `dbg!(&expr)`
 /// for some expression `expr`.
 ///
+/// The `dbg!` macro works exactly the same in release builds.
+/// This is useful when debugging issues that only occur in release
+/// builds or when debugging in release mode is significantly faster.
+///
 /// Note that the macro is intended as a debugging tool and therefore you
 /// should avoid having uses of it in version control for longer periods.
 /// Use cases involving debug output that should be added to version control
-/// may be better served by macros such as `debug!` from the `log` crate.
+/// are better served by macros such as [`debug!`] from the [`log`] crate.
 ///
 /// # Stability
 ///
@@ -305,10 +311,34 @@ macro_rules! eprintln {
 /// let _ = dbg!(a); // <-- `a` is moved again; error!
 /// ```
 ///
+/// You can also use `dbg!()` without a value to just print the
+/// file and line whenever it's reached.
+///
+/// Finally, if you want to `dbg!(..)` multiple values, it will treat them as
+/// a tuple (and return it, too):
+///
+/// ```
+/// assert_eq!(dbg!(1usize, 2u32), (1, 2));
+/// ```
+///
+/// However, a single argument with a trailing comma will still not be treated
+/// as a tuple, following the convention of ignoring trailing commas in macro
+/// invocations. You can use a 1-tuple directly if you need one:
+///
+/// ```
+/// assert_eq!(1, dbg!(1u32,)); // trailing comma ignored
+/// assert_eq!((1,), dbg!((1u32,))); // 1-tuple
+/// ```
+///
 /// [stderr]: https://en.wikipedia.org/wiki/Standard_streams#Standard_error_(stderr)
+/// [`debug!`]: https://docs.rs/log/*/log/macro.debug.html
+/// [`log`]: https://crates.io/crates/log
 #[macro_export]
 #[stable(feature = "dbg_macro", since = "1.32.0")]
 macro_rules! dbg {
+    () => {
+        eprintln!("[{}:{}]", file!(), line!());
+    };
     ($val:expr) => {
         // Use of `match` here is intentional because it affects the lifetimes
         // of temporaries - https://stackoverflow.com/a/48732525/1063961
@@ -319,20 +349,25 @@ macro_rules! dbg {
                 tmp
             }
         }
-    }
+    };
+    // Trailing comma with single argument is ignored
+    ($val:expr,) => { dbg!($val) };
+    ($($val:expr),+ $(,)?) => {
+        ($(dbg!($val)),+,)
+    };
 }
 
-/// A macro to await on an async call.
+/// Awaits the completion of an async call.
 #[macro_export]
 #[unstable(feature = "await_macro", issue = "50547")]
-#[allow_internal_unstable]
+#[allow_internal_unstable(gen_future, generators)]
 #[allow_internal_unsafe]
-macro_rules! await {
+macro_rules! r#await {
     ($e:expr) => { {
         let mut pinned = $e;
         loop {
             if let $crate::task::Poll::Ready(x) =
-                $crate::future::poll_with_tls_waker(unsafe {
+                $crate::future::poll_with_tls_context(unsafe {
                     $crate::pin::Pin::new_unchecked(&mut pinned)
                 })
             {
@@ -345,7 +380,7 @@ macro_rules! await {
     } }
 }
 
-/// A macro to select an event from a number of receivers.
+/// Selects the first successful receive event from a number of receivers.
 ///
 /// This macro is used to wait for the first event to occur on a number of
 /// receivers. It places no restrictions on the types of receivers given to
@@ -417,7 +452,7 @@ macro_rules! assert_approx_eq {
 #[cfg(rustdoc)]
 mod builtin {
 
-    /// Unconditionally causes compilation to fail with the given error message when encountered.
+    /// Causes compilation to fail with the given error message when encountered.
     ///
     /// This macro should be used when a crate uses a conditional compilation strategy to provide
     /// better error messages for erroneous conditions. It's the compiler-level form of [`panic!`],
@@ -459,19 +494,19 @@ mod builtin {
         ($msg:expr,) => ({ /* compiler built-in */ });
     }
 
-    /// The core macro for formatted string creation & output.
+    /// Constructs parameters for the other string-formatting macros.
     ///
     /// This macro functions by taking a formatting string literal containing
-    /// `{}` for each additional argument passed.  `format_args!` prepares the
+    /// `{}` for each additional argument passed. `format_args!` prepares the
     /// additional parameters to ensure the output can be interpreted as a string
-    /// and canonicalizes the arguments into a single type.  Any value that implements
+    /// and canonicalizes the arguments into a single type. Any value that implements
     /// the [`Display`] trait can be passed to `format_args!`, as can any
     /// [`Debug`] implementation be passed to a `{:?}` within the formatting string.
     ///
     /// This macro produces a value of type [`fmt::Arguments`]. This value can be
     /// passed to the macros within [`std::fmt`] for performing useful redirection.
     /// All other formatting macros ([`format!`], [`write!`], [`println!`], etc) are
-    /// proxied through this one.  `format_args!`, unlike its derived macros, avoids
+    /// proxied through this one. `format_args!`, unlike its derived macros, avoids
     /// heap allocations.
     ///
     /// You can use the [`fmt::Arguments`] value that `format_args!` returns
@@ -511,7 +546,7 @@ mod builtin {
         ($fmt:expr, $($args:tt)*) => ({ /* compiler built-in */ });
     }
 
-    /// Inspect an environment variable at compile time.
+    /// Inspects an environment variable at compile time.
     ///
     /// This macro will expand to the value of the named environment variable at
     /// compile time, yielding an expression of type `&'static str`.
@@ -549,12 +584,12 @@ mod builtin {
         ($name:expr,) => ({ /* compiler built-in */ });
     }
 
-    /// Optionally inspect an environment variable at compile time.
+    /// Optionally inspects an environment variable at compile time.
     ///
     /// If the named environment variable is present at compile time, this will
     /// expand into an expression of type `Option<&'static str>` whose value is
     /// `Some` of the value of the environment variable. If the environment
-    /// variable is not present, then this will expand to `None`.  See
+    /// variable is not present, then this will expand to `None`. See
     /// [`Option<T>`][option] for more information on this type.
     ///
     /// A compile time error is never emitted when using this macro regardless
@@ -575,7 +610,7 @@ mod builtin {
         ($name:expr,) => ({ /* compiler built-in */ });
     }
 
-    /// Concatenate identifiers into one identifier.
+    /// Concatenates identifiers into one identifier.
     ///
     /// This macro takes any number of comma-separated identifiers, and
     /// concatenates them all into one, yielding an expression which is a new
@@ -628,7 +663,7 @@ mod builtin {
         ($($e:expr,)*) => ({ /* compiler built-in */ });
     }
 
-    /// A macro which expands to the line number on which it was invoked.
+    /// Expands to the line number on which it was invoked.
     ///
     /// With [`column!`] and [`file!`], these macros provide debugging information for
     /// developers about the location within the source.
@@ -653,7 +688,7 @@ mod builtin {
     #[rustc_doc_only_macro]
     macro_rules! line { () => ({ /* compiler built-in */ }) }
 
-    /// A macro which expands to the column number on which it was invoked.
+    /// Expands to the column number at which it was invoked.
     ///
     /// With [`line!`] and [`file!`], these macros provide debugging information for
     /// developers about the location within the source.
@@ -678,7 +713,7 @@ mod builtin {
     #[rustc_doc_only_macro]
     macro_rules! column { () => ({ /* compiler built-in */ }) }
 
-    /// A macro which expands to the file name from which it was invoked.
+    /// Expands to the file name in which it was invoked.
     ///
     /// With [`line!`] and [`column!`], these macros provide debugging information for
     /// developers about the location within the source.
@@ -702,7 +737,7 @@ mod builtin {
     #[rustc_doc_only_macro]
     macro_rules! file { () => ({ /* compiler built-in */ }) }
 
-    /// A macro which stringifies its arguments.
+    /// Stringifies its arguments.
     ///
     /// This macro will yield an expression of type `&'static str` which is the
     /// stringification of all the tokens passed to the macro. No restrictions
@@ -816,14 +851,16 @@ mod builtin {
     #[rustc_doc_only_macro]
     macro_rules! module_path { () => ({ /* compiler built-in */ }) }
 
-    /// Boolean evaluation of configuration flags, at compile-time.
+    /// Evaluates boolean combinations of configuration flags at compile-time.
     ///
     /// In addition to the `#[cfg]` attribute, this macro is provided to allow
     /// boolean expression evaluation of configuration flags. This frequently
     /// leads to less duplicated code.
     ///
-    /// The syntax given to this macro is the same syntax as the `cfg`
+    /// The syntax given to this macro is the same syntax as the [`cfg`]
     /// attribute.
+    ///
+    /// [`cfg`]: ../reference/conditional-compilation.html#the-cfg-attribute
     ///
     /// # Examples
     ///
@@ -838,7 +875,7 @@ mod builtin {
     #[rustc_doc_only_macro]
     macro_rules! cfg { ($($cfg:tt)*) => ({ /* compiler built-in */ }) }
 
-    /// Parse a file as an expression or an item according to the context.
+    /// Parses a file as an expression or an item according to the context.
     ///
     /// The file is located relative to the current file (similarly to how
     /// modules are found).
@@ -884,7 +921,7 @@ mod builtin {
         ($file:expr,) => ({ /* compiler built-in */ });
     }
 
-    /// Ensure that a boolean expression is `true` at runtime.
+    /// Asserts that a boolean expression is `true` at runtime.
     ///
     /// This will invoke the [`panic!`] macro if the provided expression cannot be
     /// evaluated to `true` at runtime.
@@ -904,7 +941,7 @@ mod builtin {
     /// # Custom Messages
     ///
     /// This macro has a second form, where a custom panic message can
-    /// be provided with or without arguments for formatting.  See [`std::fmt`]
+    /// be provided with or without arguments for formatting. See [`std::fmt`]
     /// for syntax for this form.
     ///
     /// [`panic!`]: macro.panic.html
@@ -938,7 +975,7 @@ mod builtin {
     }
 }
 
-/// A macro for defining `#[cfg]` if-else statements.
+/// Defines `#[cfg]` if-else statements.
 ///
 /// This is similar to the `if/elif` C preprocessor macro by allowing definition
 /// of a cascade of `#[cfg]` cases, emitting the implementation which matches

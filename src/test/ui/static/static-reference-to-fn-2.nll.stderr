@@ -37,11 +37,11 @@ error[E0515]: cannot return value referencing temporary value
 LL | /     StateMachineIter {
 LL | |         statefn: &id(state1 as StateMachineFunc)
    | |                   ------------------------------ temporary value created here
-LL | |         //~^ ERROR borrowed value does not live long enough
+LL | |
 LL | |     }
    | |_____^ returns a value referencing data owned by the current function
 
 error: aborting due to 4 previous errors
 
-Some errors occurred: E0515, E0716.
+Some errors have detailed explanations: E0515, E0716.
 For more information about an error, try `rustc --explain E0515`.

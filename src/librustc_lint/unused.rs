@@ -1,20 +1,25 @@
 use rustc::hir::def::Def;
 use rustc::hir::def_id::DefId;
+use rustc::lint;
 use rustc::ty;
 use rustc::ty::adjustment;
+use rustc_data_structures::fx::FxHashMap;
 use lint::{LateContext, EarlyContext, LintContext, LintArray};
 use lint::{LintPass, EarlyLintPass, LateLintPass};
 
 use syntax::ast;
 use syntax::attr;
 use syntax::errors::Applicability;
-use syntax::feature_gate::{BUILTIN_ATTRIBUTES, AttributeType};
+use syntax::feature_gate::{AttributeType, BuiltinAttribute, BUILTIN_ATTRIBUTE_MAP};
 use syntax::print::pprust;
 use syntax::symbol::keywords;
+use syntax::symbol::Symbol;
 use syntax::util::parser;
 use syntax_pos::Span;
 
 use rustc::hir;
+
+use log::debug;
 
 declare_lint! {
     pub UNUSED_MUST_USE,
@@ -29,19 +34,12 @@ declare_lint! {
     "unused result of an expression in a statement"
 }
 
-#[derive(Copy, Clone)]
-pub struct UnusedResults;
-
-impl LintPass for UnusedResults {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(UNUSED_MUST_USE, UNUSED_RESULTS)
-    }
-}
+declare_lint_pass!(UnusedResults => [UNUSED_MUST_USE, UNUSED_RESULTS]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnusedResults {
-    fn check_stmt(&mut self, cx: &LateContext, s: &hir::Stmt) {
+    fn check_stmt(&mut self, cx: &LateContext<'_, '_>, s: &hir::Stmt) {
         let expr = match s.node {
-            hir::StmtKind::Semi(ref expr, _) => &**expr,
+            hir::StmtKind::Semi(ref expr) => &**expr,
             _ => return,
         };
 
@@ -51,7 +49,9 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnusedResults {
 
         let t = cx.tables.expr_ty(&expr);
         let type_permits_lack_of_use = if t.is_unit()
-            || cx.tcx.is_ty_uninhabited_from(cx.tcx.hir().get_module_parent(expr.id), t) {
+            || cx.tcx.is_ty_uninhabited_from(
+                cx.tcx.hir().get_module_parent_by_hir_id(expr.hir_id), t)
+        {
             true
         } else {
             match t.sty {
@@ -103,7 +103,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnusedResults {
                 }
             },
             hir::ExprKind::MethodCall(..) => {
-                cx.tables.type_dependent_defs().get(expr.hir_id).cloned()
+                cx.tables.type_dependent_def(expr.hir_id)
             },
             _ => None
         };
@@ -164,7 +164,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnusedResults {
         }
 
         fn check_must_use(
-            cx: &LateContext,
+            cx: &LateContext<'_, '_>,
             def_id: DefId,
             sp: Span,
             descr_pre_path: &str,
@@ -173,7 +173,7 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnusedResults {
             for attr in cx.tcx.get_attrs(def_id).iter() {
                 if attr.check_name("must_use") {
                     let msg = format!("unused {}`{}`{} that must be used",
-                        descr_pre_path, cx.tcx.item_path_str(def_id), descr_post_path);
+                        descr_pre_path, cx.tcx.def_path_str(def_id), descr_post_path);
                     let mut err = cx.struct_span_lint(UNUSED_MUST_USE, sp, &msg);
                     // check for #[must_use = "..."]
                     if let Some(note) = attr.value_str() {
@@ -194,18 +194,11 @@ declare_lint! {
     "path statements with no effect"
 }
 
-#[derive(Copy, Clone)]
-pub struct PathStatements;
-
-impl LintPass for PathStatements {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(PATH_STATEMENTS)
-    }
-}
+declare_lint_pass!(PathStatements => [PATH_STATEMENTS]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for PathStatements {
-    fn check_stmt(&mut self, cx: &LateContext, s: &hir::Stmt) {
-        if let hir::StmtKind::Semi(ref expr, _) = s.node {
+    fn check_stmt(&mut self, cx: &LateContext<'_, '_>, s: &hir::Stmt) {
+        if let hir::StmtKind::Semi(ref expr) = s.node {
             if let hir::ExprKind::Path(_) = expr.node {
                 cx.span_lint(PATH_STATEMENTS, s.span, "path statement with no effect");
             }
@@ -220,23 +213,31 @@ declare_lint! {
 }
 
 #[derive(Copy, Clone)]
-pub struct UnusedAttributes;
+pub struct UnusedAttributes {
+    builtin_attributes: &'static FxHashMap<Symbol, &'static BuiltinAttribute>,
+}
 
-impl LintPass for UnusedAttributes {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(UNUSED_ATTRIBUTES)
+impl UnusedAttributes {
+    pub fn new() -> Self {
+        UnusedAttributes {
+            builtin_attributes: &*BUILTIN_ATTRIBUTE_MAP,
+        }
     }
 }
 
+impl_lint_pass!(UnusedAttributes => [UNUSED_ATTRIBUTES]);
+
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnusedAttributes {
-    fn check_attribute(&mut self, cx: &LateContext, attr: &ast::Attribute) {
+    fn check_attribute(&mut self, cx: &LateContext<'_, '_>, attr: &ast::Attribute) {
         debug!("checking attribute: {:?}", attr);
-        // Note that check_name() marks the attribute as used if it matches.
-        for &(name, ty, ..) in BUILTIN_ATTRIBUTES {
+
+        let attr_info = attr.ident().and_then(|ident| self.builtin_attributes.get(&ident.name));
+
+        if let Some(&&(name, ty, ..)) = attr_info {
             match ty {
-                AttributeType::Whitelisted if attr.check_name(name) => {
+                AttributeType::Whitelisted => {
                     debug!("{:?} is Whitelisted", name);
-                    break;
+                    return;
                 }
                 _ => (),
             }
@@ -244,25 +245,25 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnusedAttributes {
 
         let plugin_attributes = cx.sess().plugin_attributes.borrow_mut();
         for &(ref name, ty) in plugin_attributes.iter() {
-            if ty == AttributeType::Whitelisted && attr.check_name(&name) {
+            if ty == AttributeType::Whitelisted && attr.check_name(&**name) {
                 debug!("{:?} (plugin attr) is whitelisted with ty {:?}", name, ty);
                 break;
             }
         }
 
-        let name = attr.name();
+        let name = attr.name_or_empty();
         if !attr::is_used(attr) {
             debug!("Emitting warning for: {:?}", attr);
             cx.span_lint(UNUSED_ATTRIBUTES, attr.span, "unused attribute");
             // Is it a builtin attribute that must be used at the crate level?
-            let known_crate = BUILTIN_ATTRIBUTES.iter()
-                .find(|&&(builtin, ty, ..)| name == builtin && ty == AttributeType::CrateLevel)
-                .is_some();
+            let known_crate = attr_info.map(|&&(_, ty, ..)| {
+                    ty == AttributeType::CrateLevel
+            }).unwrap_or(false);
 
             // Has a plugin registered this attribute as one that must be used at
             // the crate level?
             let plugin_crate = plugin_attributes.iter()
-                .find(|&&(ref x, t)| name == &**x && AttributeType::CrateLevel == t)
+                .find(|&&(ref x, t)| name == x.as_str() && AttributeType::CrateLevel == t)
                 .is_some();
             if known_crate || plugin_crate {
                 let msg = match attr.style {
@@ -286,12 +287,11 @@ declare_lint! {
     "`if`, `match`, `while` and `return` do not need parentheses"
 }
 
-#[derive(Copy, Clone)]
-pub struct UnusedParens;
+declare_lint_pass!(UnusedParens => [UNUSED_PARENS]);
 
 impl UnusedParens {
     fn check_unused_parens_expr(&self,
-                                cx: &EarlyContext,
+                                cx: &EarlyContext<'_>,
                                 value: &ast::Expr,
                                 msg: &str,
                                 followed_by_block: bool) {
@@ -313,7 +313,7 @@ impl UnusedParens {
     }
 
     fn check_unused_parens_pat(&self,
-                                cx: &EarlyContext,
+                                cx: &EarlyContext<'_>,
                                 value: &ast::Pat,
                                 msg: &str) {
         if let ast::PatKind::Paren(_) = value.node {
@@ -327,7 +327,7 @@ impl UnusedParens {
         }
     }
 
-    fn remove_outer_parens(cx: &EarlyContext, span: Span, pattern: &str, msg: &str) {
+    fn remove_outer_parens(cx: &EarlyContext<'_>, span: Span, pattern: &str, msg: &str) {
         let span_msg = format!("unnecessary parentheses around {}", msg);
         let mut err = cx.struct_span_lint(UNUSED_PARENS, span, &span_msg);
         let mut ate_left_paren = false;
@@ -354,24 +354,18 @@ impl UnusedParens {
                     _ => false,
                 }
             }).to_owned();
-        err.span_suggestion_short_with_applicability(
-                span,
-                "remove these parentheses",
-                parens_removed,
-                Applicability::MachineApplicable
-            );
+        err.span_suggestion_short(
+            span,
+            "remove these parentheses",
+            parens_removed,
+            Applicability::MachineApplicable,
+        );
         err.emit();
     }
 }
 
-impl LintPass for UnusedParens {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(UNUSED_PARENS)
-    }
-}
-
 impl EarlyLintPass for UnusedParens {
-    fn check_expr(&mut self, cx: &EarlyContext, e: &ast::Expr) {
+    fn check_expr(&mut self, cx: &EarlyContext<'_>, e: &ast::Expr) {
         use syntax::ast::ExprKind::*;
         let (value, msg, followed_by_block) = match e.node {
             If(ref cond, ..) => (cond, "`if` condition", true),
@@ -413,7 +407,7 @@ impl EarlyLintPass for UnusedParens {
         self.check_unused_parens_expr(cx, &value, msg, followed_by_block);
     }
 
-    fn check_pat(&mut self, cx: &EarlyContext, p: &ast::Pat, _: &mut bool) {
+    fn check_pat(&mut self, cx: &EarlyContext<'_>, p: &ast::Pat, _: &mut bool) {
         use ast::PatKind::{Paren, Range};
         // The lint visitor will visit each subpattern of `p`. We do not want to lint any range
         // pattern no matter where it occurs in the pattern. For something like `&(a..=b)`, there
@@ -427,7 +421,7 @@ impl EarlyLintPass for UnusedParens {
         }
     }
 
-    fn check_stmt(&mut self, cx: &EarlyContext, s: &ast::Stmt) {
+    fn check_stmt(&mut self, cx: &EarlyContext<'_>, s: &ast::Stmt) {
         if let ast::StmtKind::Local(ref local) = s.node {
             if let Some(ref value) = local.init {
                 self.check_unused_parens_expr(cx, &value, "assigned value", false);
@@ -442,11 +436,10 @@ declare_lint! {
     "unnecessary braces around an imported item"
 }
 
-#[derive(Copy, Clone)]
-pub struct UnusedImportBraces;
+declare_lint_pass!(UnusedImportBraces => [UNUSED_IMPORT_BRACES]);
 
 impl UnusedImportBraces {
-    fn check_use_tree(&self, cx: &EarlyContext, use_tree: &ast::UseTree, item: &ast::Item) {
+    fn check_use_tree(&self, cx: &EarlyContext<'_>, use_tree: &ast::UseTree, item: &ast::Item) {
         if let ast::UseTreeKind::Nested(ref items) = use_tree.kind {
             // Recursively check nested UseTrees
             for &(ref tree, _) in items {
@@ -482,14 +475,8 @@ impl UnusedImportBraces {
     }
 }
 
-impl LintPass for UnusedImportBraces {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(UNUSED_IMPORT_BRACES)
-    }
-}
-
 impl EarlyLintPass for UnusedImportBraces {
-    fn check_item(&mut self, cx: &EarlyContext, item: &ast::Item) {
+    fn check_item(&mut self, cx: &EarlyContext<'_>, item: &ast::Item) {
         if let ast::ItemKind::Use(ref use_tree) = item.node {
             self.check_use_tree(cx, use_tree, item);
         }
@@ -502,17 +489,10 @@ declare_lint! {
     "detects unnecessary allocations that can be eliminated"
 }
 
-#[derive(Copy, Clone)]
-pub struct UnusedAllocation;
-
-impl LintPass for UnusedAllocation {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(UNUSED_ALLOCATION)
-    }
-}
+declare_lint_pass!(UnusedAllocation => [UNUSED_ALLOCATION]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for UnusedAllocation {
-    fn check_expr(&mut self, cx: &LateContext, e: &hir::Expr) {
+    fn check_expr(&mut self, cx: &LateContext<'_, '_>, e: &hir::Expr) {
         match e.node {
             hir::ExprKind::Box(_) => {}
             _ => return,

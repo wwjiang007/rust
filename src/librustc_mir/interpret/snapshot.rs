@@ -12,7 +12,7 @@ use rustc::mir;
 use rustc::mir::interpret::{
     AllocId, Pointer, Scalar,
     Relocations, Allocation, UndefMask,
-    EvalResult, EvalErrorKind,
+    EvalResult, InterpError,
 };
 
 use rustc::ty::{self, TyCtxt};
@@ -23,9 +23,9 @@ use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use syntax::ast::Mutability;
 use syntax::source_map::Span;
 
-use super::eval_context::{LocalValue, StackPopCleanup};
-use super::{Frame, Memory, Operand, MemPlace, Place, Immediate, ScalarMaybeUndef};
-use const_eval::CompileTimeInterpreter;
+use super::eval_context::{LocalState, StackPopCleanup};
+use super::{Frame, Memory, Operand, MemPlace, Place, Immediate, ScalarMaybeUndef, LocalValue};
+use crate::const_eval::CompileTimeInterpreter;
 
 #[derive(Default)]
 pub(crate) struct InfiniteLoopDetector<'a, 'mir, 'tcx: 'a + 'mir> {
@@ -78,7 +78,7 @@ impl<'a, 'mir, 'tcx> InfiniteLoopDetector<'a, 'mir, 'tcx>
         }
 
         // Second cycle
-        Err(EvalErrorKind::InfiniteLoop.into())
+        Err(InterpError::InfiniteLoop.into())
     }
 }
 
@@ -101,9 +101,8 @@ macro_rules! __impl_snapshot_field {
 // This assumes the type has two type parameters, first for the tag (set to `()`),
 // then for the id
 macro_rules! impl_snapshot_for {
-    // FIXME(mark-i-m): Some of these should be `?` rather than `*`.
     (enum $enum_name:ident {
-        $( $variant:ident $( ( $($field:ident $(-> $delegate:expr)*),* ) )* ),* $(,)*
+        $( $variant:ident $( ( $($field:ident $(-> $delegate:expr)?),* ) )? ),* $(,)?
     }) => {
 
         impl<'a, Ctx> self::Snapshot<'a, Ctx> for $enum_name
@@ -115,18 +114,18 @@ macro_rules! impl_snapshot_for {
             fn snapshot(&self, __ctx: &'a Ctx) -> Self::Item {
                 match *self {
                     $(
-                        $enum_name::$variant $( ( $(ref $field),* ) )* =>
+                        $enum_name::$variant $( ( $(ref $field),* ) )? => {
                             $enum_name::$variant $(
-                                ( $( __impl_snapshot_field!($field, __ctx $(, $delegate)*) ),* ),
-                            )*
+                                ( $( __impl_snapshot_field!($field, __ctx $(, $delegate)?) ),* )
+                            )?
+                        }
                     )*
                 }
             }
         }
     };
 
-    // FIXME(mark-i-m): same here.
-    (struct $struct_name:ident { $($field:ident $(-> $delegate:expr)*),*  $(,)* }) => {
+    (struct $struct_name:ident { $($field:ident $(-> $delegate:expr)?),*  $(,)? }) => {
         impl<'a, Ctx> self::Snapshot<'a, Ctx> for $struct_name
             where Ctx: self::SnapshotContext<'a>,
         {
@@ -139,7 +138,7 @@ macro_rules! impl_snapshot_for {
                 } = *self;
 
                 $struct_name {
-                    $( $field: __impl_snapshot_field!($field, __ctx $(, $delegate)*) ),*
+                    $( $field: __impl_snapshot_field!($field, __ctx $(, $delegate)?) ),*
                 }
             }
         }
@@ -200,7 +199,7 @@ impl_snapshot_for!(enum ScalarMaybeUndef {
     Undef,
 });
 
-impl_stable_hash_for!(struct ::interpret::MemPlace {
+impl_stable_hash_for!(struct crate::interpret::MemPlace {
     ptr,
     align,
     meta,
@@ -211,7 +210,7 @@ impl_snapshot_for!(struct MemPlace {
     align -> *align, // just copy alignment verbatim
 });
 
-impl_stable_hash_for!(enum ::interpret::Place {
+impl_stable_hash_for!(enum crate::interpret::Place {
     Ptr(mem_place),
     Local { frame, local },
 });
@@ -232,7 +231,7 @@ impl<'a, Ctx> Snapshot<'a, Ctx> for Place
     }
 }
 
-impl_stable_hash_for!(enum ::interpret::Immediate {
+impl_stable_hash_for!(enum crate::interpret::Immediate {
     Scalar(x),
     ScalarPair(x, y),
 });
@@ -241,7 +240,7 @@ impl_snapshot_for!(enum Immediate {
     ScalarPair(s, t),
 });
 
-impl_stable_hash_for!(enum ::interpret::Operand {
+impl_stable_hash_for!(enum crate::interpret::Operand {
     Immediate(x),
     Indirect(x),
 });
@@ -250,13 +249,15 @@ impl_snapshot_for!(enum Operand {
     Indirect(m),
 });
 
-impl_stable_hash_for!(enum ::interpret::LocalValue {
+impl_stable_hash_for!(enum crate::interpret::LocalValue {
     Dead,
+    Uninitialized,
     Live(x),
 });
 impl_snapshot_for!(enum LocalValue {
-    Live(v),
     Dead,
+    Uninitialized,
+    Live(v),
 });
 
 impl<'a, Ctx> Snapshot<'a, Ctx> for Relocations
@@ -298,7 +299,7 @@ impl<'a, Ctx> Snapshot<'a, Ctx> for &'a Allocation
     }
 }
 
-impl_stable_hash_for!(enum ::interpret::eval_context::StackPopCleanup {
+impl_stable_hash_for!(enum crate::interpret::eval_context::StackPopCleanup {
     Goto(block),
     None { cleanup },
 });
@@ -314,7 +315,7 @@ struct FrameSnapshot<'a, 'tcx: 'a> {
     stmt: usize,
 }
 
-impl_stable_hash_for!(impl<'tcx, 'mir: 'tcx> for struct Frame<'mir, 'tcx> {
+impl_stable_hash_for!(impl<'mir, 'tcx: 'mir> for struct Frame<'mir, 'tcx> {
     mir,
     instance,
     span,
@@ -355,6 +356,22 @@ impl<'a, 'mir, 'tcx, Ctx> Snapshot<'a, Ctx> for &'a Frame<'mir, 'tcx>
         }
     }
 }
+
+impl<'a, 'tcx, Ctx> Snapshot<'a, Ctx> for &'a LocalState<'tcx>
+    where Ctx: SnapshotContext<'a>,
+{
+    type Item = LocalValue<(), AllocIdSnapshot<'a>>;
+
+    fn snapshot(&self, ctx: &'a Ctx) -> Self::Item {
+        let LocalState { value, layout: _ } = self;
+        value.snapshot(ctx)
+    }
+}
+
+impl_stable_hash_for!(struct LocalState<'tcx> {
+    value,
+    layout -> _,
+});
 
 impl<'a, 'b, 'mir, 'tcx: 'a+'mir> SnapshotContext<'b>
     for Memory<'a, 'mir, 'tcx, CompileTimeInterpreter<'a, 'mir, 'tcx>>
@@ -417,7 +434,7 @@ impl<'a, 'mir, 'tcx> Eq for EvalSnapshot<'a, 'mir, 'tcx>
 impl<'a, 'mir, 'tcx> PartialEq for EvalSnapshot<'a, 'mir, 'tcx>
 {
     fn eq(&self, other: &Self) -> bool {
-        // FIXME: This looks to be a *ridicolously expensive* comparison operation.
+        // FIXME: This looks to be a *ridiculously expensive* comparison operation.
         // Doesn't this make tons of copies?  Either `snapshot` is very badly named,
         // or it does!
         self.snapshot() == other.snapshot()

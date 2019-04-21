@@ -1,15 +1,14 @@
-use hir;
-use hir::def_id::{DefId, DefIndex};
-use hir::map::DefPathHash;
-use hir::map::definitions::Definitions;
-use ich::{self, CachingSourceMapView, Fingerprint};
-use middle::cstore::CrateStore;
-use ty::{TyCtxt, fast_reject};
-use session::Session;
+use crate::hir;
+use crate::hir::def_id::{DefId, DefIndex};
+use crate::hir::map::DefPathHash;
+use crate::hir::map::definitions::Definitions;
+use crate::ich::{self, CachingSourceMapView, Fingerprint};
+use crate::middle::cstore::CrateStore;
+use crate::ty::{TyCtxt, fast_reject};
+use crate::session::Session;
 
 use std::cmp::Ord;
 use std::hash as std_hash;
-use std::collections::HashMap;
 use std::cell::RefCell;
 
 use syntax::ast;
@@ -218,7 +217,7 @@ impl<'a> StableHashingContextProvider<'a> for StableHashingContext<'a> {
     }
 }
 
-impl<'a> ::dep_graph::DepGraphSafe for StableHashingContext<'a> {
+impl<'a> crate::dep_graph::DepGraphSafe for StableHashingContext<'a> {
 }
 
 
@@ -394,13 +393,12 @@ impl<'a> HashStable<StableHashingContext<'a>> for DelimSpan {
     }
 }
 
-pub fn hash_stable_trait_impls<'a, 'gcx, W, R>(
+pub fn hash_stable_trait_impls<'a, 'gcx, W>(
     hcx: &mut StableHashingContext<'a>,
     hasher: &mut StableHasher<W>,
     blanket_impls: &[DefId],
-    non_blanket_impls: &HashMap<fast_reject::SimplifiedType, Vec<DefId>, R>)
-    where W: StableHasherResult,
-          R: std_hash::BuildHasher,
+    non_blanket_impls: &FxHashMap<fast_reject::SimplifiedType, Vec<DefId>>)
+    where W: StableHasherResult
 {
     {
         let mut blanket_impls: SmallVec<[_; 8]> = blanket_impls

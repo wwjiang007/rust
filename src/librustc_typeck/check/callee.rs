@@ -2,7 +2,7 @@ use super::autoderef::Autoderef;
 use super::method::MethodCallee;
 use super::{Expectation, FnCtxt, Needs, TupleArgumentsFlag};
 
-use errors::Applicability;
+use errors::{Applicability, DiagnosticBuilder};
 use hir::def::Def;
 use hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::ty::adjustment::{Adjust, Adjustment, AllowTwoPhase, AutoBorrow, AutoBorrowMutability};
@@ -15,10 +15,10 @@ use syntax_pos::Span;
 
 use rustc::hir;
 
-/// Check that it is legal to call methods of the trait corresponding
+/// Checks that it is legal to call methods of the trait corresponding
 /// to `trait_id` (this only cares about the trait, not the specific
-/// method that is called)
-pub fn check_legal_trait_for_method_call(tcx: TyCtxt, span: Span, trait_id: DefId) {
+/// method that is called).
+pub fn check_legal_trait_for_method_call(tcx: TyCtxt<'_, '_, '_>, span: Span, trait_id: DefId) {
     if tcx.lang_items().drop_trait() == Some(trait_id) {
         struct_span_err!(tcx.sess, span, E0040, "explicit use of destructor method")
             .span_label(span, "explicit destructor calls not allowed")
@@ -29,7 +29,7 @@ pub fn check_legal_trait_for_method_call(tcx: TyCtxt, span: Span, trait_id: DefI
 enum CallStep<'tcx> {
     Builtin(Ty<'tcx>),
     DeferredClosure(ty::FnSig<'tcx>),
-    /// e.g., enum variant constructors
+    /// E.g., enum variant constructors.
     Overloaded(MethodCallee<'tcx>),
 }
 
@@ -232,6 +232,32 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         None
     }
 
+    /// Give appropriate suggestion when encountering `||{/* not callable */}()`, where the
+    /// likely intention is to call the closure, suggest `(||{})()`. (#55851)
+    fn identify_bad_closure_def_and_call(
+        &self,
+        err: &mut DiagnosticBuilder<'a>,
+        hir_id: hir::HirId,
+        callee_node: &hir::ExprKind,
+        callee_span: Span,
+    ) {
+        let hir_id = self.tcx.hir().get_parent_node_by_hir_id(hir_id);
+        let parent_node = self.tcx.hir().get_by_hir_id(hir_id);
+        if let (
+            hir::Node::Expr(hir::Expr { node: hir::ExprKind::Closure(_, _, _, sp, ..), .. }),
+            hir::ExprKind::Block(..),
+        ) = (parent_node, callee_node) {
+            let start = sp.shrink_to_lo();
+            let end = self.tcx.sess.source_map().next_point(callee_span);
+            err.multipart_suggestion(
+                "if you meant to create this closure and immediately call it, surround the \
+                closure with parenthesis",
+                vec![(start, "(".to_string()), (end, ")".to_string())],
+                Applicability::MaybeIncorrect,
+            );
+        }
+    }
+
     fn confirm_builtin_call(
         &self,
         call_expr: &hir::Expr,
@@ -250,7 +276,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 if let &ty::Adt(adt_def, ..) = t {
                     if adt_def.is_enum() {
                         if let hir::ExprKind::Call(ref expr, _) = call_expr.node {
-                            unit_variant = Some(self.tcx.hir().node_to_pretty_string(expr.id))
+                            unit_variant = Some(self.tcx.hir().hir_to_pretty_string(expr.hir_id))
                         }
                     }
                 }
@@ -268,8 +294,15 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                         }
                     );
 
+                    self.identify_bad_closure_def_and_call(
+                        &mut err,
+                        call_expr.hir_id,
+                        &callee.node,
+                        callee.span,
+                    );
+
                     if let Some(ref path) = unit_variant {
-                        err.span_suggestion_with_applicability(
+                        err.span_suggestion(
                             call_expr.span,
                             &format!(
                                 "`{}` is a unit variant, you need to write it \
@@ -294,7 +327,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                 self.tcx.sess.source_map().is_multiline(call_expr.span);
                             if call_is_multiline {
                                 let span = self.tcx.sess.source_map().next_point(callee.span);
-                                err.span_suggestion_with_applicability(
+                                err.span_suggestion(
                                     span,
                                     "try adding a semicolon",
                                     ";".to_owned(),
@@ -317,7 +350,9 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
 
                     let def_span = match def {
                         Def::Err => None,
-                        Def::Local(id) | Def::Upvar(id, ..) => Some(self.tcx.hir().span(id)),
+                        Def::Local(id) | Def::Upvar(id, ..) => {
+                            Some(self.tcx.hir().span_by_hir_id(id))
+                        },
                         _ => def
                             .opt_def_id()
                             .and_then(|did| self.tcx.hir().span_if_local(did)),
@@ -368,20 +403,30 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             .0;
         let fn_sig = self.normalize_associated_types_in(call_expr.span, &fn_sig);
 
+        let inputs = if fn_sig.c_variadic {
+            if fn_sig.inputs().len() > 1 {
+                &fn_sig.inputs()[..fn_sig.inputs().len() - 1]
+            } else {
+                span_bug!(call_expr.span,
+                          "C-variadic functions are only valid with one or more fixed arguments");
+            }
+        } else {
+            &fn_sig.inputs()[..]
+        };
         // Call the generic checker.
         let expected_arg_tys = self.expected_inputs_for_expected_output(
             call_expr.span,
             expected,
             fn_sig.output(),
-            fn_sig.inputs(),
+            inputs,
         );
         self.check_argument_types(
             call_expr.span,
             call_expr.span,
-            fn_sig.inputs(),
+            inputs,
             &expected_arg_tys[..],
             arg_exprs,
-            fn_sig.variadic,
+            fn_sig.c_variadic,
             TupleArgumentsFlag::DontTupleArguments,
             def_span,
         );
@@ -414,7 +459,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             fn_sig.inputs(),
             &expected_arg_tys,
             arg_exprs,
-            fn_sig.variadic,
+            fn_sig.c_variadic,
             TupleArgumentsFlag::TupleArguments,
             None,
         );

@@ -1,6 +1,6 @@
 use rustc::mir::{self, Mir, Location};
 use rustc::ty::{self, TyCtxt};
-use util::elaborate_drops::DropFlagState;
+use crate::util::elaborate_drops::DropFlagState;
 
 use super::{MoveDataParamEnv};
 use super::indexes::MovePathIndex;
@@ -44,12 +44,12 @@ pub fn move_path_children_matching<'tcx, F>(move_data: &MoveData<'tcx>,
 /// In both cases, the contents can only be accessed if and only if
 /// their parents are initialized. This implies for example that there
 /// is no need to maintain separate drop flags to track such state.
-///
-/// FIXME: we have to do something for moving slice patterns.
+//
+// FIXME: we have to do something for moving slice patterns.
 fn place_contents_drop_state_cannot_differ<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
                                                             mir: &Mir<'tcx>,
                                                             place: &mir::Place<'tcx>) -> bool {
-    let ty = place.ty(mir, tcx).to_ty(tcx);
+    let ty = place.ty(mir, tcx).ty;
     match ty.sty {
         ty::Array(..) => {
             debug!("place_contents_drop_state_cannot_differ place: {:?} ty: {:?} => false",
@@ -141,7 +141,7 @@ pub(crate) fn on_all_drop_children_bits<'a, 'gcx, 'tcx, F>(
 {
     on_all_children_bits(tcx, mir, &ctxt.move_data, path, |child| {
         let place = &ctxt.move_data.move_paths[path].place;
-        let ty = place.ty(mir, tcx).to_ty(tcx);
+        let ty = place.ty(mir, tcx).ty;
         debug!("on_all_drop_children_bits({:?}, {:?} : {:?})", path, place, ty);
 
         let gcx = tcx.global_tcx();
@@ -163,7 +163,7 @@ pub(crate) fn drop_flag_effects_for_function_entry<'a, 'gcx, 'tcx, F>(
 {
     let move_data = &ctxt.move_data;
     for arg in mir.args_iter() {
-        let place = mir::Place::Local(arg);
+        let place = mir::Place::Base(mir::PlaceBase::Local(arg));
         let lookup_result = move_data.rev_lookup.find(&place);
         on_lookup_result_bits(tcx, mir, move_data,
                               lookup_result,

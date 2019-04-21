@@ -1,22 +1,23 @@
 // The Rust abstract syntax tree.
 
-pub use self::GenericArgs::*;
-pub use self::UnsafeSource::*;
-pub use symbol::{Ident, Symbol as Name};
-pub use util::parser::ExprPrecedence;
+pub use GenericArgs::*;
+pub use UnsafeSource::*;
+pub use crate::symbol::{Ident, Symbol as Name};
+pub use crate::util::parser::ExprPrecedence;
 
-use ext::hygiene::{Mark, SyntaxContext};
-use print::pprust;
-use ptr::P;
+use crate::ext::hygiene::{Mark, SyntaxContext};
+use crate::print::pprust;
+use crate::ptr::P;
+use crate::source_map::{dummy_spanned, respan, Spanned};
+use crate::symbol::{keywords, Symbol};
+use crate::tokenstream::TokenStream;
+use crate::ThinVec;
+
 use rustc_data_structures::indexed_vec::Idx;
 #[cfg(target_arch = "x86_64")]
 use rustc_data_structures::static_assert;
 use rustc_target::spec::abi::Abi;
-use source_map::{dummy_spanned, respan, Spanned};
-use symbol::{keywords, Symbol};
 use syntax_pos::{Span, DUMMY_SP};
-use tokenstream::{ThinTokenStream, TokenStream};
-use ThinVec;
 
 use rustc_data_structures::fx::FxHashSet;
 use rustc_data_structures::sync::Lrc;
@@ -31,7 +32,7 @@ pub struct Label {
 }
 
 impl fmt::Debug for Label {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "label({:?})", self.ident)
     }
 }
@@ -43,7 +44,7 @@ pub struct Lifetime {
 }
 
 impl fmt::Debug for Lifetime {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "lifetime({}: {})",
@@ -67,6 +68,18 @@ pub struct Path {
     pub segments: Vec<PathSegment>,
 }
 
+impl PartialEq<Symbol> for Path {
+    fn eq(&self, symbol: &Symbol) -> bool {
+        self.segments.len() == 1 && {
+            let name = self.segments[0].ident.name;
+            // Make sure these symbols are pure strings
+            debug_assert!(!symbol.is_gensymed());
+            debug_assert!(!name.is_gensymed());
+            name == *symbol
+        }
+    }
+}
+
 impl<'a> PartialEq<&'a str> for Path {
     fn eq(&self, string: &&'a str) -> bool {
         self.segments.len() == 1 && self.segments[0].ident.name == *string
@@ -74,13 +87,13 @@ impl<'a> PartialEq<&'a str> for Path {
 }
 
 impl fmt::Debug for Path {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "path({})", pprust::path_to_string(self))
     }
 }
 
 impl fmt::Display for Path {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", pprust::path_to_string(self))
     }
 }
@@ -128,18 +141,32 @@ impl PathSegment {
     }
 }
 
-/// Arguments of a path segment.
+/// The arguments of a path segment.
 ///
 /// E.g., `<A, B>` as in `Foo<A, B>` or `(A, B)` as in `Foo(A, B)`.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub enum GenericArgs {
-    /// The `<'a, A,B,C>` in `foo::bar::baz::<'a, A,B,C>`
+    /// The `<'a, A, B, C>` in `foo::bar::baz::<'a, A, B, C>`.
     AngleBracketed(AngleBracketedArgs),
-    /// The `(A,B)` and `C` in `Foo(A,B) -> C`
-    Parenthesized(ParenthesisedArgs),
+    /// The `(A, B)` and `C` in `Foo(A, B) -> C`.
+    Parenthesized(ParenthesizedArgs),
 }
 
 impl GenericArgs {
+    pub fn is_parenthesized(&self) -> bool {
+        match *self {
+            Parenthesized(..) => true,
+            _ => false,
+        }
+    }
+
+    pub fn is_angle_bracketed(&self) -> bool {
+        match *self {
+            AngleBracketed(..) => true,
+            _ => false,
+        }
+    }
+
     pub fn span(&self) -> Span {
         match *self {
             AngleBracketed(ref data) => data.span,
@@ -152,18 +179,28 @@ impl GenericArgs {
 pub enum GenericArg {
     Lifetime(Lifetime),
     Type(P<Ty>),
+    Const(AnonConst),
 }
 
-/// A path like `Foo<'a, T>`
+impl GenericArg {
+    pub fn span(&self) -> Span {
+        match self {
+            GenericArg::Lifetime(lt) => lt.ident.span,
+            GenericArg::Type(ty) => ty.span,
+            GenericArg::Const(ct) => ct.value.span,
+        }
+    }
+}
+
+/// A path like `Foo<'a, T>`.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug, Default)]
 pub struct AngleBracketedArgs {
-    /// Overall span
+    /// The overall span.
     pub span: Span,
     /// The arguments for this path segment.
     pub args: Vec<GenericArg>,
     /// Bindings (equality constraints) on associated types, if present.
-    ///
-    /// E.g., `Foo<A=Bar>`.
+    /// E.g., `Foo<A = Bar>`.
     pub bindings: Vec<TypeBinding>,
 }
 
@@ -173,15 +210,15 @@ impl Into<Option<P<GenericArgs>>> for AngleBracketedArgs {
     }
 }
 
-impl Into<Option<P<GenericArgs>>> for ParenthesisedArgs {
+impl Into<Option<P<GenericArgs>>> for ParenthesizedArgs {
     fn into(self) -> Option<P<GenericArgs>> {
         Some(P(GenericArgs::Parenthesized(self)))
     }
 }
 
-/// A path like `Foo(A,B) -> C`
+/// A path like `Foo(A, B) -> C`.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
-pub struct ParenthesisedArgs {
+pub struct ParenthesizedArgs {
     /// Overall span
     pub span: Span,
 
@@ -192,9 +229,20 @@ pub struct ParenthesisedArgs {
     pub output: Option<P<Ty>>,
 }
 
+impl ParenthesizedArgs {
+    pub fn as_angle_bracketed_args(&self) -> AngleBracketedArgs {
+        AngleBracketedArgs {
+            span: self.span,
+            args: self.inputs.iter().cloned().map(|input| GenericArg::Type(input)).collect(),
+            bindings: vec![],
+        }
+    }
+}
+
 // hack to ensure that we don't try to access the private parts of `NodeId` in this module
 mod node_id_inner {
     use rustc_data_structures::indexed_vec::Idx;
+    use rustc_data_structures::newtype_index;
     newtype_index! {
         pub struct NodeId {
             ENCODABLE = custom
@@ -203,7 +251,7 @@ mod node_id_inner {
     }
 }
 
-pub use self::node_id_inner::NodeId;
+pub use node_id_inner::NodeId;
 
 impl NodeId {
     pub fn placeholder_from_mark(mark: Mark) -> Self {
@@ -216,7 +264,7 @@ impl NodeId {
 }
 
 impl fmt::Display for NodeId {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.as_u32(), f)
     }
 }
@@ -233,7 +281,7 @@ impl serialize::UseSpecializedDecodable for NodeId {
     }
 }
 
-/// Node id used to represent the root of the crate.
+/// `NodeId` used to represent the root of the crate.
 pub const CRATE_NODE_ID: NodeId = NodeId::from_u32_const(0);
 
 /// When parsing and doing expansions, we initially give all AST nodes this AST
@@ -270,13 +318,32 @@ impl GenericBound {
 
 pub type GenericBounds = Vec<GenericBound>;
 
+/// Specifies the enforced ordering for generic parameters. In the future,
+/// if we wanted to relax this order, we could override `PartialEq` and
+/// `PartialOrd`, to allow the kinds to be unordered.
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
+pub enum ParamKindOrd {
+    Lifetime,
+    Type,
+    Const,
+}
+
+impl fmt::Display for ParamKindOrd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ParamKindOrd::Lifetime => "lifetime".fmt(f),
+            ParamKindOrd::Type => "type".fmt(f),
+            ParamKindOrd::Const => "const".fmt(f),
+        }
+    }
+}
+
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub enum GenericParamKind {
     /// A lifetime definition (e.g., `'a: 'b + 'c + 'd`).
     Lifetime,
-    Type {
-        default: Option<P<Ty>>,
-    },
+    Type { default: Option<P<Ty>> },
+    Const { ty: P<Ty> },
 }
 
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
@@ -313,7 +380,7 @@ impl Default for Generics {
     }
 }
 
-/// A `where` clause in a definition
+/// A where-clause in a definition.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub struct WhereClause {
     pub id: NodeId,
@@ -321,7 +388,7 @@ pub struct WhereClause {
     pub span: Span,
 }
 
-/// A single predicate in a `where` clause
+/// A single predicate in a where-clause.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub enum WherePredicate {
     /// A type binding (e.g., `for<'c> Foo: Send + Clone + 'c`).
@@ -388,14 +455,11 @@ pub struct Crate {
     pub span: Span,
 }
 
-/// A spanned compile-time attribute list item.
-pub type NestedMetaItem = Spanned<NestedMetaItemKind>;
-
 /// Possible values inside of compile-time attribute lists.
 ///
 /// E.g., the '..' in `#[name(..)]`.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
-pub enum NestedMetaItemKind {
+pub enum NestedMetaItem {
     /// A full MetaItem, for recursive meta items.
     MetaItem(MetaItem),
     /// A literal.
@@ -409,7 +473,7 @@ pub enum NestedMetaItemKind {
 /// E.g., `#[test]`, `#[derive(..)]`, `#[rustfmt::skip]` or `#[feature = "foo"]`.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub struct MetaItem {
-    pub ident: Path,
+    pub path: Path,
     pub node: MetaItemKind,
     pub span: Span,
 }
@@ -454,7 +518,7 @@ pub struct Pat {
 }
 
 impl fmt::Debug for Pat {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "pat({}: {})", self.id, pprust::pat_to_string(self))
     }
 }
@@ -568,7 +632,7 @@ pub enum PatKind {
 
     /// A struct or struct variant pattern (e.g., `Variant {x, y, ..}`).
     /// The `bool` is `true` in the presence of a `..`.
-    Struct(Path, Vec<Spanned<FieldPat>>, bool),
+    Struct(Path, Vec<Spanned<FieldPat>>, /* recovered */ bool),
 
     /// A tuple struct/variant pattern (`Variant(x, y, .., z)`).
     /// If the `..` pattern fragment is present, then `Option<usize>` denotes its position.
@@ -585,19 +649,26 @@ pub enum PatKind {
     /// If the `..` pattern fragment is present, then `Option<usize>` denotes its position.
     /// `0 <= position <= subpats.len()`.
     Tuple(Vec<P<Pat>>, Option<usize>),
+
     /// A `box` pattern.
     Box(P<Pat>),
+
     /// A reference pattern (e.g., `&mut (a, b)`).
     Ref(P<Pat>, Mutability),
+
     /// A literal.
     Lit(P<Expr>),
+
     /// A range pattern (e.g., `1...2`, `1..=2` or `1..2`).
     Range(P<Expr>, P<Expr>, Spanned<RangeEnd>),
+
     /// `[a, b, ..i, y, z]` is represented as:
     ///     `PatKind::Slice(box [a, b], Some(i), box [y, z])`
     Slice(Vec<P<Pat>>, Option<P<Pat>>, Vec<P<Pat>>),
+
     /// Parentheses in patterns used for grouping (i.e., `(PAT)`).
     Paren(P<Pat>),
+
     /// A macro pattern; pre-expansion.
     Mac(Mac),
 }
@@ -652,7 +723,7 @@ pub enum BinOpKind {
 
 impl BinOpKind {
     pub fn to_string(&self) -> &'static str {
-        use self::BinOpKind::*;
+        use BinOpKind::*;
         match *self {
             Add => "+",
             Sub => "-",
@@ -689,7 +760,7 @@ impl BinOpKind {
     }
 
     pub fn is_comparison(&self) -> bool {
-        use self::BinOpKind::*;
+        use BinOpKind::*;
         match *self {
             Eq | Lt | Le | Ne | Gt | Ge => true,
             And | Or | Add | Sub | Mul | Div | Rem | BitXor | BitAnd | BitOr | Shl | Shr => false,
@@ -768,7 +839,7 @@ impl Stmt {
 }
 
 impl fmt::Debug for Stmt {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "stmt({}: {})",
@@ -887,7 +958,7 @@ pub struct Expr {
 
 // `Expr` is used a lot. Make sure it doesn't unintentionally get bigger.
 #[cfg(target_arch = "x86_64")]
-static_assert!(MEM_SIZE_OF_EXPR: std::mem::size_of::<Expr>() == 88);
+static_assert!(MEM_SIZE_OF_EXPR: std::mem::size_of::<Expr>() == 96);
 
 impl Expr {
     /// Whether this expression would be valid somewhere that expects a value; for example, an `if`
@@ -1006,7 +1077,7 @@ impl Expr {
 }
 
 impl fmt::Debug for Expr {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "expr({}: {})", self.id, pprust::expr_to_string(self))
     }
 }
@@ -1216,7 +1287,7 @@ pub type Mac = Spanned<Mac_>;
 pub struct Mac_ {
     pub path: Path,
     pub delim: MacDelimiter,
-    pub tts: ThinTokenStream,
+    pub tts: TokenStream,
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, RustcEncodable, RustcDecodable, Debug)]
@@ -1228,13 +1299,13 @@ pub enum MacDelimiter {
 
 impl Mac_ {
     pub fn stream(&self) -> TokenStream {
-        self.tts.stream()
+        self.tts.clone()
     }
 }
 
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub struct MacroDef {
-    pub tokens: ThinTokenStream,
+    pub tokens: TokenStream,
     pub legacy: bool,
 }
 
@@ -1285,6 +1356,8 @@ pub enum LitKind {
     FloatUnsuffixed(Symbol),
     /// A boolean literal.
     Bool(bool),
+    /// A recovered character literal that contains mutliple `char`s, most likely a typo.
+    Err(Symbol),
 }
 
 impl LitKind {
@@ -1321,6 +1394,7 @@ impl LitKind {
             | LitKind::ByteStr(..)
             | LitKind::Byte(..)
             | LitKind::Char(..)
+            | LitKind::Err(..)
             | LitKind::Int(_, LitIntType::Unsuffixed)
             | LitKind::FloatUnsuffixed(..)
             | LitKind::Bool(..) => true,
@@ -1411,13 +1485,13 @@ pub enum IntTy {
 }
 
 impl fmt::Debug for IntTy {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
 }
 
 impl fmt::Display for IntTy {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.ty_to_string())
     }
 }
@@ -1492,13 +1566,13 @@ impl UintTy {
 }
 
 impl fmt::Debug for UintTy {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self, f)
     }
 }
 
 impl fmt::Display for UintTy {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.ty_to_string())
     }
 }
@@ -1520,7 +1594,7 @@ pub struct Ty {
 }
 
 impl fmt::Debug for Ty {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "type({})", pprust::ty_to_string(self))
     }
 }
@@ -1533,7 +1607,7 @@ pub struct BareFnTy {
     pub decl: P<FnDecl>,
 }
 
-/// The different kinds of types recognized by the compiler.
+/// The various kinds of type recognized by the compiler.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub enum TyKind {
     /// A variable-length slice (`[T]`).
@@ -1578,6 +1652,8 @@ pub enum TyKind {
     Mac(Mac),
     /// Placeholder for a kind that has failed to be defined.
     Err,
+    /// Placeholder for a `va_list`.
+    CVarArgs,
 }
 
 impl TyKind {
@@ -1737,7 +1813,7 @@ impl Arg {
 pub struct FnDecl {
     pub inputs: Vec<Arg>,
     pub output: FunctionRetTy,
-    pub variadic: bool,
+    pub c_variadic: bool,
 }
 
 impl FnDecl {
@@ -1805,7 +1881,7 @@ pub enum Defaultness {
 }
 
 impl fmt::Display for Unsafety {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(
             match *self {
                 Unsafety::Normal => "normal",
@@ -1825,7 +1901,7 @@ pub enum ImplPolarity {
 }
 
 impl fmt::Debug for ImplPolarity {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             ImplPolarity::Positive => "positive".fmt(f),
             ImplPolarity::Negative => "negative".fmt(f),
@@ -1835,7 +1911,7 @@ impl fmt::Debug for ImplPolarity {
 
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub enum FunctionRetTy {
-    /// Return type is not specified.
+    /// Returns type is not specified.
     ///
     /// Functions default to `()` and closures default to inference.
     /// Span points to where return type would be inserted.
@@ -1892,8 +1968,13 @@ pub struct EnumDef {
 
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub struct Variant_ {
+    /// Name of the variant.
     pub ident: Ident,
+    /// Attributes of the variant.
     pub attrs: Vec<Attribute>,
+    /// Id of the variant (not the constructor, see `VariantData::ctor_id()`).
+    pub id: NodeId,
+    /// Fields and constructor id of the variant.
     pub data: VariantData,
     /// Explicit discriminant, e.g., `Foo = 1`.
     pub disr_expr: Option<AnonConst>,
@@ -1977,10 +2058,10 @@ pub struct Attribute {
 
 /// `TraitRef`s appear in impls.
 ///
-/// Resolve maps each `TraitRef`'s `ref_id` to its defining trait; that's all
+/// Resolution maps each `TraitRef`'s `ref_id` to its defining trait; that's all
 /// that the `ref_id` is for. The `impl_id` maps to the "self type" of this impl.
 /// If this impl is an `ItemKind::Impl`, the `impl_id` is redundant (it could be the
-/// same as the impl's node-id).
+/// same as the impl's `NodeId`).
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub struct TraitRef {
     pub path: Path,
@@ -2053,23 +2134,13 @@ pub struct StructField {
     pub attrs: Vec<Attribute>,
 }
 
-/// Fields and Ids of enum variants and structs
-///
-/// For enum variants: `NodeId` represents both an Id of the variant itself (relevant for all
-/// variant kinds) and an Id of the variant's constructor (not relevant for `Struct`-variants).
-/// One shared Id can be successfully used for these two purposes.
-/// Id of the whole enum lives in `Item`.
-///
-/// For structs: `NodeId` represents an Id of the structure's constructor, so it is not actually
-/// used for `Struct`-structs (but still presents). Structures don't have an analogue of "Id of
-/// the variant itself" from enum variants.
-/// Id of the whole struct lives in `Item`.
+/// Fields and constructor ids of enum variants and structs.
 #[derive(Clone, RustcEncodable, RustcDecodable, Debug)]
 pub enum VariantData {
     /// Struct variant.
     ///
     /// E.g., `Bar { .. }` as in `enum Foo { Bar { .. } }`.
-    Struct(Vec<StructField>, NodeId),
+    Struct(Vec<StructField>, bool),
     /// Tuple variant.
     ///
     /// E.g., `Bar(..)` as in `enum Foo { Bar(..) }`.
@@ -2081,36 +2152,19 @@ pub enum VariantData {
 }
 
 impl VariantData {
+    /// Return the fields of this variant.
     pub fn fields(&self) -> &[StructField] {
         match *self {
-            VariantData::Struct(ref fields, _) | VariantData::Tuple(ref fields, _) => fields,
+            VariantData::Struct(ref fields, ..) | VariantData::Tuple(ref fields, _) => fields,
             _ => &[],
         }
     }
-    pub fn id(&self) -> NodeId {
+
+    /// Return the `NodeId` of this variant's constructor, if it has one.
+    pub fn ctor_id(&self) -> Option<NodeId> {
         match *self {
-            VariantData::Struct(_, id) | VariantData::Tuple(_, id) | VariantData::Unit(id) => id,
-        }
-    }
-    pub fn is_struct(&self) -> bool {
-        if let VariantData::Struct(..) = *self {
-            true
-        } else {
-            false
-        }
-    }
-    pub fn is_tuple(&self) -> bool {
-        if let VariantData::Tuple(..) = *self {
-            true
-        } else {
-            false
-        }
-    }
-    pub fn is_unit(&self) -> bool {
-        if let VariantData::Unit(..) = *self {
-            true
-        } else {
-            false
+            VariantData::Struct(..) => None,
+            VariantData::Tuple(_, id) | VariantData::Unit(id) => Some(id),
         }
     }
 }
@@ -2137,6 +2191,13 @@ pub struct Item {
     pub tokens: Option<TokenStream>,
 }
 
+impl Item {
+    /// Return the span that encompasses the attributes.
+    pub fn span_with_attributes(&self) -> Span {
+        self.attrs.iter().fold(self.span, |acc, attr| acc.to(attr.span))
+    }
+}
+
 /// A function header.
 ///
 /// All the information between the visibility and the name of the function is
@@ -2144,7 +2205,7 @@ pub struct Item {
 #[derive(Clone, Copy, RustcEncodable, RustcDecodable, Debug)]
 pub struct FnHeader {
     pub unsafety: Unsafety,
-    pub asyncness: IsAsync,
+    pub asyncness: Spanned<IsAsync>,
     pub constness: Spanned<Constness>,
     pub abi: Abi,
 }
@@ -2153,7 +2214,7 @@ impl Default for FnHeader {
     fn default() -> FnHeader {
         FnHeader {
             unsafety: Unsafety::Normal,
-            asyncness: IsAsync::NotAsync,
+            asyncness: dummy_spanned(IsAsync::NotAsync),
             constness: dummy_spanned(Constness::NotConst),
             abi: Abi::Rust,
         }

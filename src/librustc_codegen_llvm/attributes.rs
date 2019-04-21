@@ -5,7 +5,7 @@ use std::ffi::CString;
 use rustc::hir::{CodegenFnAttrFlags, CodegenFnAttrs};
 use rustc::hir::def_id::{DefId, LOCAL_CRATE};
 use rustc::session::Session;
-use rustc::session::config::Sanitizer;
+use rustc::session::config::{Sanitizer, OptLevel};
 use rustc::ty::{self, TyCtxt, PolyFnSig};
 use rustc::ty::layout::HasTyCtxt;
 use rustc::ty::query::Providers;
@@ -15,15 +15,15 @@ use rustc_data_structures::fx::FxHashMap;
 use rustc_target::spec::PanicStrategy;
 use rustc_codegen_ssa::traits::*;
 
-use abi::Abi;
-use attributes;
-use llvm::{self, Attribute};
-use llvm::AttributePlace::Function;
-use llvm_util;
-pub use syntax::attr::{self, InlineAttr};
+use crate::abi::Abi;
+use crate::attributes;
+use crate::llvm::{self, Attribute};
+use crate::llvm::AttributePlace::Function;
+use crate::llvm_util;
+pub use syntax::attr::{self, InlineAttr, OptimizeAttr};
 
-use context::CodegenCx;
-use value::Value;
+use crate::context::CodegenCx;
+use crate::value::Value;
 
 /// Mark LLVM function to use provided inline heuristic.
 #[inline]
@@ -57,13 +57,6 @@ fn unwind(val: &'ll Value, can_unwind: bool) {
     Attribute::NoUnwind.toggle_llfn(Function, val, !can_unwind);
 }
 
-/// Tell LLVM whether it should optimize function for size.
-#[inline]
-#[allow(dead_code)] // possibly useful function
-pub fn set_optimize_for_size(val: &'ll Value, optimize: bool) {
-    Attribute::OptimizeForSize.toggle_llfn(Function, val, optimize);
-}
-
 /// Tell LLVM if this function should be 'naked', i.e., skip the epilogue and prologue.
 #[inline]
 pub fn naked(val: &'ll Value, is_naked: bool) {
@@ -84,9 +77,15 @@ pub fn set_instrument_function(cx: &CodegenCx<'ll, '_>, llfn: &'ll Value) {
     if cx.sess().instrument_mcount() {
         // Similar to `clang -pg` behavior. Handled by the
         // `post-inline-ee-instrument` LLVM pass.
+
+        // The function name varies on platforms.
+        // See test/CodeGen/mcount.c in clang.
+        let mcount_name = CString::new(
+            cx.sess().target.target.options.target_mcount.as_str().as_bytes()).unwrap();
+
         llvm::AddFunctionAttrStringValue(
             llfn, llvm::AttributePlace::Function,
-            const_cstr!("instrument-function-entry-inlined"), const_cstr!("mcount"));
+            const_cstr!("instrument-function-entry-inlined"), &mcount_name);
     }
 }
 
@@ -105,7 +104,7 @@ pub fn set_probestack(cx: &CodegenCx<'ll, '_>, llfn: &'ll Value) {
     }
 
     // probestack doesn't play nice either with pgo-gen.
-    if cx.sess().opts.debugging_opts.pgo_gen.is_some() {
+    if cx.sess().opts.debugging_opts.pgo_gen.enabled() {
         return;
     }
 
@@ -151,6 +150,28 @@ pub fn non_lazy_bind(sess: &Session, llfn: &'ll Value) {
     }
 }
 
+pub(crate) fn default_optimisation_attrs(sess: &Session, llfn: &'ll Value) {
+    match sess.opts.optimize {
+        OptLevel::Size => {
+            llvm::Attribute::MinSize.unapply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeForSize.apply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeNone.unapply_llfn(Function, llfn);
+        },
+        OptLevel::SizeMin => {
+            llvm::Attribute::MinSize.apply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeForSize.apply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeNone.unapply_llfn(Function, llfn);
+        }
+        OptLevel::No => {
+            llvm::Attribute::MinSize.unapply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeForSize.unapply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeNone.unapply_llfn(Function, llfn);
+        }
+        _ => {}
+    }
+}
+
+
 /// Composite function which sets LLVM attributes for function depending on its AST (`#[attribute]`)
 /// attributes.
 pub fn from_fn_attrs(
@@ -161,6 +182,22 @@ pub fn from_fn_attrs(
 ) {
     let codegen_fn_attrs = id.map(|id| cx.tcx.codegen_fn_attrs(id))
         .unwrap_or_else(|| CodegenFnAttrs::new());
+
+    match codegen_fn_attrs.optimize {
+        OptimizeAttr::None => {
+            default_optimisation_attrs(cx.tcx.sess, llfn);
+        }
+        OptimizeAttr::Speed => {
+            llvm::Attribute::MinSize.unapply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeForSize.unapply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeNone.unapply_llfn(Function, llfn);
+        }
+        OptimizeAttr::Size => {
+            llvm::Attribute::MinSize.apply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeForSize.apply_llfn(Function, llfn);
+            llvm::Attribute::OptimizeNone.unapply_llfn(Function, llfn);
+        }
+    }
 
     inline(cx, llfn, codegen_fn_attrs.inline);
 
@@ -191,6 +228,9 @@ pub fn from_fn_attrs(
 
     if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::COLD) {
         Attribute::Cold.apply_llfn(Function, llfn);
+    }
+    if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::FFI_RETURNS_TWICE) {
+        Attribute::ReturnsTwice.apply_llfn(Function, llfn);
     }
     if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::NAKED) {
         naked(llfn, true);
@@ -274,7 +314,7 @@ pub fn from_fn_attrs(
     }
 }
 
-pub fn provide(providers: &mut Providers) {
+pub fn provide(providers: &mut Providers<'_>) {
     providers.target_features_whitelist = |tcx, cnum| {
         assert_eq!(cnum, LOCAL_CRATE);
         if tcx.sess.opts.actually_rustdoc {
@@ -294,7 +334,7 @@ pub fn provide(providers: &mut Providers) {
     provide_extern(providers);
 }
 
-pub fn provide_extern(providers: &mut Providers) {
+pub fn provide_extern(providers: &mut Providers<'_>) {
     providers.wasm_import_module_map = |tcx, cnum| {
         // Build up a map from DefId to a `NativeLibrary` structure, where
         // `NativeLibrary` internally contains information about
@@ -328,7 +368,7 @@ pub fn provide_extern(providers: &mut Providers) {
     };
 }
 
-fn wasm_import_module(tcx: TyCtxt, id: DefId) -> Option<CString> {
+fn wasm_import_module(tcx: TyCtxt<'_, '_, '_>, id: DefId) -> Option<CString> {
     tcx.wasm_import_module_map(id.krate)
         .get(&id)
         .map(|s| CString::new(&s[..]).unwrap())

@@ -18,6 +18,7 @@ use build_helper::output;
 use cmake;
 use cc;
 
+use crate::channel;
 use crate::util::{self, exe};
 use build_helper::up_to_date;
 use crate::builder::{Builder, RunConfig, ShouldRun, Step};
@@ -35,11 +36,14 @@ impl Step for Llvm {
 
     const ONLY_HOSTS: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
-        run.path("src/llvm").path("src/llvm-emscripten")
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.path("src/llvm-project")
+            .path("src/llvm-project/llvm")
+            .path("src/llvm")
+            .path("src/llvm-emscripten")
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         let emscripten = run.path.ends_with("llvm-emscripten");
         run.builder.ensure(Llvm {
             target: run.target,
@@ -48,7 +52,7 @@ impl Step for Llvm {
     }
 
     /// Compile LLVM for `target`.
-    fn run(self, builder: &Builder) -> PathBuf {
+    fn run(self, builder: &Builder<'_>) -> PathBuf {
         let target = self.target;
         let emscripten = self.emscripten;
 
@@ -63,30 +67,40 @@ impl Step for Llvm {
             }
         }
 
-        let rebuild_trigger = builder.src.join("src/rustllvm/llvm-rebuild-trigger");
-        let rebuild_trigger_contents = t!(fs::read_to_string(&rebuild_trigger));
-
-        let (out_dir, llvm_config_ret_dir) = if emscripten {
+        let (llvm_info, root, out_dir, llvm_config_ret_dir) = if emscripten {
+            let info = &builder.emscripten_llvm_info;
             let dir = builder.emscripten_llvm_out(target);
             let config_dir = dir.join("bin");
-            (dir, config_dir)
+            (info, "src/llvm-emscripten", dir, config_dir)
         } else {
+            let info = &builder.in_tree_llvm_info;
             let mut dir = builder.llvm_out(builder.config.build);
             if !builder.config.build.contains("msvc") || builder.config.ninja {
                 dir.push("build");
             }
-            (builder.llvm_out(target), dir.join("bin"))
+            (info, "src/llvm-project/llvm", builder.llvm_out(target), dir.join("bin"))
         };
-        let done_stamp = out_dir.join("llvm-finished-building");
+
+        if !llvm_info.is_git() {
+            println!(
+                "git could not determine the LLVM submodule commit hash. \
+                Assuming that an LLVM build is necessary.",
+            );
+        }
+
         let build_llvm_config = llvm_config_ret_dir
             .join(exe("llvm-config", &*builder.config.build));
-        if done_stamp.exists() {
-            let done_contents = t!(fs::read_to_string(&done_stamp));
+        let done_stamp = out_dir.join("llvm-finished-building");
 
-            // If LLVM was already built previously and contents of the rebuild-trigger file
-            // didn't change from the previous build, then no action is required.
-            if done_contents == rebuild_trigger_contents {
-                return build_llvm_config
+        if let Some(llvm_commit) = llvm_info.sha() {
+            if done_stamp.exists() {
+                let done_contents = t!(fs::read(&done_stamp));
+
+                // If LLVM was already built previously and the submodule's commit didn't change
+                // from the previous build, then no action is required.
+                if done_contents == llvm_commit.as_bytes() {
+                    return build_llvm_config
+                }
             }
         }
 
@@ -97,7 +111,6 @@ impl Step for Llvm {
         t!(fs::create_dir_all(&out_dir));
 
         // http://llvm.org/docs/CMake.html
-        let root = if self.emscripten { "src/llvm-emscripten" } else { "src/llvm" };
         let mut cfg = cmake::Config::new(builder.src.join(root));
 
         let profile = match (builder.config.llvm_optimize, builder.config.llvm_release_debuginfo) {
@@ -143,8 +156,10 @@ impl Step for Llvm {
            .define("LLVM_DEFAULT_TARGET_TRIPLE", target);
 
         if builder.config.llvm_thin_lto && !emscripten {
-            cfg.define("LLVM_ENABLE_LTO", "Thin")
-               .define("LLVM_ENABLE_LLD", "ON");
+            cfg.define("LLVM_ENABLE_LTO", "Thin");
+            if !target.contains("apple") {
+               cfg.define("LLVM_ENABLE_LLD", "ON");
+            }
         }
 
         // By default, LLVM will automatically find OCaml and, if it finds it,
@@ -189,10 +204,10 @@ impl Step for Llvm {
         }
 
         if want_lldb {
-            cfg.define("LLVM_EXTERNAL_CLANG_SOURCE_DIR", builder.src.join("src/tools/clang"));
-            cfg.define("LLVM_EXTERNAL_LLDB_SOURCE_DIR", builder.src.join("src/tools/lldb"));
+            cfg.define("LLVM_ENABLE_PROJECTS", "clang;lldb");
             // For the time being, disable code signing.
             cfg.define("LLDB_CODESIGN_IDENTITY", "");
+            cfg.define("LLDB_NO_DEBUGSERVER", "ON");
         } else {
             // LLDB requires libxml2; but otherwise we want it to be disabled.
             // See https://github.com/rust-lang/rust/pull/50104
@@ -228,7 +243,29 @@ impl Step for Llvm {
         }
 
         if let Some(ref suffix) = builder.config.llvm_version_suffix {
-            cfg.define("LLVM_VERSION_SUFFIX", suffix);
+            // Allow version-suffix="" to not define a version suffix at all.
+            if !suffix.is_empty() {
+                cfg.define("LLVM_VERSION_SUFFIX", suffix);
+            }
+        } else {
+            let mut default_suffix = format!(
+                "-rust-{}-{}",
+                channel::CFG_RELEASE_NUM,
+                builder.config.channel,
+            );
+            if let Some(sha) = llvm_info.sha_short() {
+                default_suffix.push_str("-");
+                default_suffix.push_str(sha);
+            }
+            cfg.define("LLVM_VERSION_SUFFIX", default_suffix);
+        }
+
+        if let Some(ref linker) = builder.config.llvm_use_linker {
+            cfg.define("LLVM_USE_LINKER", linker);
+        }
+
+        if let Some(true) = builder.config.llvm_allow_old_toolchain {
+            cfg.define("LLVM_TEMPORARILY_ALLOW_OLD_TOOLCHAIN", "YES");
         }
 
         if let Some(ref python) = builder.config.python {
@@ -248,13 +285,15 @@ impl Step for Llvm {
 
         cfg.build();
 
-        t!(fs::write(&done_stamp, &rebuild_trigger_contents));
+        if let Some(llvm_commit) = llvm_info.sha() {
+            t!(fs::write(&done_stamp, llvm_commit));
+        }
 
         build_llvm_config
     }
 }
 
-fn check_llvm_version(builder: &Builder, llvm_config: &Path) {
+fn check_llvm_version(builder: &Builder<'_>, llvm_config: &Path) {
     if !builder.config.llvm_version_check {
         return
     }
@@ -275,7 +314,7 @@ fn check_llvm_version(builder: &Builder, llvm_config: &Path) {
     panic!("\n\nbad LLVM version: {}, need >=6.0\n\n", version)
 }
 
-fn configure_cmake(builder: &Builder,
+fn configure_cmake(builder: &Builder<'_>,
                    target: Interned<String>,
                    cfg: &mut cmake::Config) {
     if builder.config.ninja {
@@ -358,13 +397,20 @@ fn configure_cmake(builder: &Builder,
     }
 
     cfg.build_arg("-j").build_arg(builder.jobs().to_string());
-    cfg.define("CMAKE_C_FLAGS", builder.cflags(target, GitRepo::Llvm).join(" "));
+    let mut cflags = builder.cflags(target, GitRepo::Llvm).join(" ");
+    if let Some(ref s) = builder.config.llvm_cxxflags {
+        cflags.push_str(&format!(" {}", s));
+    }
+    cfg.define("CMAKE_C_FLAGS", cflags);
     let mut cxxflags = builder.cflags(target, GitRepo::Llvm).join(" ");
     if builder.config.llvm_static_stdcpp &&
         !target.contains("windows") &&
         !target.contains("netbsd")
     {
         cxxflags.push_str(" -static-libstdc++");
+    }
+    if let Some(ref s) = builder.config.llvm_cxxflags {
+        cxxflags.push_str(&format!(" {}", s));
     }
     cfg.define("CMAKE_CXX_FLAGS", cxxflags);
     if let Some(ar) = builder.ar(target) {
@@ -383,6 +429,12 @@ fn configure_cmake(builder: &Builder,
         }
     }
 
+    if let Some(ref s) = builder.config.llvm_ldflags {
+        cfg.define("CMAKE_SHARED_LINKER_FLAGS", s);
+        cfg.define("CMAKE_MODULE_LINKER_FLAGS", s);
+        cfg.define("CMAKE_EXE_LINKER_FLAGS", s);
+    }
+
     if env::var_os("SCCACHE_ERROR_LOG").is_some() {
         cfg.env("RUST_LOG", "sccache=warn");
     }
@@ -397,16 +449,16 @@ impl Step for Lld {
     type Output = PathBuf;
     const ONLY_HOSTS: bool = true;
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
-        run.path("src/tools/lld")
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
+        run.path("src/llvm-project/lld").path("src/tools/lld")
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(Lld { target: run.target });
     }
 
     /// Compile LLVM for `target`.
-    fn run(self, builder: &Builder) -> PathBuf {
+    fn run(self, builder: &Builder<'_>) -> PathBuf {
         if builder.config.dry_run {
             return PathBuf::from("lld-out-dir-test-gen");
         }
@@ -428,7 +480,7 @@ impl Step for Lld {
         let _time = util::timeit(&builder);
         t!(fs::create_dir_all(&out_dir));
 
-        let mut cfg = cmake::Config::new(builder.src.join("src/tools/lld"));
+        let mut cfg = cmake::Config::new(builder.src.join("src/llvm-project/lld"));
         configure_cmake(builder, target, &mut cfg);
 
         // This is an awful, awful hack. Discovered when we migrated to using
@@ -469,17 +521,17 @@ pub struct TestHelpers {
 impl Step for TestHelpers {
     type Output = ();
 
-    fn should_run(run: ShouldRun) -> ShouldRun {
+    fn should_run(run: ShouldRun<'_>) -> ShouldRun<'_> {
         run.path("src/test/auxiliary/rust_test_helpers.c")
     }
 
-    fn make_run(run: RunConfig) {
+    fn make_run(run: RunConfig<'_>) {
         run.builder.ensure(TestHelpers { target: run.target })
     }
 
     /// Compiles the `rust_test_helpers.c` library which we used in various
     /// `run-pass` test suites for ABI testing.
-    fn run(self, builder: &Builder) {
+    fn run(self, builder: &Builder<'_>) {
         if builder.config.dry_run {
             return;
         }

@@ -1,17 +1,17 @@
 //! Intrinsics and other functions that the miri engine executes without
-//! looking at their MIR.  Intrinsics/functions supported here are shared by CTFE
+//! looking at their MIR. Intrinsics/functions supported here are shared by CTFE
 //! and miri.
 
 use syntax::symbol::Symbol;
 use rustc::ty;
-use rustc::ty::layout::{LayoutOf, Primitive};
+use rustc::ty::layout::{LayoutOf, Primitive, Size};
 use rustc::mir::BinOp;
 use rustc::mir::interpret::{
-    EvalResult, EvalErrorKind, Scalar,
+    EvalResult, InterpError, Scalar,
 };
 
 use super::{
-    Machine, PlaceTy, OpTy, EvalContext,
+    Machine, PlaceTy, OpTy, InterpretCx,
 };
 
 
@@ -36,8 +36,8 @@ fn numeric_intrinsic<'tcx, Tag>(
     Ok(Scalar::from_uint(bits_out, size))
 }
 
-impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> {
-    /// Returns whether emulation happened.
+impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tcx, M> {
+    /// Returns `true` if emulation happened.
     pub fn emulate_intrinsic(
         &mut self,
         instance: ty::Instance<'tcx>,
@@ -87,7 +87,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                 let bits = self.read_scalar(args[0])?.to_bits(layout_of.size)?;
                 let kind = match layout_of.abi {
                     ty::layout::Abi::Scalar(ref scalar) => scalar.value,
-                    _ => Err(::rustc::mir::interpret::EvalErrorKind::TypeNotPrimitive(ty))?,
+                    _ => Err(::rustc::mir::interpret::InterpError::TypeNotPrimitive(ty))?,
                 };
                 let out_val = if intrinsic_name.ends_with("_nonzero") {
                     if bits == 0 {
@@ -122,6 +122,49 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                     self.binop_with_overflow(bin_op, lhs, rhs, dest)?;
                 }
             }
+            "saturating_add" | "saturating_sub" => {
+                let l = self.read_immediate(args[0])?;
+                let r = self.read_immediate(args[1])?;
+                let is_add = intrinsic_name == "saturating_add";
+                let (val, overflowed) = self.binary_op(if is_add {
+                    BinOp::Add
+                } else {
+                    BinOp::Sub
+                }, l, r)?;
+                let val = if overflowed {
+                    let num_bits = l.layout.size.bits();
+                    if l.layout.abi.is_signed() {
+                        // For signed ints the saturated value depends on the sign of the first
+                        // term since the sign of the second term can be inferred from this and
+                        // the fact that the operation has overflowed (if either is 0 no
+                        // overflow can occur)
+                        let first_term: u128 = l.to_scalar()?.to_bits(l.layout.size)?;
+                        let first_term_positive = first_term & (1 << (num_bits-1)) == 0;
+                        if first_term_positive {
+                            // Negative overflow not possible since the positive first term
+                            // can only increase an (in range) negative term for addition
+                            // or corresponding negated positive term for subtraction
+                            Scalar::from_uint((1u128 << (num_bits - 1)) - 1,  // max positive
+                                Size::from_bits(num_bits))
+                        } else {
+                            // Positive overflow not possible for similar reason
+                            // max negative
+                            Scalar::from_uint(1u128 << (num_bits - 1), Size::from_bits(num_bits))
+                        }
+                    } else {  // unsigned
+                        if is_add {
+                            // max unsigned
+                            Scalar::from_uint(u128::max_value() >> (128 - num_bits),
+                                Size::from_bits(num_bits))
+                        } else {  // underflow to 0
+                            Scalar::from_uint(0u128, Size::from_bits(num_bits))
+                        }
+                    }
+                } else {
+                    val
+                };
+                self.write_scalar(val, dest)?;
+            }
             "unchecked_shl" | "unchecked_shr" => {
                 let l = self.read_immediate(args[0])?;
                 let r = self.read_immediate(args[1])?;
@@ -130,7 +173,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
                     "unchecked_shr" => BinOp::Shr,
                     _ => bug!("Already checked for int ops")
                 };
-                let (val, overflowed) = self.binary_op_imm(bin_op, l, r)?;
+                let (val, overflowed) = self.binary_op(bin_op, l, r)?;
                 if overflowed {
                     let layout = self.layout_of(substs.type_at(0))?;
                     let r_val =  r.to_scalar()?.to_bits(layout.size)?;
@@ -169,7 +212,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
     }
 
     /// "Intercept" a function call because we have something special to do for it.
-    /// Returns whether an intercept happened.
+    /// Returns `true` if an intercept happened.
     pub fn hook_fn(
         &mut self,
         instance: ty::Instance<'tcx>,
@@ -205,7 +248,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
             let file = Symbol::intern(self.read_str(file_place)?);
             let line = self.read_scalar(line.into())?.to_u32()?;
             let col = self.read_scalar(col.into())?.to_u32()?;
-            return Err(EvalErrorKind::Panic { msg, file, line, col }.into());
+            return Err(InterpError::Panic { msg, file, line, col }.into());
         } else if Some(def_id) == self.tcx.lang_items().begin_panic_fn() {
             assert!(args.len() == 2);
             // &'static str, &(&'static str, u32, u32)
@@ -223,7 +266,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
             let file = Symbol::intern(self.read_str(file_place)?);
             let line = self.read_scalar(line.into())?.to_u32()?;
             let col = self.read_scalar(col.into())?.to_u32()?;
-            return Err(EvalErrorKind::Panic { msg, file, line, col }.into());
+            return Err(InterpError::Panic { msg, file, line, col }.into());
         } else {
             return Ok(false);
         }

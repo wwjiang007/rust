@@ -1,7 +1,9 @@
-// error-pattern: Option
-// normalize-stderr-test "<\[u32; \d+\]>" -> "<[u32; N]>"
+// normalize-stderr-test "std::option::Option<\[u32; \d+\]>" -> "TYPE"
+// normalize-stderr-test "\[u32; \d+\]" -> "TYPE"
 
-// FIXME: work properly with higher limits
+// FIXME https://github.com/rust-lang/rust/issues/59774
+// normalize-stderr-test "thread.*panicked.*Metadata module not compiled.*\n" -> ""
+// normalize-stderr-test "note:.*RUST_BACKTRACE=1.*\n" -> ""
 
 #[cfg(target_pointer_width = "32")]
 fn main() {

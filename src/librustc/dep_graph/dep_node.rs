@@ -49,25 +49,24 @@
 //! user of the `DepNode` API of having to know how to compute the expected
 //! fingerprint for a given set of node parameters.
 
-use mir::interpret::GlobalId;
-use hir::def_id::{CrateNum, DefId, DefIndex, CRATE_DEF_INDEX};
-use hir::map::DefPathHash;
-use hir::HirId;
+use crate::mir::interpret::GlobalId;
+use crate::hir::def_id::{CrateNum, DefId, DefIndex, CRATE_DEF_INDEX};
+use crate::hir::map::DefPathHash;
+use crate::hir::HirId;
 
-use ich::{Fingerprint, StableHashingContext};
+use crate::ich::{Fingerprint, StableHashingContext};
 use rustc_data_structures::stable_hasher::{StableHasher, HashStable};
 use std::fmt;
 use std::hash::Hash;
 use syntax_pos::symbol::InternedString;
-use traits;
-use traits::query::{
+use crate::traits;
+use crate::traits::query::{
     CanonicalProjectionGoal, CanonicalTyGoal, CanonicalTypeOpAscribeUserTypeGoal,
     CanonicalTypeOpEqGoal, CanonicalTypeOpSubtypeGoal, CanonicalPredicateGoal,
     CanonicalTypeOpProvePredicateGoal, CanonicalTypeOpNormalizeGoal,
 };
-use ty::{TyCtxt, FnSig, Instance, InstanceDef,
-         ParamEnv, ParamEnvAnd, Predicate, PolyFnSig, PolyTraitRef, Ty};
-use ty::subst::Substs;
+use crate::ty::{self, TyCtxt, ParamEnvAnd, Ty};
+use crate::ty::subst::SubstsRef;
 
 // erase!() just makes tokens go away. It's used to specify which macro argument
 // is repeated (i.e., which sub-expression of the macro we are in) but don't need
@@ -85,11 +84,6 @@ macro_rules! is_anon_attr {
     ($attr:ident) => (false);
 }
 
-macro_rules! is_input_attr {
-    (input) => (true);
-    ($attr:ident) => (false);
-}
-
 macro_rules! is_eval_always_attr {
     (eval_always) => (true);
     ($attr:ident) => (false);
@@ -97,10 +91,6 @@ macro_rules! is_eval_always_attr {
 
 macro_rules! contains_anon_attr {
     ($($attr:ident),*) => ({$(is_anon_attr!($attr) | )* false});
-}
-
-macro_rules! contains_input_attr {
-    ($($attr:ident),*) => ({$(is_input_attr!($attr) | )* false});
 }
 
 macro_rules! contains_eval_always_attr {
@@ -111,7 +101,7 @@ macro_rules! define_dep_nodes {
     (<$tcx:tt>
     $(
         [$($attr:ident),* ]
-        $variant:ident $(( $tuple_arg_ty:ty $(,)* ))*
+        $variant:ident $(( $tuple_arg_ty:ty $(,)? ))*
                        $({ $($struct_arg_name:ident : $struct_arg_ty:ty),* })*
       ,)*
     ) => (
@@ -151,22 +141,13 @@ macro_rules! define_dep_nodes {
                 }
             }
 
-            // FIXME: Make `is_anon`, `is_input`, `is_eval_always` and `has_params` properties
+            // FIXME: Make `is_anon`, `is_eval_always` and `has_params` properties
             // of queries
             #[inline(always)]
             pub fn is_anon(&self) -> bool {
                 match *self {
                     $(
                         DepKind :: $variant => { contains_anon_attr!($($attr),*) }
-                    )*
-                }
-            }
-
-            #[inline(always)]
-            pub fn is_input(&self) -> bool {
-                match *self {
-                    $(
-                        DepKind :: $variant => { contains_input_attr!($($attr),*) }
                     )*
                 }
             }
@@ -302,7 +283,7 @@ macro_rules! define_dep_nodes {
                 }
             }
 
-            /// Create a new, parameterless DepNode. This method will assert
+            /// Creates a new, parameterless DepNode. This method will assert
             /// that the DepNode corresponding to the given DepKind actually
             /// does not require any parameters.
             #[inline(always)]
@@ -314,7 +295,7 @@ macro_rules! define_dep_nodes {
                 }
             }
 
-            /// Extract the DefId corresponding to this DepNode. This will work
+            /// Extracts the DefId corresponding to this DepNode. This will work
             /// if two conditions are met:
             ///
             /// 1. The Fingerprint of the DepNode actually is a DefPathHash, and
@@ -389,7 +370,7 @@ impl fmt::Debug for DepNode {
 
         write!(f, "(")?;
 
-        ::ty::tls::with_opt(|opt_tcx| {
+        crate::ty::tls::with_opt(|opt_tcx| {
             if let Some(tcx) = opt_tcx {
                 if let Some(def_id) = self.extract_def_id(tcx) {
                     write!(f, "{}", tcx.def_path_debug_str(def_id))?;
@@ -423,7 +404,7 @@ impl DefId {
     }
 }
 
-define_dep_nodes!( <'tcx>
+rustc_dep_node_append!([define_dep_nodes!][ <'tcx>
     // We use this for most things when incr. comp. is turned off.
     [] Null,
 
@@ -438,239 +419,48 @@ define_dep_nodes!( <'tcx>
     // suitable wrapper, you can use `tcx.dep_graph.ignore()` to gain
     // access to the krate, but you must remember to add suitable
     // edges yourself for the individual items that you read.
-    [input] Krate,
+    [eval_always] Krate,
 
     // Represents the body of a function or method. The def-id is that of the
     // function/method.
-    [input] HirBody(DefId),
+    [eval_always] HirBody(DefId),
 
     // Represents the HIR node with the given node-id
-    [input] Hir(DefId),
+    [eval_always] Hir(DefId),
 
     // Represents metadata from an extern crate.
-    [input] CrateMetadata(CrateNum),
+    [eval_always] CrateMetadata(CrateNum),
 
-    // Represents different phases in the compiler.
-    [] RegionScopeTree(DefId),
-    [eval_always] Coherence,
-    [eval_always] CoherenceInherentImplOverlapCheck,
-    [] CoherenceCheckTrait(DefId),
-    [eval_always] PrivacyAccessLevels(CrateNum),
-
-    // Represents the MIR for a fn; also used as the task node for
-    // things read/modify that MIR.
-    [] MirConstQualif(DefId),
-    [] MirBuilt(DefId),
-    [] MirConst(DefId),
-    [] MirValidated(DefId),
-    [] MirOptimized(DefId),
-    [] MirShim { instance_def: InstanceDef<'tcx> },
-
-    [] BorrowCheckKrate,
-    [] BorrowCheck(DefId),
-    [] MirBorrowCheck(DefId),
-    [] UnsafetyCheckResult(DefId),
-    [] UnsafeDeriveOnReprPacked(DefId),
-
-    [] CheckModAttrs(DefId),
-    [] CheckModLoops(DefId),
-    [] CheckModUnstableApiUsage(DefId),
-    [] CheckModItemTypes(DefId),
-    [] CollectModItemTypes(DefId),
-
-    [] Reachability,
-    [] MirKeys,
-    [eval_always] CrateVariances,
-
-    // Nodes representing bits of computed IR in the tcx. Each shared
-    // table in the tcx (or elsewhere) maps to one of these
-    // nodes.
-    [] AssociatedItems(DefId),
-    [] TypeOfItem(DefId),
-    [] GenericsOfItem(DefId),
-    [] PredicatesOfItem(DefId),
-    [] ExplicitPredicatesOfItem(DefId),
-    [] PredicatesDefinedOnItem(DefId),
-    [] InferredOutlivesOf(DefId),
-    [] InferredOutlivesCrate(CrateNum),
-    [] SuperPredicatesOfItem(DefId),
-    [] TraitDefOfItem(DefId),
-    [] AdtDefOfItem(DefId),
-    [] ImplTraitRef(DefId),
-    [] ImplPolarity(DefId),
-    [] Issue33140SelfTy(DefId),
-    [] FnSignature(DefId),
-    [] CoerceUnsizedInfo(DefId),
-
-    [] ItemVarianceConstraints(DefId),
-    [] ItemVariances(DefId),
-    [] IsConstFn(DefId),
-    [] IsPromotableConstFn(DefId),
-    [] IsForeignItem(DefId),
-    [] TypeParamPredicates { item_id: DefId, param_id: DefId },
-    [] SizedConstraint(DefId),
-    [] DtorckConstraint(DefId),
-    [] AdtDestructor(DefId),
-    [] AssociatedItemDefIds(DefId),
-    [eval_always] InherentImpls(DefId),
-    [] TypeckBodiesKrate,
-    [] TypeckTables(DefId),
-    [] UsedTraitImports(DefId),
-    [] HasTypeckTables(DefId),
-    [] ConstEval { param_env: ParamEnvAnd<'tcx, GlobalId<'tcx>> },
-    [] ConstEvalRaw { param_env: ParamEnvAnd<'tcx, GlobalId<'tcx>> },
-    [] CheckMatch(DefId),
-    [] SymbolName(DefId),
-    [] InstanceSymbolName { instance: Instance<'tcx> },
-    [] SpecializationGraph(DefId),
-    [] ObjectSafety(DefId),
-    [] FulfillObligation { param_env: ParamEnv<'tcx>, trait_ref: PolyTraitRef<'tcx> },
-    [] VtableMethods { trait_ref: PolyTraitRef<'tcx> },
-
-    [] IsCopy { param_env: ParamEnvAnd<'tcx, Ty<'tcx>> },
-    [] IsSized { param_env: ParamEnvAnd<'tcx, Ty<'tcx>> },
-    [] IsFreeze { param_env: ParamEnvAnd<'tcx, Ty<'tcx>> },
-    [] NeedsDrop { param_env: ParamEnvAnd<'tcx, Ty<'tcx>> },
-    [] Layout { param_env: ParamEnvAnd<'tcx, Ty<'tcx>> },
-
-    // The set of impls for a given trait.
-    [] TraitImpls(DefId),
-
-    [input] AllLocalTraitImpls,
+    [eval_always] AllLocalTraitImpls,
 
     [anon] TraitSelect,
 
-    [] ParamEnv(DefId),
-    [] Environment(DefId),
-    [] DescribeDef(DefId),
-
-    // FIXME(mw): DefSpans are not really inputs since they are derived from
-    // HIR. But at the moment HIR hashing still contains some hacks that allow
-    // to make type debuginfo to be source location independent. Declaring
-    // DefSpan an input makes sure that changes to these are always detected
-    // regardless of HIR hashing.
-    [input] DefSpan(DefId),
-    [] LookupStability(DefId),
-    [] LookupDeprecationEntry(DefId),
-    [] ConstIsRvaluePromotableToStatic(DefId),
-    [] RvaluePromotableMap(DefId),
-    [] ImplParent(DefId),
-    [] TraitOfItem(DefId),
-    [] IsReachableNonGeneric(DefId),
-    [] IsUnreachableLocalDefinition(DefId),
-    [] IsMirAvailable(DefId),
-    [] ItemAttrs(DefId),
-    [] CodegenFnAttrs(DefId),
-    [] FnArgNames(DefId),
-    [] RenderedConst(DefId),
-    [] DylibDepFormats(CrateNum),
-    [] IsPanicRuntime(CrateNum),
-    [] IsCompilerBuiltins(CrateNum),
-    [] HasGlobalAllocator(CrateNum),
-    [] HasPanicHandler(CrateNum),
-    [input] ExternCrate(DefId),
-    [eval_always] LintLevels,
-    [] Specializes { impl1: DefId, impl2: DefId },
-    [input] InScopeTraits(DefIndex),
-    [input] ModuleExports(DefId),
-    [] IsSanitizerRuntime(CrateNum),
-    [] IsProfilerRuntime(CrateNum),
-    [] GetPanicStrategy(CrateNum),
-    [] IsNoBuiltins(CrateNum),
-    [] ImplDefaultness(DefId),
-    [] CheckItemWellFormed(DefId),
-    [] CheckTraitItemWellFormed(DefId),
-    [] CheckImplItemWellFormed(DefId),
-    [] ReachableNonGenerics(CrateNum),
-    [] NativeLibraries(CrateNum),
-    [] PluginRegistrarFn(CrateNum),
-    [] ProcMacroDeclsStatic(CrateNum),
-    [input] CrateDisambiguator(CrateNum),
-    [input] CrateHash(CrateNum),
-    [input] OriginalCrateName(CrateNum),
-    [input] ExtraFileName(CrateNum),
-
-    [] ImplementationsOfTrait { krate: CrateNum, trait_id: DefId },
-    [] AllTraitImplementations(CrateNum),
-
-    [] DllimportForeignItems(CrateNum),
-    [] IsDllimportForeignItem(DefId),
-    [] IsStaticallyIncludedForeignItem(DefId),
-    [] NativeLibraryKind(DefId),
-    [input] LinkArgs,
-
-    [] ResolveLifetimes(CrateNum),
-    [] NamedRegion(DefIndex),
-    [] IsLateBound(DefIndex),
-    [] ObjectLifetimeDefaults(DefIndex),
-
-    [] Visibility(DefId),
-    [input] DepKind(CrateNum),
-    [input] CrateName(CrateNum),
-    [] ItemChildren(DefId),
-    [] ExternModStmtCnum(DefId),
-    [eval_always] GetLibFeatures,
-    [] DefinedLibFeatures(CrateNum),
-    [eval_always] GetLangItems,
-    [] DefinedLangItems(CrateNum),
-    [] MissingLangItems(CrateNum),
-    [] VisibleParentMap,
-    [input] MissingExternCrateItem(CrateNum),
-    [input] UsedCrateSource(CrateNum),
-    [input] PostorderCnums,
-
-    // These queries are not expected to have inputs -- as a result, they
-    // are not good candidates for "replay" because they are essentially
-    // pure functions of their input (and hence the expectation is that
-    // no caller would be green **apart** from just these
-    // queries). Making them anonymous avoids hashing the result, which
-    // may save a bit of time.
-    [anon] EraseRegionsTy { ty: Ty<'tcx> },
-
-    [input] Freevars(DefId),
-    [input] MaybeUnusedTraitImport(DefId),
-    [input] MaybeUnusedExternCrates,
-    [eval_always] StabilityIndex,
-    [eval_always] AllTraits,
-    [input] AllCrateNums,
-    [] ExportedSymbols(CrateNum),
-    [eval_always] CollectAndPartitionMonoItems,
-    [] IsCodegenedItem(DefId),
-    [] CodegenUnit(InternedString),
     [] CompileCodegenUnit(InternedString),
-    [input] OutputFilenames,
-    [] NormalizeProjectionTy(CanonicalProjectionGoal<'tcx>),
-    [] NormalizeTyAfterErasingRegions(ParamEnvAnd<'tcx, Ty<'tcx>>),
-    [] ImpliedOutlivesBounds(CanonicalTyGoal<'tcx>),
-    [] DropckOutlives(CanonicalTyGoal<'tcx>),
-    [] EvaluateObligation(CanonicalPredicateGoal<'tcx>),
-    [] EvaluateGoal(traits::ChalkCanonicalGoal<'tcx>),
-    [] TypeOpAscribeUserType(CanonicalTypeOpAscribeUserTypeGoal<'tcx>),
-    [] TypeOpEq(CanonicalTypeOpEqGoal<'tcx>),
-    [] TypeOpSubtype(CanonicalTypeOpSubtypeGoal<'tcx>),
-    [] TypeOpProvePredicate(CanonicalTypeOpProvePredicateGoal<'tcx>),
-    [] TypeOpNormalizeTy(CanonicalTypeOpNormalizeGoal<'tcx, Ty<'tcx>>),
-    [] TypeOpNormalizePredicate(CanonicalTypeOpNormalizeGoal<'tcx, Predicate<'tcx>>),
-    [] TypeOpNormalizePolyFnSig(CanonicalTypeOpNormalizeGoal<'tcx, PolyFnSig<'tcx>>),
-    [] TypeOpNormalizeFnSig(CanonicalTypeOpNormalizeGoal<'tcx, FnSig<'tcx>>),
 
-    [] SubstituteNormalizeAndTestPredicates { key: (DefId, &'tcx Substs<'tcx>) },
-    [] MethodAutoderefSteps(CanonicalTyGoal<'tcx>),
+    [eval_always] Analysis(CrateNum),
+]);
 
-    [input] TargetFeaturesWhitelist,
+pub trait RecoverKey<'tcx>: Sized {
+    fn recover(tcx: TyCtxt<'_, 'tcx, 'tcx>, dep_node: &DepNode) -> Option<Self>;
+}
 
-    [] InstanceDefSizeEstimate { instance_def: InstanceDef<'tcx> },
+impl RecoverKey<'tcx> for CrateNum {
+    fn recover(tcx: TyCtxt<'_, 'tcx, 'tcx>, dep_node: &DepNode) -> Option<Self> {
+        dep_node.extract_def_id(tcx).map(|id| id.krate)
+    }
+}
 
-    [input] Features,
+impl RecoverKey<'tcx> for DefId {
+    fn recover(tcx: TyCtxt<'_, 'tcx, 'tcx>, dep_node: &DepNode) -> Option<Self> {
+        dep_node.extract_def_id(tcx)
+    }
+}
 
-    [] ProgramClausesFor(DefId),
-    [] ProgramClausesForEnv(traits::Environment<'tcx>),
-    [] WasmImportModuleMap(CrateNum),
-    [] ForeignModules(CrateNum),
-
-    [] UpstreamMonomorphizations(CrateNum),
-    [] UpstreamMonomorphizationsFor(DefId),
-);
+impl RecoverKey<'tcx> for DefIndex {
+    fn recover(tcx: TyCtxt<'_, 'tcx, 'tcx>, dep_node: &DepNode) -> Option<Self> {
+        dep_node.extract_def_id(tcx).map(|id| id.index)
+    }
+}
 
 trait DepNodeParams<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> : fmt::Debug {
     const CAN_RECONSTRUCT_QUERY_KEY: bool;
@@ -715,7 +505,7 @@ impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for DefId {
     }
 
     fn to_debug_str(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> String {
-        tcx.item_path_str(*self)
+        tcx.def_path_str(*self)
     }
 }
 
@@ -727,7 +517,7 @@ impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for DefIndex {
     }
 
     fn to_debug_str(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> String {
-        tcx.item_path_str(DefId::local(*self))
+        tcx.def_path_str(DefId::local(*self))
     }
 }
 
@@ -791,7 +581,7 @@ impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for HirId {
 }
 
 /// A "work product" corresponds to a `.o` (or other) file that we
-/// save in between runs. These ids do not have a DefId but rather
+/// save in between runs. These IDs do not have a `DefId` but rather
 /// some independent path or string that persists between runs without
 /// the need to be mapped or unmapped. (This ensures we can serialize
 /// them even in the absence of a tcx.)
@@ -818,6 +608,6 @@ impl WorkProductId {
     }
 }
 
-impl_stable_hash_for!(struct ::dep_graph::WorkProductId {
+impl_stable_hash_for!(struct crate::dep_graph::WorkProductId {
     hash
 });

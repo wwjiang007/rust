@@ -7,11 +7,11 @@ use rustc::ty::layout::{self, Size, Align, TyLayout, LayoutOf, VariantIdx};
 use rustc::ty;
 use rustc_data_structures::fx::FxHashSet;
 use rustc::mir::interpret::{
-    Scalar, AllocKind, EvalResult, EvalErrorKind,
+    Scalar, AllocKind, EvalResult, InterpError,
 };
 
 use super::{
-    OpTy, Machine, EvalContext, ValueVisitor,
+    OpTy, Machine, InterpretCx, ValueVisitor, MPlaceTy,
 };
 
 macro_rules! validation_failure {
@@ -74,13 +74,13 @@ pub enum PathElem {
 }
 
 /// State for tracking recursive validation of references
-pub struct RefTracking<'tcx, Tag> {
-    pub seen: FxHashSet<(OpTy<'tcx, Tag>)>,
-    pub todo: Vec<(OpTy<'tcx, Tag>, Vec<PathElem>)>,
+pub struct RefTracking<T> {
+    pub seen: FxHashSet<T>,
+    pub todo: Vec<(T, Vec<PathElem>)>,
 }
 
-impl<'tcx, Tag: Copy+Eq+Hash> RefTracking<'tcx, Tag> {
-    pub fn new(op: OpTy<'tcx, Tag>) -> Self {
+impl<'tcx, T: Copy + Eq + Hash> RefTracking<T> {
+    pub fn new(op: T) -> Self {
         let mut ref_tracking = RefTracking {
             seen: FxHashSet::default(),
             todo: vec![(op, Vec::new())],
@@ -151,9 +151,9 @@ struct ValidityVisitor<'rt, 'a: 'rt, 'mir: 'rt, 'tcx: 'a+'rt+'mir, M: Machine<'a
     /// starts must not be changed!  `visit_fields` and `visit_array` rely on
     /// this stack discipline.
     path: Vec<PathElem>,
-    ref_tracking: Option<&'rt mut RefTracking<'tcx, M::PointerTag>>,
+    ref_tracking: Option<&'rt mut RefTracking<MPlaceTy<'tcx, M::PointerTag>>>,
     const_mode: bool,
-    ecx: &'rt EvalContext<'a, 'mir, 'tcx, M>,
+    ecx: &'rt InterpretCx<'a, 'mir, 'tcx, M>,
 }
 
 impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> ValidityVisitor<'rt, 'a, 'mir, 'tcx, M> {
@@ -224,7 +224,7 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
     type V = OpTy<'tcx, M::PointerTag>;
 
     #[inline(always)]
-    fn ecx(&self) -> &EvalContext<'a, 'mir, 'tcx, M> {
+    fn ecx(&self) -> &InterpretCx<'a, 'mir, 'tcx, M> {
         &self.ecx
     }
 
@@ -258,11 +258,11 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
         match self.walk_value(op) {
             Ok(()) => Ok(()),
             Err(err) => match err.kind {
-                EvalErrorKind::InvalidDiscriminant(val) =>
+                InterpError::InvalidDiscriminant(val) =>
                     validation_failure!(
                         val, self.path, "a valid enum discriminant"
                     ),
-                EvalErrorKind::ReadPointerAsBytes =>
+                InterpError::ReadPointerAsBytes =>
                     validation_failure!(
                         "a pointer", self.path, "plain (non-pointer) bytes"
                     ),
@@ -353,12 +353,14 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                 match self.ecx.memory.check_align(ptr, align) {
                     Ok(_) => {},
                     Err(err) => {
-                        error!("{:?} is not aligned to {:?}", ptr, align);
+                        info!("{:?} is not aligned to {:?}", ptr, align);
                         match err.kind {
-                            EvalErrorKind::InvalidNullPointerUsage =>
+                            InterpError::InvalidNullPointerUsage =>
                                 return validation_failure!("NULL reference", self.path),
-                            EvalErrorKind::AlignmentCheckFailed { .. } =>
-                                return validation_failure!("unaligned reference", self.path),
+                            InterpError::AlignmentCheckFailed { required, has } =>
+                                return validation_failure!(format!("unaligned reference \
+                                    (required {} byte alignment but found {})",
+                                    required.bytes(), has.bytes()), self.path),
                             _ =>
                                 return validation_failure!(
                                     "dangling (out-of-bounds) reference (might be NULL at \
@@ -399,16 +401,15 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                     // before.  Proceed recursively even for integer pointers, no
                     // reason to skip them! They are (recursively) valid for some ZST,
                     // but not for others (e.g., `!` is a ZST).
-                    let op = place.into();
-                    if ref_tracking.seen.insert(op) {
-                        trace!("Recursing below ptr {:#?}", *op);
+                    if ref_tracking.seen.insert(place) {
+                        trace!("Recursing below ptr {:#?}", *place);
                         // We need to clone the path anyway, make sure it gets created
                         // with enough space for the additional `Deref`.
                         let mut new_path = Vec::with_capacity(self.path.len()+1);
                         new_path.clone_from(&self.path);
                         new_path.push(PathElem::Deref);
                         // Remember to come back to this later.
-                        ref_tracking.todo.push((op, new_path));
+                        ref_tracking.todo.push((place, new_path));
                     }
                 }
             }
@@ -449,8 +450,13 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
         }
         // At least one value is excluded. Get the bits.
         let value = try_validation!(value.not_undef(),
-            value, self.path,
-            format!("something in the range {:?}", layout.valid_range));
+            value,
+            self.path,
+            format!(
+                "something {}",
+                wrapping_range_format(&layout.valid_range, max_hi),
+            )
+        );
         let bits = match value {
             Scalar::Ptr(ptr) => {
                 if lo == 1 && hi == max_hi {
@@ -556,7 +562,7 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
                     Err(err) => {
                         // For some errors we might be able to provide extra information
                         match err.kind {
-                            EvalErrorKind::ReadUndefBytes(offset) => {
+                            InterpError::ReadUndefBytes(offset) => {
                                 // Some byte was undefined, determine which
                                 // element that byte belongs to so we can
                                 // provide an index.
@@ -581,8 +587,8 @@ impl<'rt, 'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>>
     }
 }
 
-impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> {
-    /// This function checks the data at `op`.  `op` is assumed to cover valid memory if it
+impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> InterpretCx<'a, 'mir, 'tcx, M> {
+    /// This function checks the data at `op`. `op` is assumed to cover valid memory if it
     /// is an indirect operand.
     /// It will error if the bits at the destination do not match the ones described by the layout.
     ///
@@ -593,7 +599,7 @@ impl<'a, 'mir, 'tcx, M: Machine<'a, 'mir, 'tcx>> EvalContext<'a, 'mir, 'tcx, M> 
         &self,
         op: OpTy<'tcx, M::PointerTag>,
         path: Vec<PathElem>,
-        ref_tracking: Option<&mut RefTracking<'tcx, M::PointerTag>>,
+        ref_tracking: Option<&mut RefTracking<MPlaceTy<'tcx, M::PointerTag>>>,
         const_mode: bool,
     ) -> EvalResult<'tcx> {
         trace!("validate_operand: {:?}, {:?}", *op, op.layout.ty);

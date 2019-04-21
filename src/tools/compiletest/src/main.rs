@@ -1,29 +1,22 @@
 #![crate_name = "compiletest"]
 #![feature(test)]
-#![deny(warnings)]
+#![feature(vec_remove_item)]
+#![deny(warnings, rust_2018_idioms)]
 
-extern crate diff;
-extern crate env_logger;
-extern crate filetime;
-extern crate getopts;
 #[cfg(unix)]
 extern crate libc;
 #[macro_use]
 extern crate log;
-extern crate regex;
 #[macro_use]
 extern crate lazy_static;
 #[macro_use]
 extern crate serde_derive;
-extern crate serde_json;
 extern crate test;
-extern crate rustfix;
-extern crate walkdir;
 
-use common::CompareMode;
-use common::{expected_output_path, output_base_dir, output_relative_path, UI_EXTENSIONS};
-use common::{Config, TestPaths};
-use common::{DebugInfoBoth, DebugInfoGdb, DebugInfoLldb, Mode, Pretty};
+use crate::common::CompareMode;
+use crate::common::{expected_output_path, output_base_dir, output_relative_path, UI_EXTENSIONS};
+use crate::common::{Config, TestPaths};
+use crate::common::{DebugInfoBoth, DebugInfoGdb, DebugInfoLldb, Mode, Pretty};
 use filetime::FileTime;
 use getopts::Options;
 use std::env;
@@ -33,8 +26,10 @@ use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use test::ColorConfig;
-use util::logv;
+use crate::util::logv;
 use walkdir::WalkDir;
+use env_logger;
+use getopts;
 
 use self::header::{EarlyProps, Ignore};
 
@@ -107,6 +102,12 @@ pub fn parse_config(args: Vec<String>) -> Config {
             "",
             "force-valgrind",
             "fail if Valgrind tests cannot be run under Valgrind",
+        )
+        .optopt(
+            "",
+            "run-clang-based-tests-with",
+            "path to Clang executable",
+            "PATH",
         )
         .optopt(
             "",
@@ -233,6 +234,12 @@ pub fn parse_config(args: Vec<String>) -> Config {
             "mode describing what file the actual ui output will be compared to",
             "COMPARE MODE",
         )
+        .optflag(
+            "",
+            "rustfix-coverage",
+            "enable this to generate a Rustfix coverage file, which is saved in \
+                `./<build_base>/rustfix_missing_coverage.txt`",
+        )
         .optflag("h", "help", "show this message");
 
     let (argv0, args_) = args.split_first().unwrap();
@@ -298,6 +305,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
         docck_python: matches.opt_str("docck-python").unwrap(),
         valgrind_path: matches.opt_str("valgrind-path"),
         force_valgrind: matches.opt_present("force-valgrind"),
+        run_clang_based_tests_with: matches.opt_str("run-clang-based-tests-with"),
         llvm_filecheck: matches.opt_str("llvm-filecheck").map(|s| PathBuf::from(&s)),
         src_base,
         build_base: opt_path(matches, "build-base"),
@@ -335,6 +343,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
         color,
         remote_test_client: matches.opt_str("remote-test-client").map(PathBuf::from),
         compare_mode: matches.opt_str("compare-mode").map(CompareMode::parse),
+        rustfix_coverage: matches.opt_present("rustfix-coverage"),
 
         cc: matches.opt_str("cc").unwrap(),
         cxx: matches.opt_str("cxx").unwrap(),
@@ -474,6 +483,19 @@ pub fn run_tests(config: &Config) {
         let _ = fs::remove_dir_all("tmp/partitioning-tests");
     }
 
+    // If we want to collect rustfix coverage information,
+    // we first make sure that the coverage file does not exist.
+    // It will be created later on.
+    if config.rustfix_coverage {
+        let mut coverage_file_path = config.build_base.clone();
+        coverage_file_path.push("rustfix_missing_coverage.txt");
+        if coverage_file_path.exists() {
+            if let Err(e) = fs::remove_file(&coverage_file_path) {
+                panic!("Could not delete {} due to {}", coverage_file_path.display(), e)
+            }
+        }
+    }
+
     let opts = test_opts(config);
     let tests = make_tests(config);
     // sadly osx needs some file descriptor limits raised for running tests in
@@ -501,6 +523,7 @@ pub fn run_tests(config: &Config) {
 
 pub fn test_opts(config: &Config) -> test::TestOpts {
     test::TestOpts {
+        exclude_should_panic: false,
         filter: config.filter.clone(),
         filter_exact: config.filter_exact,
         run_ignored: if config.run_ignored {
@@ -597,6 +620,8 @@ fn collect_tests_from_dir(
     Ok(())
 }
 
+
+/// Returns true if `file_name` looks like a proper test file name.
 pub fn is_test(file_name: &OsString) -> bool {
     let file_name = file_name.to_str().unwrap();
 
@@ -669,15 +694,6 @@ fn stamp(config: &Config, testpaths: &TestPaths, revision: Option<&str>) -> Path
     output_base_dir(config, testpaths, revision).join("stamp")
 }
 
-/// Return an iterator over timestamps of files in the directory at `path`.
-fn collect_timestamps(path: &PathBuf) -> impl Iterator<Item=FileTime> {
-    WalkDir::new(path)
-        .into_iter()
-        .map(|entry| entry.unwrap())
-        .filter(|entry| entry.file_type().is_file())
-        .map(|entry| mtime(entry.path()))
-}
-
 fn up_to_date(
     config: &Config,
     testpaths: &TestPaths,
@@ -700,13 +716,15 @@ fn up_to_date(
     let rust_src_dir = config
         .find_rust_src_root()
         .expect("Could not find Rust source root");
-    let stamp = mtime(&stamp_name);
-    let mut inputs = vec![mtime(&testpaths.file), mtime(&config.rustc_path)];
+    let stamp = Stamp::from_path(&stamp_name);
+    let mut inputs = vec![Stamp::from_path(&testpaths.file), Stamp::from_path(&config.rustc_path)];
     inputs.extend(
         props
             .aux
             .iter()
-            .map(|aux| mtime(&testpaths.file.parent().unwrap().join("auxiliary").join(aux))),
+            .map(|aux| {
+                Stamp::from_path(&testpaths.file.parent().unwrap().join("auxiliary").join(aux))
+            }),
     );
     // Relevant pretty printer files
     let pretty_printer_files = [
@@ -717,24 +735,47 @@ fn up_to_date(
         "src/etc/lldb_rust_formatters.py",
     ];
     inputs.extend(pretty_printer_files.iter().map(|pretty_printer_file| {
-        mtime(&rust_src_dir.join(pretty_printer_file))
+        Stamp::from_path(&rust_src_dir.join(pretty_printer_file))
     }));
-    inputs.extend(collect_timestamps(&config.run_lib_path));
+    inputs.extend(Stamp::from_dir(&config.run_lib_path));
     if let Some(ref rustdoc_path) = config.rustdoc_path {
-        inputs.push(mtime(&rustdoc_path));
-        inputs.push(mtime(&rust_src_dir.join("src/etc/htmldocck.py")));
+        inputs.push(Stamp::from_path(&rustdoc_path));
+        inputs.push(Stamp::from_path(&rust_src_dir.join("src/etc/htmldocck.py")));
     }
 
     // UI test files.
     inputs.extend(UI_EXTENSIONS.iter().map(|extension| {
         let path = &expected_output_path(testpaths, revision, &config.compare_mode, extension);
-        mtime(path)
+        Stamp::from_path(path)
     }));
 
     // Compiletest itself.
-    inputs.extend(collect_timestamps(&rust_src_dir.join("src/tools/compiletest/")));
+    inputs.extend(Stamp::from_dir(&rust_src_dir.join("src/tools/compiletest/")));
 
-    inputs.iter().any(|input| *input > stamp)
+    inputs.iter().any(|input| input > &stamp)
+}
+
+#[derive(Debug, PartialEq, PartialOrd, Ord, Eq)]
+struct Stamp {
+    time: FileTime,
+    file: PathBuf,
+}
+
+impl Stamp {
+    fn from_path(p: &Path) -> Self {
+        Stamp {
+            time: mtime(&p),
+            file: p.into(),
+        }
+    }
+
+    fn from_dir(path: &Path) -> impl Iterator<Item=Stamp> {
+        WalkDir::new(path)
+            .into_iter()
+            .map(|entry| entry.unwrap())
+            .filter(|entry| entry.file_type().is_file())
+            .map(|entry| Stamp::from_path(entry.path()))
+    }
 }
 
 fn mtime(path: &Path) -> FileTime {
@@ -791,7 +832,7 @@ fn make_test_closure(
     }))
 }
 
-/// Returns true if the given target is an Android target for the
+/// Returns `true` if the given target is an Android target for the
 /// purposes of GDB testing.
 fn is_android_gdb_target(target: &String) -> bool {
     match &target[..] {
@@ -1030,4 +1071,13 @@ fn test_extract_gdb_version() {
         7012000: "GNU gdb (GDB) 7.12.20161027-git",
         7012050: "GNU gdb (GDB) 7.12.50.20161027-git",
     }
+}
+
+#[test]
+fn is_test_test() {
+    assert_eq!(true, is_test(&OsString::from("a_test.rs")));
+    assert_eq!(false, is_test(&OsString::from(".a_test.rs")));
+    assert_eq!(false, is_test(&OsString::from("a_cat.gif")));
+    assert_eq!(false, is_test(&OsString::from("#a_dog_gif")));
+    assert_eq!(false, is_test(&OsString::from("~a_temp_file")));
 }

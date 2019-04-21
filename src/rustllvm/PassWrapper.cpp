@@ -646,8 +646,9 @@ char RustPrintModulePass::ID = 0;
 INITIALIZE_PASS(RustPrintModulePass, "print-rust-module",
                 "Print rust module to stderr", false, false)
 
-extern "C" void LLVMRustPrintModule(LLVMPassManagerRef PMR, LLVMModuleRef M,
-                                    const char *Path, DemangleFn Demangle) {
+extern "C" LLVMRustResult
+LLVMRustPrintModule(LLVMPassManagerRef PMR, LLVMModuleRef M,
+                    const char *Path, DemangleFn Demangle) {
   llvm::legacy::PassManager *PM = unwrap<llvm::legacy::PassManager>(PMR);
   std::string ErrorInfo;
 
@@ -655,12 +656,18 @@ extern "C" void LLVMRustPrintModule(LLVMPassManagerRef PMR, LLVMModuleRef M,
   raw_fd_ostream OS(Path, EC, sys::fs::F_None);
   if (EC)
     ErrorInfo = EC.message();
+  if (ErrorInfo != "") {
+    LLVMRustSetLastError(ErrorInfo.c_str());
+    return LLVMRustResult::Failure;
+  }
 
   formatted_raw_ostream FOS(OS);
 
   PM->add(new RustPrintModulePass(FOS, Demangle));
 
   PM->run(*unwrap(M));
+
+  return LLVMRustResult::Success;
 }
 
 extern "C" void LLVMRustPrintPasses() {
@@ -789,7 +796,7 @@ struct LLVMRustThinLTOData {
   StringMap<GVSummaryMapTy> ModuleToDefinedGVSummaries;
 
 #if LLVM_VERSION_GE(7, 0)
-  LLVMRustThinLTOData() : Index(/* isPerformingAnalysis = */ false) {}
+  LLVMRustThinLTOData() : Index(/* HaveGVs = */ false) {}
 #endif
 };
 
@@ -865,7 +872,12 @@ LLVMRustCreateThinLTOData(LLVMRustThinLTOModule *modules,
   auto deadIsPrevailing = [&](GlobalValue::GUID G) {
     return PrevailingType::Unknown;
   };
+#if LLVM_VERSION_GE(8, 0)
+  computeDeadSymbolsWithConstProp(Ret->Index, Ret->GUIDPreservedSymbols,
+                                  deadIsPrevailing, /* ImportEnabled = */ true);
+#else
   computeDeadSymbols(Ret->Index, Ret->GUIDPreservedSymbols, deadIsPrevailing);
+#endif
 #else
   computeDeadSymbols(Ret->Index, Ret->GUIDPreservedSymbols);
 #endif
@@ -1087,10 +1099,10 @@ LLVMRustThinLTOBufferLen(const LLVMRustThinLTOBuffer *Buffer) {
 // processing.  We'll call this once per module optimized through ThinLTO, and
 // it'll be called concurrently on many threads.
 extern "C" LLVMModuleRef
-LLVMRustParseBitcodeForThinLTO(LLVMContextRef Context,
-                               const char *data,
-                               size_t len,
-                               const char *identifier) {
+LLVMRustParseBitcodeForLTO(LLVMContextRef Context,
+                           const char *data,
+                           size_t len,
+                           const char *identifier) {
   StringRef Data(data, len);
   MemoryBufferRef Buffer(Data, identifier);
   unwrap(Context)->enableDebugTypeODRUniquing();

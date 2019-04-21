@@ -1,7 +1,7 @@
 use rustc::hir::def_id::DefId;
 use rustc::hir;
 use rustc::mir::*;
-use rustc::ty::{self, Predicate, TyCtxt};
+use rustc::ty::{self, Predicate, TyCtxt, adjustment::{PointerCast}};
 use rustc_target::spec::abi;
 use std::borrow::Cow;
 use syntax_pos::Span;
@@ -21,6 +21,7 @@ pub fn is_min_const_fn(
                 | Predicate::RegionOutlives(_)
                 | Predicate::TypeOutlives(_)
                 | Predicate::WellFormed(_)
+                | Predicate::Projection(_)
                 | Predicate::ConstEvaluatable(..) => continue,
                 | Predicate::ObjectSafe(_) => {
                     bug!("object safe predicate on function: {:#?}", predicate)
@@ -29,13 +30,6 @@ pub fn is_min_const_fn(
                     bug!("closure kind predicate on function: {:#?}", predicate)
                 }
                 Predicate::Subtype(_) => bug!("subtype predicate on function: {:#?}", predicate),
-                Predicate::Projection(_) => {
-                    let span = tcx.def_span(current);
-                    // we'll hit a `Predicate::Trait` later which will report an error
-                    tcx.sess
-                        .delay_span_bug(span, "projection without trait bound");
-                    continue;
-                }
                 Predicate::Trait(pred) => {
                     if Some(pred.def_id()) == tcx.lang_items().sized_trait() {
                         continue;
@@ -158,13 +152,16 @@ fn check_rvalue(
                 _ => check_operand(tcx, mir, operand, span),
             }
         }
-        Rvalue::Cast(CastKind::UnsafeFnPointer, _, _) |
-        Rvalue::Cast(CastKind::ClosureFnPointer, _, _) |
-        Rvalue::Cast(CastKind::ReifyFnPointer, _, _) => Err((
+        Rvalue::Cast(CastKind::Pointer(PointerCast::MutToConstPointer), operand, _) => {
+            check_operand(tcx, mir, operand, span)
+        }
+        Rvalue::Cast(CastKind::Pointer(PointerCast::UnsafeFnPointer), _, _) |
+        Rvalue::Cast(CastKind::Pointer(PointerCast::ClosureFnPointer(_)), _, _) |
+        Rvalue::Cast(CastKind::Pointer(PointerCast::ReifyFnPointer), _, _) => Err((
             span,
             "function pointer casts are not allowed in const fn".into(),
         )),
-        Rvalue::Cast(CastKind::Unsize, _, _) => Err((
+        Rvalue::Cast(CastKind::Pointer(PointerCast::Unsize), _, _) => Err((
             span,
             "unsizing casts are not allowed in const fn".into(),
         )),
@@ -258,10 +255,11 @@ fn check_place(
     span: Span,
 ) -> McfResult {
     match place {
-        Place::Local(_) => Ok(()),
+        Place::Base(PlaceBase::Local(_)) => Ok(()),
         // promoteds are always fine, they are essentially constants
-        Place::Promoted(_) => Ok(()),
-        Place::Static(_) => Err((span, "cannot access `static` items in const fn".into())),
+        Place::Base(PlaceBase::Static(box Static { kind: StaticKind::Promoted(_), .. })) => Ok(()),
+        Place::Base(PlaceBase::Static(box Static { kind: StaticKind::Static(_), .. })) =>
+            Err((span, "cannot access `static` items in const fn".into())),
         Place::Projection(proj) => {
             match proj.elem {
                 | ProjectionElem::ConstantIndex { .. } | ProjectionElem::Subslice { .. }
@@ -328,7 +326,12 @@ fn check_terminator(
                     abi::Abi::Rust if tcx.is_min_const_fn(def_id) => {},
                     abi::Abi::Rust => return Err((
                         span,
-                        "can only call other `min_const_fn` within a `min_const_fn`".into(),
+                        format!(
+                            "can only call other `const fn` within a `const fn`, \
+                             but `{:?}` is not stable as `const fn`",
+                            func,
+                        )
+                        .into(),
                     )),
                     abi => return Err((
                         span,
@@ -364,7 +367,7 @@ fn check_terminator(
     }
 }
 
-/// Returns true if the `def_id` refers to an intrisic which we've whitelisted
+/// Returns `true` if the `def_id` refers to an intrisic which we've whitelisted
 /// for being called from stable `const fn`s (`min_const_fn`).
 ///
 /// Adding more intrinsics requires sign-off from @rust-lang/lang.
@@ -380,6 +383,8 @@ fn is_intrinsic_whitelisted(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> bool 
         | "overflowing_add" // ~> .wrapping_add
         | "overflowing_sub" // ~> .wrapping_sub
         | "overflowing_mul" // ~> .wrapping_mul
+        | "saturating_add" // ~> .saturating_add
+        | "saturating_sub" // ~> .saturating_sub
         | "unchecked_shl" // ~> .wrapping_shl
         | "unchecked_shr" // ~> .wrapping_shr
         | "rotate_left" // ~> .rotate_left

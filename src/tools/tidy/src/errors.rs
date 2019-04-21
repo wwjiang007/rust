@@ -15,18 +15,20 @@ pub fn check(path: &Path, bad: &mut bool) {
                 &mut |path| super::filter_dirs(path) || path.ends_with("src/test"),
                 &mut |file| {
         let filename = file.file_name().unwrap().to_string_lossy();
-        if filename != "diagnostics.rs" && filename != "diagnostic_list.rs" {
+        if filename != "error_codes.rs" {
             return
         }
 
         contents.truncate(0);
         t!(t!(File::open(file)).read_to_string(&mut contents));
 
-        // In the register_long_diagnostics! macro, entries look like this:
+        // In the `register_long_diagnostics!` macro, entries look like this:
         //
+        // ```
         // EXXXX: r##"
         // <Long diagnostic message>
         // "##,
+        // ```
         //
         // and these long messages often have error codes themselves inside
         // them, but we don't want to report duplicates in these cases. This

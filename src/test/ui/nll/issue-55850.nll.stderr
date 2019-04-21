@@ -1,7 +1,7 @@
 error[E0597]: `s` does not live long enough
   --> $DIR/issue-55850.rs:28:16
    |
-LL |         yield &s[..] //~ ERROR `s` does not live long enough [E0597]
+LL |         yield &s[..]
    |                ^ borrowed value does not live long enough
 LL |     })
    |     - `s` dropped here while still borrowed
@@ -9,10 +9,10 @@ LL |     })
 error[E0626]: borrow may still be in use when generator yields
   --> $DIR/issue-55850.rs:28:16
    |
-LL |         yield &s[..] //~ ERROR `s` does not live long enough [E0597]
+LL |         yield &s[..]
    |         -------^---- possible yield occurs here
 
 error: aborting due to 2 previous errors
 
-Some errors occurred: E0597, E0626.
+Some errors have detailed explanations: E0597, E0626.
 For more information about an error, try `rustc --explain E0597`.

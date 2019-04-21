@@ -1,12 +1,8 @@
-error: lifetime parameters must be declared prior to type parameters
+error: lifetime arguments must be declared prior to type arguments
   --> $DIR/trait-object-vs-lifetime.rs:14:25
    |
 LL |     let _: S<'static +, 'static>;
-   |                         ^^^^^^^ must be declared prior to type parameters
-help: move the lifetime parameter prior to the first type parameter
-   |
-LL |     let _: S<'static, 'static +>;
-   |              ^^^^^^^^         --
+   |                         ^^^^^^^
 
 error[E0224]: at least one non-builtin trait is required for an object type
   --> $DIR/trait-object-vs-lifetime.rs:9:23
@@ -34,5 +30,4 @@ LL |     let _: S<'static +, 'static>;
 
 error: aborting due to 5 previous errors
 
-Some errors occurred: E0107, E0224.
-For more information about an error, try `rustc --explain E0107`.
+For more information about this error, try `rustc --explain E0107`.

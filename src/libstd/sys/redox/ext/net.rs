@@ -2,13 +2,13 @@
 
 //! Unix-specific networking functionality
 
-use fmt;
-use io::{self, Error, ErrorKind, Initializer};
-use net::Shutdown;
-use os::unix::io::{RawFd, AsRawFd, FromRawFd, IntoRawFd};
-use path::Path;
-use time::Duration;
-use sys::{cvt, fd::FileDesc, syscall};
+use crate::fmt;
+use crate::io::{self, Error, ErrorKind, Initializer};
+use crate::net::Shutdown;
+use crate::os::unix::io::{RawFd, AsRawFd, FromRawFd, IntoRawFd};
+use crate::path::Path;
+use crate::time::Duration;
+use crate::sys::{cvt, fd::FileDesc, syscall};
 
 /// An address associated with a Unix socket.
 ///
@@ -60,7 +60,7 @@ impl SocketAddr {
         None
     }
 
-    /// Returns true if and only if the address is unnamed.
+    /// Returns `true` if the address is unnamed.
     ///
     /// # Examples
     ///
@@ -90,7 +90,7 @@ impl SocketAddr {
 }
 #[stable(feature = "unix_socket_redox", since = "1.29")]
 impl fmt::Debug for SocketAddr {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(fmt, "SocketAddr")
     }
 }
@@ -114,7 +114,7 @@ pub struct UnixStream(FileDesc);
 
 #[stable(feature = "unix_socket_redox", since = "1.29")]
 impl fmt::Debug for UnixStream {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = fmt.debug_struct("UnixStream");
         builder.field("fd", &self.0.raw());
         if let Ok(addr) = self.local_addr() {
@@ -374,7 +374,7 @@ impl UnixStream {
     /// ```
     ///
     /// # Platform specific
-    /// On Redox this always returns None.
+    /// On Redox this always returns `None`.
     #[stable(feature = "unix_socket_redox", since = "1.29")]
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         Ok(None)
@@ -503,7 +503,7 @@ pub struct UnixListener(FileDesc);
 
 #[stable(feature = "unix_socket_redox", since = "1.29")]
 impl fmt::Debug for UnixListener {
-    fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut builder = fmt.debug_struct("UnixListener");
         builder.field("fd", &self.0.raw());
         if let Ok(addr) = self.local_addr() {
@@ -635,7 +635,7 @@ impl UnixListener {
     /// ```
     ///
     /// # Platform specific
-    /// On Redox this always returns None.
+    /// On Redox this always returns `None`.
     #[stable(feature = "unix_socket_redox", since = "1.29")]
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         Ok(None)

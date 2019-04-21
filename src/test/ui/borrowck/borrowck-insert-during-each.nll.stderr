@@ -5,7 +5,7 @@ LL |     f.foo(
    |     ^ --- first borrow later used by call
    |  ___|
    | |
-LL | |         |a| { //~ ERROR closure requires unique access to `f`
+LL | |         |a| {
    | |         --- closure construction occurs here
 LL | |             f.n.insert(*a);
    | |             - first borrow occurs due to use of `f` in closure
@@ -19,12 +19,12 @@ LL |   f.foo(
    |   - --- first borrow later used by call
    |   |
    |   borrow occurs here
-LL |         |a| { //~ ERROR closure requires unique access to `f`
+LL |         |a| {
    |         ^^^ closure construction occurs here
 LL |             f.n.insert(*a);
    |             - second borrow occurs due to use of `f` in closure
 
 error: aborting due to 2 previous errors
 
-Some errors occurred: E0500, E0501.
+Some errors have detailed explanations: E0500, E0501.
 For more information about an error, try `rustc --explain E0500`.

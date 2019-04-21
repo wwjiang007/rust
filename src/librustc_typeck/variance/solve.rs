@@ -23,7 +23,7 @@ struct SolveContext<'a, 'tcx: 'a> {
     solutions: Vec<ty::Variance>,
 }
 
-pub fn solve_constraints(constraints_cx: ConstraintContext) -> ty::CrateVariancesMap {
+pub fn solve_constraints(constraints_cx: ConstraintContext<'_, '_>) -> ty::CrateVariancesMap {
     let ConstraintContext { terms_cx, constraints, .. } = constraints_cx;
 
     let mut solutions = vec![ty::Bivariant; terms_cx.inferred_terms.len()];
@@ -83,14 +83,21 @@ impl<'a, 'tcx> SolveContext<'a, 'tcx> {
 
         let solutions = &self.solutions;
         self.terms_cx.inferred_starts.iter().map(|(&id, &InferredIndex(start))| {
-            let def_id = tcx.hir().local_def_id(id);
+            let def_id = tcx.hir().local_def_id_from_hir_id(id);
             let generics = tcx.generics_of(def_id);
+            let count = generics.count();
 
-            let mut variances = solutions[start..start+generics.count()].to_vec();
-
+            let mut variances = solutions[start..(start + count)].to_vec();
             debug!("id={} variances={:?}", id, variances);
 
-            // Functions can have unused type parameters: make those invariant.
+            // Const parameters are always invariant.
+            for (idx, param) in generics.params.iter().enumerate() {
+                if let ty::GenericParamDefKind::Const = param.kind {
+                    variances[idx] = ty::Invariant;
+                }
+            }
+
+            // Functions are permitted to have unused generic parameters: make those invariant.
             if let ty::FnDef(..) = tcx.type_of(def_id).sty {
                 for variance in &mut variances {
                     if *variance == ty::Bivariant {

@@ -4,12 +4,15 @@
 
 // ignore-tidy-linelength
 // ignore-windows
-// min-system-llvm-version 7.0
+// min-system-llvm-version 8.0
 
 // compile-flags: -g -C no-prepopulate-passes
 
+// DIFlagFixedEnum was deprecated in 8.0, renamed to DIFlagEnumClass.
+// We match either for compatibility.
+
 // CHECK-LABEL: @main
-// CHECK: {{.*}}DICompositeType{{.*}}tag: DW_TAG_enumeration_type,{{.*}}name: "E",{{.*}}flags: DIFlagFixedEnum,{{.*}}
+// CHECK: {{.*}}DICompositeType{{.*}}tag: DW_TAG_enumeration_type,{{.*}}name: "E",{{.*}}flags: {{(DIFlagEnumClass|DIFlagFixedEnum)}},{{.*}}
 // CHECK: {{.*}}DIEnumerator{{.*}}name: "A",{{.*}}value: {{[0-9].*}}
 // CHECK: {{.*}}DIEnumerator{{.*}}name: "B",{{.*}}value: {{[0-9].*}}
 // CHECK: {{.*}}DIEnumerator{{.*}}name: "C",{{.*}}value: {{[0-9].*}}

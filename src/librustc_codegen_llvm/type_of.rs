@@ -1,12 +1,12 @@
-use abi::{FnType, FnTypeExt};
-use common::*;
+use crate::abi::{FnType, FnTypeExt};
+use crate::common::*;
+use crate::type_::Type;
 use rustc::hir;
 use rustc::ty::{self, Ty, TypeFoldable};
 use rustc::ty::layout::{self, Align, LayoutOf, Size, TyLayout};
 use rustc_target::abi::FloatTy;
 use rustc_mir::monomorphize::item::DefPathBasedNames;
 use rustc_codegen_ssa::traits::*;
-use type_::Type;
 
 use std::fmt::Write;
 
@@ -55,7 +55,7 @@ fn uncached_llvm_type<'a, 'tcx>(cx: &CodegenCx<'a, 'tcx>,
         ty::Str => {
             let mut name = String::with_capacity(32);
             let printer = DefPathBasedNames::new(cx.tcx, true, true);
-            printer.push_type_name(layout.ty, &mut name);
+            printer.push_type_name(layout.ty, &mut name, false);
             if let (&ty::Adt(def, _), &layout::Variants::Single { index })
                  = (&layout.ty.sty, &layout.variants)
             {
@@ -226,7 +226,7 @@ impl<'tcx> LayoutLlvmExt<'tcx> for TyLayout<'tcx> {
         }
     }
 
-    /// Get the LLVM type corresponding to a Rust type, i.e., `rustc::ty::Ty`.
+    /// Gets the LLVM type corresponding to a Rust type, i.e., `rustc::ty::Ty`.
     /// The pointee type of the pointer in `PlaceRef` is always this type.
     /// For sized types, it is also the right LLVM type for an `alloca`
     /// containing a value of that type, and most immediates (except `bool`).
@@ -452,25 +452,27 @@ impl<'tcx> LayoutLlvmExt<'tcx> for TyLayout<'tcx> {
 
             _ => {
                 let mut data_variant = match self.variants {
-                    layout::Variants::NicheFilling { dataful_variant, .. } => {
-                        // Only the niche itself is always initialized,
-                        // so only check for a pointer at its offset.
-                        //
-                        // If the niche is a pointer, it's either valid
-                        // (according to its type), or null (which the
-                        // niche field's scalar validity range encodes).
-                        // This allows using `dereferenceable_or_null`
-                        // for e.g., `Option<&T>`, and this will continue
-                        // to work as long as we don't start using more
-                        // niches than just null (e.g., the first page
-                        // of the address space, or unaligned pointers).
-                        if self.fields.offset(0) == offset {
-                            Some(self.for_variant(cx, dataful_variant))
-                        } else {
-                            None
-                        }
-                    }
-                    _ => Some(*self)
+                    // Within the discriminant field, only the niche itself is
+                    // always initialized, so we only check for a pointer at its
+                    // offset.
+                    //
+                    // If the niche is a pointer, it's either valid (according
+                    // to its type), or null (which the niche field's scalar
+                    // validity range encodes).  This allows using
+                    // `dereferenceable_or_null` for e.g., `Option<&T>`, and
+                    // this will continue to work as long as we don't start
+                    // using more niches than just null (e.g., the first page of
+                    // the address space, or unaligned pointers).
+                    layout::Variants::Multiple {
+                        discr_kind: layout::DiscriminantKind::Niche {
+                            dataful_variant,
+                            ..
+                        },
+                        discr_index,
+                        ..
+                    } if self.fields.offset(discr_index) == offset =>
+                        Some(self.for_variant(cx, dataful_variant)),
+                    _ => Some(*self),
                 };
 
                 if let Some(variant) = data_variant {

@@ -1,11 +1,11 @@
 use syntax::symbol::InternedString;
 use syntax_pos::Span;
-use ty::{self, Ty};
+use crate::ty::{self, Ty, TyVid};
 
 use std::cmp;
 use std::marker::PhantomData;
 use std::u32;
-use rustc_data_structures::fx::FxHashMap;
+use std::ops::Range;
 use rustc_data_structures::snapshot_vec as sv;
 use rustc_data_structures::unify as ut;
 
@@ -57,8 +57,6 @@ pub enum TypeVariableOrigin {
     LatticeVariable(Span),
     Generalized(ty::TyVid),
 }
-
-pub type TypeVariableMap = FxHashMap<ty::TyVid, TypeVariableOrigin>;
 
 struct TypeVariableData {
     origin: TypeVariableOrigin,
@@ -188,7 +186,13 @@ impl<'tcx> TypeVariableTable<'tcx> {
         });
         assert_eq!(eq_key.vid.index, index as u32);
 
-        debug!("new_var(index={:?}, diverging={:?}, origin={:?}", eq_key.vid, diverging, origin);
+        debug!(
+            "new_var(index={:?}, universe={:?}, diverging={:?}, origin={:?}",
+            eq_key.vid,
+            universe,
+            diverging,
+            origin,
+        );
 
         eq_key.vid
     }
@@ -218,7 +222,7 @@ impl<'tcx> TypeVariableTable<'tcx> {
         self.sub_relations.find(vid)
     }
 
-    /// True if `a` and `b` have same "sub-root" (i.e., exists some
+    /// Returns `true` if `a` and `b` have same "sub-root" (i.e., exists some
     /// type X such that `forall i in {a, b}. (i <: X || X <: i)`.
     pub fn sub_unified(&mut self, a: ty::TyVid, b: ty::TyVid) -> bool {
         self.sub_root_var(a) == self.sub_root_var(b)
@@ -245,9 +249,9 @@ impl<'tcx> TypeVariableTable<'tcx> {
         }
     }
 
-    /// Creates a snapshot of the type variable state.  This snapshot
+    /// Creates a snapshot of the type variable state. This snapshot
     /// must later be committed (`commit()`) or rolled back
-    /// (`rollback_to()`).  Nested snapshots are permitted, but must
+    /// (`rollback_to()`). Nested snapshots are permitted, but must
     /// be processed in a stack-like fashion.
     pub fn snapshot(&mut self) -> Snapshot<'tcx> {
         Snapshot {
@@ -286,27 +290,18 @@ impl<'tcx> TypeVariableTable<'tcx> {
         self.sub_relations.commit(sub_snapshot);
     }
 
-    /// Returns a map `{V1 -> V2}`, where the keys `{V1}` are
-    /// ty-variables created during the snapshot, and the values
-    /// `{V2}` are the root variables that they were unified with,
-    /// along with their origin.
-    pub fn types_created_since_snapshot(&mut self, s: &Snapshot<'tcx>) -> TypeVariableMap {
-        let actions_since_snapshot = self.values.actions_since_snapshot(&s.snapshot);
-
-        actions_since_snapshot
-            .iter()
-            .filter_map(|action| match action {
-                &sv::UndoLog::NewElem(index) => Some(ty::TyVid { index: index as u32 }),
-                _ => None,
-            })
-            .map(|vid| {
-                let origin = self.values.get(vid.index as usize).origin.clone();
-                (vid, origin)
-            })
-            .collect()
+    /// Returns a range of the type variables created during the snapshot.
+    pub fn vars_since_snapshot(
+        &mut self,
+        s: &Snapshot<'tcx>,
+    ) -> (Range<TyVid>, Vec<TypeVariableOrigin>) {
+        let range = self.eq_relations.vars_since_snapshot(&s.eq_snapshot);
+        (range.start.vid..range.end.vid, (range.start.vid.index..range.end.vid.index).map(|index| {
+            self.values.get(index as usize).origin.clone()
+        }).collect())
     }
 
-    /// Find the set of type variables that existed *before* `s`
+    /// Finds the set of type variables that existed *before* `s`
     /// but which have only been unified since `s` started, and
     /// return the types with which they were unified. So if we had
     /// a type variable `V0`, then we started the snapshot, then we

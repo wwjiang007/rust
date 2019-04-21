@@ -5,6 +5,8 @@
 use arena::DroplessArena;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::indexed_vec::Idx;
+use rustc_data_structures::newtype_index;
+use rustc_macros::symbols;
 use serialize::{Decodable, Decoder, Encodable, Encoder};
 
 use std::fmt;
@@ -12,8 +14,215 @@ use std::str;
 use std::cmp::{PartialEq, Ordering, PartialOrd, Ord};
 use std::hash::{Hash, Hasher};
 
-use hygiene::SyntaxContext;
-use {Span, DUMMY_SP, GLOBALS};
+use crate::hygiene::SyntaxContext;
+use crate::{Span, DUMMY_SP, GLOBALS};
+
+symbols! {
+    // After modifying this list adjust `is_special`, `is_used_keyword`/`is_unused_keyword`,
+    // this should be rarely necessary though if the keywords are kept in alphabetic order.
+    Keywords {
+        // Special reserved identifiers used internally for elided lifetimes,
+        // unnamed method parameters, crate root module, error recovery etc.
+        Invalid:            "",
+        PathRoot:           "{{root}}",
+        DollarCrate:        "$crate",
+        Underscore:         "_",
+
+        // Keywords that are used in stable Rust.
+        As:                 "as",
+        Box:                "box",
+        Break:              "break",
+        Const:              "const",
+        Continue:           "continue",
+        Crate:              "crate",
+        Else:               "else",
+        Enum:               "enum",
+        Extern:             "extern",
+        False:              "false",
+        Fn:                 "fn",
+        For:                "for",
+        If:                 "if",
+        Impl:               "impl",
+        In:                 "in",
+        Let:                "let",
+        Loop:               "loop",
+        Match:              "match",
+        Mod:                "mod",
+        Move:               "move",
+        Mut:                "mut",
+        Pub:                "pub",
+        Ref:                "ref",
+        Return:             "return",
+        SelfLower:          "self",
+        SelfUpper:          "Self",
+        Static:             "static",
+        Struct:             "struct",
+        Super:              "super",
+        Trait:              "trait",
+        True:               "true",
+        Type:               "type",
+        Unsafe:             "unsafe",
+        Use:                "use",
+        Where:              "where",
+        While:              "while",
+
+        // Keywords that are used in unstable Rust or reserved for future use.
+        Abstract:           "abstract",
+        Become:             "become",
+        Do:                 "do",
+        Final:              "final",
+        Macro:              "macro",
+        Override:           "override",
+        Priv:               "priv",
+        Typeof:             "typeof",
+        Unsized:            "unsized",
+        Virtual:            "virtual",
+        Yield:              "yield",
+
+        // Edition-specific keywords that are used in stable Rust.
+        Dyn:                "dyn", // >= 2018 Edition only
+
+        // Edition-specific keywords that are used in unstable Rust or reserved for future use.
+        Async:              "async", // >= 2018 Edition only
+        Try:                "try", // >= 2018 Edition only
+
+        // Special lifetime names
+        UnderscoreLifetime: "'_",
+        StaticLifetime:     "'static",
+
+        // Weak keywords, have special meaning only in specific contexts.
+        Auto:               "auto",
+        Catch:              "catch",
+        Default:            "default",
+        Existential:        "existential",
+        Union:              "union",
+    }
+
+    // Other symbols that can be referred to with syntax_pos::symbols::*
+    Other {
+        alias,
+        align,
+        alloc_error_handler,
+        allow,
+        allow_fail,
+        allow_internal_unsafe,
+        allow_internal_unstable,
+        automatically_derived,
+        cfg,
+        cfg_attr,
+        cold,
+        compiler_builtins,
+        crate_id,
+        crate_name,
+        crate_type,
+        default_lib_allocator,
+        deny,
+        deprecated,
+        derive,
+        doc,
+        export_name,
+        feature,
+        ffi_returns_twice,
+        forbid,
+        fundamental,
+        global_allocator,
+        ignore,
+        include,
+        inline,
+        keyword,
+        lang,
+        link,
+        link_args,
+        link_name,
+        link_section,
+        linkage,
+        macro_escape,
+        macro_export,
+        macro_use,
+        main,
+        marker,
+        masked,
+        may_dangle,
+        must_use,
+        naked,
+        needs_allocator,
+        needs_panic_runtime,
+        no_builtins,
+        no_core,
+        no_debug,
+        no_implicit_prelude,
+        no_link,
+        no_main,
+        no_mangle,
+        no_start,
+        no_std,
+        non_exhaustive,
+        omit_gdb_pretty_printer_section,
+        optimize,
+        panic_handler,
+        panic_runtime,
+        path,
+        plugin,
+        plugin_registrar,
+        prelude_import,
+        proc_macro,
+        proc_macro_attribute,
+        proc_macro_derive,
+        profiler_runtime,
+        recursion_limit,
+        reexport_test_harness_main,
+        repr,
+        rustc_args_required_const,
+        rustc_clean,
+        rustc_const_unstable,
+        rustc_conversion_suggestion,
+        rustc_copy_clone_marker,
+        rustc_def_path,
+        rustc_deprecated,
+        rustc_dirty,
+        rustc_dump_program_clauses,
+        rustc_dump_user_substs,
+        rustc_error,
+        rustc_expected_cgu_reuse,
+        rustc_if_this_changed,
+        rustc_inherit_overflow_checks,
+        rustc_layout,
+        rustc_layout_scalar_valid_range_end,
+        rustc_layout_scalar_valid_range_start,
+        rustc_mir,
+        rustc_on_unimplemented,
+        rustc_outlives,
+        rustc_paren_sugar,
+        rustc_partition_codegened,
+        rustc_partition_reused,
+        rustc_proc_macro_decls,
+        rustc_regions,
+        rustc_std_internal_symbol,
+        rustc_symbol_name,
+        rustc_synthetic,
+        rustc_test_marker,
+        rustc_then_this_would_need,
+        rustc_transparent_macro,
+        rustc_variance,
+        sanitizer_runtime,
+        should_panic,
+        simd,
+        spotlight,
+        stable,
+        start,
+        structural_match,
+        target_feature,
+        test_runner,
+        thread_local,
+        type_length_limit,
+        unsafe_destructor_blind_to_params,
+        unstable,
+        unwind,
+        used,
+        warn,
+        windows_subsystem,
+    }
+}
 
 #[derive(Copy, Clone, Eq)]
 pub struct Ident {
@@ -42,7 +251,7 @@ impl Ident {
         Ident::with_empty_ctxt(Symbol::intern(string))
     }
 
-    /// Replace `lo` and `hi` with those from `span`, but keep hygiene context.
+    /// Replaces `lo` and `hi` with those from `span`, but keep hygiene context.
     pub fn with_span_pos(self, span: Span) -> Ident {
         Ident::new(self.name, span.with_ctxt(self.span.ctxt()))
     }
@@ -100,13 +309,13 @@ impl Hash for Ident {
 }
 
 impl fmt::Debug for Ident {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}{:?}", self.name, self.span.ctxt())
     }
 }
 
 impl fmt::Display for Ident {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.name, f)
     }
 }
@@ -134,26 +343,18 @@ impl Decodable for Ident {
     }
 }
 
-/// A symbol is an interned or gensymed string. The use of newtype_index! means
-/// that Option<Symbol> only takes up 4 bytes, because newtype_index! reserves
+/// A symbol is an interned or gensymed string. The use of `newtype_index!` means
+/// that `Option<Symbol>` only takes up 4 bytes, because `newtype_index!` reserves
 /// the last 256 values for tagging purposes.
 ///
-/// Note that Symbol cannot be a newtype_index! directly because it implements
-/// fmt::Debug, Encodable, and Decodable in special ways.
+/// Note that `Symbol` cannot directly be a `newtype_index!` because it implements
+/// `fmt::Debug`, `Encodable`, and `Decodable` in special ways.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Symbol(SymbolIndex);
 
 newtype_index! {
     pub struct SymbolIndex { .. }
 }
-
-// The interner is pointed to by a thread local value which is only set on the main thread
-// with parallelization is disabled. So we don't allow `Symbol` to transfer between threads
-// to avoid panics and other errors, even though it would be memory safe to do so.
-#[cfg(not(parallel_queries))]
-impl !Send for Symbol { }
-#[cfg(not(parallel_queries))]
-impl !Sync for Symbol { }
 
 impl Symbol {
     const fn new(n: u32) -> Self {
@@ -169,7 +370,7 @@ impl Symbol {
         with_interner(|interner| interner.interned(self))
     }
 
-    /// Gensyms a new usize, using the current interner.
+    /// Gensyms a new `usize`, using the current interner.
     pub fn gensym(string: &str) -> Self {
         with_interner(|interner| interner.gensym(string))
     }
@@ -178,10 +379,14 @@ impl Symbol {
         with_interner(|interner| interner.gensymed(self))
     }
 
+    pub fn is_gensymed(self) -> bool {
+        with_interner(|interner| interner.is_gensymed(self))
+    }
+
     pub fn as_str(self) -> LocalInternedString {
         with_interner(|interner| unsafe {
             LocalInternedString {
-                string: ::std::mem::transmute::<&str, &str>(interner.get(self))
+                string: std::mem::transmute::<&str, &str>(interner.get(self))
             }
         })
     }
@@ -198,7 +403,7 @@ impl Symbol {
 }
 
 impl fmt::Debug for Symbol {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let is_gensymed = with_interner(|interner| interner.is_gensymed(*self));
         if is_gensymed {
             write!(f, "{}({:?})", self, self.0)
@@ -209,7 +414,7 @@ impl fmt::Debug for Symbol {
 }
 
 impl fmt::Display for Symbol {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(&self.as_str(), f)
     }
 }
@@ -226,7 +431,7 @@ impl Decodable for Symbol {
     }
 }
 
-impl<T: ::std::ops::Deref<Target=str>> PartialEq<T> for Symbol {
+impl<T: std::ops::Deref<Target=str>> PartialEq<T> for Symbol {
     fn eq(&self, other: &T) -> bool {
         self.as_str() == other.deref()
     }
@@ -312,129 +517,32 @@ impl Interner {
     }
 }
 
-// In this macro, there is the requirement that the name (the number) must be monotonically
-// increasing by one in the special identifiers, starting at 0; the same holds for the keywords,
-// except starting from the next number instead of zero.
-macro_rules! declare_keywords {(
-    $( ($index: expr, $konst: ident, $string: expr) )*
-) => {
-    pub mod keywords {
-        use super::{Symbol, Ident};
-        #[derive(Clone, Copy, PartialEq, Eq)]
-        pub struct Keyword {
-            ident: Ident,
-        }
-        impl Keyword {
-            #[inline] pub fn ident(self) -> Ident { self.ident }
-            #[inline] pub fn name(self) -> Symbol { self.ident.name }
-        }
-        $(
-            #[allow(non_upper_case_globals)]
-            pub const $konst: Keyword = Keyword {
-                ident: Ident::with_empty_ctxt(super::Symbol::new($index))
-            };
-        )*
+pub mod keywords {
+    use super::{Symbol, Ident};
 
-        impl ::std::str::FromStr for Keyword {
-            type Err = ();
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub struct Keyword {
+        ident: Ident,
+    }
 
-            fn from_str(s: &str) -> Result<Self, ()> {
-                match s {
-                    $($string => Ok($konst),)*
-                    _ => Err(()),
-                }
-            }
+    impl Keyword {
+        #[inline]
+        pub fn ident(self) -> Ident {
+            self.ident
+        }
+
+        #[inline]
+        pub fn name(self) -> Symbol {
+            self.ident.name
         }
     }
 
-    impl Interner {
-        pub fn fresh() -> Self {
-            Interner::prefill(&[$($string,)*])
-        }
-    }
-}}
+    keywords!();
+}
 
-// N.B., leaving holes in the ident table is bad! a different ident will get
-// interned with the id from the hole, but it will be between the min and max
-// of the reserved words, and thus tagged as "reserved".
-// After modifying this list adjust `is_special`, `is_used_keyword`/`is_unused_keyword`,
-// this should be rarely necessary though if the keywords are kept in alphabetic order.
-declare_keywords! {
-    // Special reserved identifiers used internally for elided lifetimes,
-    // unnamed method parameters, crate root module, error recovery etc.
-    (0,  Invalid,            "")
-    (1,  PathRoot,           "{{root}}")
-    (2,  DollarCrate,        "$crate")
-    (3,  Underscore,         "_")
-
-    // Keywords that are used in stable Rust.
-    (4,  As,                 "as")
-    (5,  Box,                "box")
-    (6,  Break,              "break")
-    (7,  Const,              "const")
-    (8,  Continue,           "continue")
-    (9,  Crate,              "crate")
-    (10, Else,               "else")
-    (11, Enum,               "enum")
-    (12, Extern,             "extern")
-    (13, False,              "false")
-    (14, Fn,                 "fn")
-    (15, For,                "for")
-    (16, If,                 "if")
-    (17, Impl,               "impl")
-    (18, In,                 "in")
-    (19, Let,                "let")
-    (20, Loop,               "loop")
-    (21, Match,              "match")
-    (22, Mod,                "mod")
-    (23, Move,               "move")
-    (24, Mut,                "mut")
-    (25, Pub,                "pub")
-    (26, Ref,                "ref")
-    (27, Return,             "return")
-    (28, SelfLower,          "self")
-    (29, SelfUpper,          "Self")
-    (30, Static,             "static")
-    (31, Struct,             "struct")
-    (32, Super,              "super")
-    (33, Trait,              "trait")
-    (34, True,               "true")
-    (35, Type,               "type")
-    (36, Unsafe,             "unsafe")
-    (37, Use,                "use")
-    (38, Where,              "where")
-    (39, While,              "while")
-
-    // Keywords that are used in unstable Rust or reserved for future use.
-    (40, Abstract,           "abstract")
-    (41, Become,             "become")
-    (42, Do,                 "do")
-    (43, Final,              "final")
-    (44, Macro,              "macro")
-    (45, Override,           "override")
-    (46, Priv,               "priv")
-    (47, Typeof,             "typeof")
-    (48, Unsized,            "unsized")
-    (49, Virtual,            "virtual")
-    (50, Yield,              "yield")
-
-    // Edition-specific keywords that are used in stable Rust.
-    (51, Dyn,                "dyn") // >= 2018 Edition only
-
-    // Edition-specific keywords that are used in unstable Rust or reserved for future use.
-    (52, Async,              "async") // >= 2018 Edition only
-    (53, Try,                "try") // >= 2018 Edition only
-
-    // Special lifetime names
-    (54, UnderscoreLifetime, "'_")
-    (55, StaticLifetime,     "'static")
-
-    // Weak keywords, have special meaning only in specific contexts.
-    (56, Auto,               "auto")
-    (57, Catch,              "catch")
-    (58, Default,            "default")
-    (59, Existential,        "existential")
-    (60, Union,              "union")
+pub mod symbols {
+    use super::Symbol;
+    symbols!();
 }
 
 impl Symbol {
@@ -483,11 +591,16 @@ impl Ident {
         self.name == keywords::DollarCrate.name()
     }
 
-    // We see this identifier in a normal identifier position, like variable name or a type.
-    // How was it written originally? Did it use the raw form? Let's try to guess.
-    pub fn is_raw_guess(self) -> bool {
+    /// This identifier can be a raw identifier.
+    pub fn can_be_raw(self) -> bool {
         self.name != keywords::Invalid.name() && self.name != keywords::Underscore.name() &&
-        self.is_reserved() && !self.is_path_segment_keyword()
+        !self.is_path_segment_keyword()
+    }
+
+    /// We see this identifier in a normal identifier position, like variable name or a type.
+    /// How was it written originally? Did it use the raw form? Let's try to guess.
+    pub fn is_raw_guess(self) -> bool {
+        self.can_be_raw() && self.is_reserved()
     }
 }
 
@@ -514,45 +627,49 @@ impl LocalInternedString {
         }
     }
 
-    pub fn get(&self) -> &'static str {
+    pub fn get(&self) -> &str {
+        // This returns a valid string since we ensure that `self` outlives the interner
+        // by creating the interner on a thread which outlives threads which can access it.
+        // This type cannot move to a thread which outlives the interner since it does
+        // not implement Send.
         self.string
     }
 }
 
-impl<U: ?Sized> ::std::convert::AsRef<U> for LocalInternedString
+impl<U: ?Sized> std::convert::AsRef<U> for LocalInternedString
 where
-    str: ::std::convert::AsRef<U>
+    str: std::convert::AsRef<U>
 {
     fn as_ref(&self) -> &U {
         self.string.as_ref()
     }
 }
 
-impl<T: ::std::ops::Deref<Target = str>> ::std::cmp::PartialEq<T> for LocalInternedString {
+impl<T: std::ops::Deref<Target = str>> std::cmp::PartialEq<T> for LocalInternedString {
     fn eq(&self, other: &T) -> bool {
         self.string == other.deref()
     }
 }
 
-impl ::std::cmp::PartialEq<LocalInternedString> for str {
+impl std::cmp::PartialEq<LocalInternedString> for str {
     fn eq(&self, other: &LocalInternedString) -> bool {
         self == other.string
     }
 }
 
-impl<'a> ::std::cmp::PartialEq<LocalInternedString> for &'a str {
+impl<'a> std::cmp::PartialEq<LocalInternedString> for &'a str {
     fn eq(&self, other: &LocalInternedString) -> bool {
         *self == other.string
     }
 }
 
-impl ::std::cmp::PartialEq<LocalInternedString> for String {
+impl std::cmp::PartialEq<LocalInternedString> for String {
     fn eq(&self, other: &LocalInternedString) -> bool {
         self == other.string
     }
 }
 
-impl<'a> ::std::cmp::PartialEq<LocalInternedString> for &'a String {
+impl<'a> std::cmp::PartialEq<LocalInternedString> for &'a String {
     fn eq(&self, other: &LocalInternedString) -> bool {
         *self == other.string
     }
@@ -561,19 +678,19 @@ impl<'a> ::std::cmp::PartialEq<LocalInternedString> for &'a String {
 impl !Send for LocalInternedString {}
 impl !Sync for LocalInternedString {}
 
-impl ::std::ops::Deref for LocalInternedString {
+impl std::ops::Deref for LocalInternedString {
     type Target = str;
     fn deref(&self) -> &str { self.string }
 }
 
 impl fmt::Debug for LocalInternedString {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self.string, f)
     }
 }
 
 impl fmt::Display for LocalInternedString {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self.string, f)
     }
 }
@@ -640,7 +757,7 @@ impl Ord for InternedString {
     }
 }
 
-impl<T: ::std::ops::Deref<Target = str>> PartialEq<T> for InternedString {
+impl<T: std::ops::Deref<Target = str>> PartialEq<T> for InternedString {
     fn eq(&self, other: &T) -> bool {
         self.with(|string| string == other.deref())
     }
@@ -676,20 +793,20 @@ impl<'a> PartialEq<InternedString> for &'a String {
     }
 }
 
-impl ::std::convert::From<InternedString> for String {
+impl std::convert::From<InternedString> for String {
     fn from(val: InternedString) -> String {
         val.as_symbol().to_string()
     }
 }
 
 impl fmt::Debug for InternedString {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.with(|str| fmt::Debug::fmt(&str, f))
     }
 }
 
 impl fmt::Display for InternedString {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.with(|str| fmt::Display::fmt(&str, f))
     }
 }
@@ -709,7 +826,7 @@ impl Encodable for InternedString {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use Globals;
+    use crate::Globals;
 
     #[test]
     fn interner_tests() {

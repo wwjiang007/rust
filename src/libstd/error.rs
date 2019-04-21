@@ -13,17 +13,18 @@
 // coherence challenge (e.g., specialization, neg impls, etc) we can
 // reconsider what crate these items belong in.
 
-use alloc::{AllocErr, LayoutErr, CannotReallocInPlace};
-use any::TypeId;
-use borrow::Cow;
-use cell;
-use char;
 use core::array;
-use fmt::{self, Debug, Display};
-use mem::transmute;
-use num;
-use str;
-use string;
+
+use crate::alloc::{AllocErr, LayoutErr, CannotReallocInPlace};
+use crate::any::TypeId;
+use crate::borrow::Cow;
+use crate::cell;
+use crate::char;
+use crate::fmt::{self, Debug, Display};
+use crate::mem::transmute;
+use crate::num;
+use crate::str;
+use crate::string;
 
 /// `Error` is a trait representing the basic expectations for error values,
 /// i.e., values of type `E` in [`Result<T, E>`]. Errors must describe
@@ -83,7 +84,7 @@ pub trait Error: Debug + Display {
     /// }
     ///
     /// impl fmt::Display for SuperError {
-    ///     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     ///         write!(f, "SuperError is here!")
     ///     }
     /// }
@@ -102,7 +103,7 @@ pub trait Error: Debug + Display {
     /// struct SuperErrorSideKick;
     ///
     /// impl fmt::Display for SuperErrorSideKick {
-    ///     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     ///         write!(f, "SuperErrorSideKick is here!")
     ///     }
     /// }
@@ -148,7 +149,7 @@ pub trait Error: Debug + Display {
     /// }
     ///
     /// impl fmt::Display for SuperError {
-    ///     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     ///         write!(f, "SuperError is here!")
     ///     }
     /// }
@@ -167,7 +168,7 @@ pub trait Error: Debug + Display {
     /// struct SuperErrorSideKick;
     ///
     /// impl fmt::Display for SuperErrorSideKick {
-    ///     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     ///         write!(f, "SuperErrorSideKick is here!")
     ///     }
     /// }
@@ -195,11 +196,8 @@ pub trait Error: Debug + Display {
     #[stable(feature = "error_source", since = "1.30.0")]
     fn source(&self) -> Option<&(dyn Error + 'static)> { None }
 
-    /// Get the `TypeId` of `self`
-    #[doc(hidden)]
-    #[unstable(feature = "error_type_id",
-               reason = "unclear whether to commit to this public implementation detail",
-               issue = "27745")]
+    /// Gets the `TypeId` of `self`
+    #[stable(feature = "error_type_id", since = "1.34.0")]
     fn type_id(&self) -> TypeId where Self: 'static {
         TypeId::of::<Self>()
     }
@@ -220,7 +218,7 @@ impl<'a, E: Error + 'a> From<E> for Box<dyn Error + 'a> {
     /// struct AnError;
     ///
     /// impl fmt::Display for AnError {
-    ///     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     ///         write!(f , "An error")
     ///     }
     /// }
@@ -257,7 +255,7 @@ impl<'a, E: Error + Send + Sync + 'a> From<E> for Box<dyn Error + Send + Sync + 
     /// struct AnError;
     ///
     /// impl fmt::Display for AnError {
-    ///     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
     ///         write!(f , "An error")
     ///     }
     /// }
@@ -307,7 +305,7 @@ impl From<String> for Box<dyn Error + Send + Sync> {
         }
 
         impl Display for StringError {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 Display::fmt(&self.0, f)
             }
         }
@@ -338,7 +336,7 @@ impl From<String> for Box<dyn Error> {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl<'a, 'b> From<&'b str> for Box<dyn Error + Send + Sync + 'a> {
+impl<'a> From<&str> for Box<dyn Error + Send + Sync + 'a> {
     /// Converts a [`str`] into a box of dyn [`Error`] + [`Send`] + [`Sync`].
     ///
     /// # Examples
@@ -352,13 +350,13 @@ impl<'a, 'b> From<&'b str> for Box<dyn Error + Send + Sync + 'a> {
     /// assert!(
     ///     mem::size_of::<Box<dyn Error + Send + Sync>>() == mem::size_of_val(&a_boxed_error))
     /// ```
-    fn from(err: &'b str) -> Box<dyn Error + Send + Sync + 'a> {
+    fn from(err: &str) -> Box<dyn Error + Send + Sync + 'a> {
         From::from(String::from(err))
     }
 }
 
 #[stable(feature = "string_box_error", since = "1.6.0")]
-impl<'a> From<&'a str> for Box<dyn Error> {
+impl From<&str> for Box<dyn Error> {
     /// Converts a [`str`] into a box of dyn [`Error`].
     ///
     /// # Examples
@@ -371,7 +369,7 @@ impl<'a> From<&'a str> for Box<dyn Error> {
     /// let a_boxed_error = Box::<Error>::from(a_str_error);
     /// assert!(mem::size_of::<Box<dyn Error>>() == mem::size_of_val(&a_boxed_error))
     /// ```
-    fn from(err: &'a str) -> Box<dyn Error> {
+    fn from(err: &str) -> Box<dyn Error> {
         From::from(String::from(err))
     }
 }
@@ -468,14 +466,14 @@ impl Error for num::ParseIntError {
     }
 }
 
-#[unstable(feature = "try_from", issue = "33417")]
+#[stable(feature = "try_from", since = "1.34.0")]
 impl Error for num::TryFromIntError {
     fn description(&self) -> &str {
         self.__description()
     }
 }
 
-#[unstable(feature = "try_from", issue = "33417")]
+#[stable(feature = "try_from", since = "1.34.0")]
 impl Error for array::TryFromSliceError {
     fn description(&self) -> &str {
         self.__description()
@@ -550,7 +548,7 @@ impl Error for cell::BorrowMutError {
     }
 }
 
-#[unstable(feature = "try_from", issue = "33417")]
+#[stable(feature = "try_from", since = "1.34.0")]
 impl Error for char::CharTryFromError {
     fn description(&self) -> &str {
         "converted integer out of range for `char`"
@@ -566,7 +564,7 @@ impl Error for char::ParseCharError {
 
 // copied from any.rs
 impl dyn Error + 'static {
-    /// Returns true if the boxed type is the same as `T`
+    /// Returns `true` if the boxed type is the same as `T`
     #[stable(feature = "error_downcast", since = "1.3.0")]
     #[inline]
     pub fn is<T: Error + 'static>(&self) -> bool {
@@ -669,6 +667,158 @@ impl dyn Error {
             Err(self)
         }
     }
+
+    /// Returns an iterator starting with the current error and continuing with
+    /// recursively calling [`source`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(error_iter)]
+    /// use std::error::Error;
+    /// use std::fmt;
+    ///
+    /// #[derive(Debug)]
+    /// struct A;
+    ///
+    /// #[derive(Debug)]
+    /// struct B(Option<Box<dyn Error + 'static>>);
+    ///
+    /// impl fmt::Display for A {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    ///         write!(f, "A")
+    ///     }
+    /// }
+    ///
+    /// impl fmt::Display for B {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    ///         write!(f, "B")
+    ///     }
+    /// }
+    ///
+    /// impl Error for A {}
+    ///
+    /// impl Error for B {
+    ///     fn source(&self) -> Option<&(dyn Error + 'static)> {
+    ///         self.0.as_ref().map(|e| e.as_ref())
+    ///     }
+    /// }
+    ///
+    /// let b = B(Some(Box::new(A)));
+    ///
+    /// // let err : Box<Error> = b.into(); // or
+    /// let err = &b as &(dyn Error);
+    ///
+    /// let mut iter = err.iter_chain();
+    ///
+    /// assert_eq!("B".to_string(), iter.next().unwrap().to_string());
+    /// assert_eq!("A".to_string(), iter.next().unwrap().to_string());
+    /// assert!(iter.next().is_none());
+    /// assert!(iter.next().is_none());
+    /// ```
+    ///
+    /// [`source`]: trait.Error.html#method.source
+    #[unstable(feature = "error_iter", issue = "58520")]
+    #[inline]
+    pub fn iter_chain(&self) -> ErrorIter<'_> {
+        ErrorIter {
+            current: Some(self),
+        }
+    }
+
+    /// Returns an iterator starting with the [`source`] of this error
+    /// and continuing with recursively calling [`source`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(error_iter)]
+    /// use std::error::Error;
+    /// use std::fmt;
+    ///
+    /// #[derive(Debug)]
+    /// struct A;
+    ///
+    /// #[derive(Debug)]
+    /// struct B(Option<Box<dyn Error + 'static>>);
+    ///
+    /// #[derive(Debug)]
+    /// struct C(Option<Box<dyn Error + 'static>>);
+    ///
+    /// impl fmt::Display for A {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    ///         write!(f, "A")
+    ///     }
+    /// }
+    ///
+    /// impl fmt::Display for B {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    ///         write!(f, "B")
+    ///     }
+    /// }
+    ///
+    /// impl fmt::Display for C {
+    ///     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    ///         write!(f, "C")
+    ///     }
+    /// }
+    ///
+    /// impl Error for A {}
+    ///
+    /// impl Error for B {
+    ///     fn source(&self) -> Option<&(dyn Error + 'static)> {
+    ///         self.0.as_ref().map(|e| e.as_ref())
+    ///     }
+    /// }
+    ///
+    /// impl Error for C {
+    ///     fn source(&self) -> Option<&(dyn Error + 'static)> {
+    ///         self.0.as_ref().map(|e| e.as_ref())
+    ///     }
+    /// }
+    ///
+    /// let b = B(Some(Box::new(A)));
+    /// let c = C(Some(Box::new(b)));
+    ///
+    /// // let err : Box<Error> = c.into(); // or
+    /// let err = &c as &(dyn Error);
+    ///
+    /// let mut iter = err.iter_sources();
+    ///
+    /// assert_eq!("B".to_string(), iter.next().unwrap().to_string());
+    /// assert_eq!("A".to_string(), iter.next().unwrap().to_string());
+    /// assert!(iter.next().is_none());
+    /// assert!(iter.next().is_none());
+    /// ```
+    ///
+    /// [`source`]: trait.Error.html#method.source
+    #[inline]
+    #[unstable(feature = "error_iter", issue = "58520")]
+    pub fn iter_sources(&self) -> ErrorIter<'_> {
+        ErrorIter {
+            current: self.source(),
+        }
+    }
+}
+
+/// An iterator over [`Error`]
+///
+/// [`Error`]: trait.Error.html
+#[unstable(feature = "error_iter", issue = "58520")]
+#[derive(Copy, Clone, Debug)]
+pub struct ErrorIter<'a> {
+    current: Option<&'a (dyn Error + 'static)>,
+}
+
+#[unstable(feature = "error_iter", issue = "58520")]
+impl<'a> Iterator for ErrorIter<'a> {
+    type Item = &'a (dyn Error + 'static);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let current = self.current;
+        self.current = self.current.and_then(Error::source);
+        current
+    }
 }
 
 impl dyn Error + Send {
@@ -702,7 +852,7 @@ impl dyn Error + Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::Error;
-    use fmt;
+    use crate::fmt;
 
     #[derive(Debug, PartialEq)]
     struct A;
@@ -710,12 +860,12 @@ mod tests {
     struct B;
 
     impl fmt::Display for A {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             write!(f, "A")
         }
     }
     impl fmt::Display for B {
-        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
             write!(f, "B")
         }
     }

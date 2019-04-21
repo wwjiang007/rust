@@ -1,16 +1,15 @@
 use super::OverlapError;
 
-use hir::def_id::DefId;
-use ich::{self, StableHashingContext};
+use crate::hir::def_id::DefId;
+use crate::ich::{self, StableHashingContext};
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher,
                                            StableHasherResult};
-use traits;
-use ty::{self, TyCtxt, TypeFoldable};
-use ty::fast_reject::{self, SimplifiedType};
-use rustc_data_structures::sync::Lrc;
+use crate::traits;
+use crate::ty::{self, TyCtxt, TypeFoldable};
+use crate::ty::fast_reject::{self, SimplifiedType};
 use syntax::ast::Ident;
-use util::captures::Captures;
-use util::nodemap::{DefIdMap, FxHashMap};
+use crate::util::captures::Captures;
+use crate::util::nodemap::{DefIdMap, FxHashMap};
 
 /// A per-trait graph of impls in specialization order. At the moment, this
 /// graph forms a tree rooted with the trait itself, with all other nodes
@@ -97,7 +96,7 @@ impl<'a, 'gcx, 'tcx> Children {
         }
     }
 
-    /// Remove an impl from this set of children. Used when replacing
+    /// Removes an impl from this set of children. Used when replacing
     /// an impl with a parent. The impl must be present in the list of
     /// children already.
     fn remove_existing(&mut self,
@@ -399,7 +398,7 @@ impl<'a, 'gcx, 'tcx> Graph {
         self.children.entry(parent).or_default().insert_blindly(tcx, child);
     }
 
-    /// The parent of a given impl, which is the def id of the trait when the
+    /// The parent of a given impl, which is the `DefId` of the trait when the
     /// impl is a "specialization root".
     pub fn parent(&self, child: DefId) -> DefId {
         *self.parent.get(&child).unwrap()
@@ -439,13 +438,13 @@ impl<'a, 'gcx, 'tcx> Node {
     }
 }
 
-pub struct Ancestors {
+pub struct Ancestors<'tcx> {
     trait_def_id: DefId,
-    specialization_graph: Lrc<Graph>,
+    specialization_graph: &'tcx Graph,
     current_source: Option<Node>,
 }
 
-impl Iterator for Ancestors {
+impl Iterator for Ancestors<'_> {
     type Item = Node;
     fn next(&mut self) -> Option<Node> {
         let cur = self.current_source.take();
@@ -476,7 +475,7 @@ impl<T> NodeItem<T> {
     }
 }
 
-impl<'a, 'gcx, 'tcx> Ancestors {
+impl<'a, 'gcx, 'tcx> Ancestors<'gcx> {
     /// Search the items from the given ancestors, returning each definition
     /// with the given name and the given kind.
     // FIXME(#35870): avoid closures being unexported due to `impl Trait`.
@@ -489,7 +488,7 @@ impl<'a, 'gcx, 'tcx> Ancestors {
         trait_def_id: DefId,
     ) -> impl Iterator<Item = NodeItem<ty::AssociatedItem>> + Captures<'gcx> + Captures<'tcx> + 'a {
         self.flat_map(move |node| {
-            use ty::AssociatedKind::*;
+            use crate::ty::AssociatedKind::*;
             node.items(tcx).filter(move |impl_item| match (trait_item_kind, impl_item.kind) {
                 | (Const, Const)
                 | (Method, Method)
@@ -509,10 +508,10 @@ impl<'a, 'gcx, 'tcx> Ancestors {
 
 /// Walk up the specialization ancestors of a given impl, starting with that
 /// impl itself.
-pub fn ancestors(tcx: TyCtxt<'_, '_, '_>,
+pub fn ancestors(tcx: TyCtxt<'_, 'tcx, '_>,
                  trait_def_id: DefId,
                  start_from_impl: DefId)
-                 -> Ancestors {
+                 -> Ancestors<'tcx> {
     let specialization_graph = tcx.specialization_graph_of(trait_def_id);
     Ancestors {
         trait_def_id,

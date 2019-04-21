@@ -1,6 +1,5 @@
-use core::num::NonZeroU32;
-use core::option::Option;
-use core::option::Option::{Some, None};
+use core::num::{IntErrorKind, NonZeroI32, NonZeroI8, NonZeroU32, NonZeroU8};
+use core::option::Option::{self, None, Some};
 use std::mem::size_of;
 
 #[test]
@@ -13,6 +12,7 @@ fn test_create_nonzero_instance() {
 #[test]
 fn test_size_nonzero_in_option() {
     assert_eq!(size_of::<NonZeroU32>(), size_of::<Option<NonZeroU32>>());
+    assert_eq!(size_of::<NonZeroI32>(), size_of::<Option<NonZeroI32>>());
 }
 
 #[test]
@@ -117,4 +117,32 @@ fn test_from_nonzero() {
     let nz = NonZeroU32::new(1).unwrap();
     let num: u32 = nz.into();
     assert_eq!(num, 1u32);
+}
+
+#[test]
+fn test_from_signed_nonzero() {
+    let nz = NonZeroI32::new(1).unwrap();
+    let num: i32 = nz.into();
+    assert_eq!(num, 1i32);
+}
+
+#[test]
+fn test_from_str() {
+    assert_eq!("123".parse::<NonZeroU8>(), Ok(NonZeroU8::new(123).unwrap()));
+    assert_eq!(
+        "0".parse::<NonZeroU8>().err().map(|e| e.kind().clone()),
+        Some(IntErrorKind::Zero)
+    );
+    assert_eq!(
+        "-1".parse::<NonZeroU8>().err().map(|e| e.kind().clone()),
+        Some(IntErrorKind::InvalidDigit)
+    );
+    assert_eq!(
+        "-129".parse::<NonZeroI8>().err().map(|e| e.kind().clone()),
+        Some(IntErrorKind::Underflow)
+    );
+    assert_eq!(
+        "257".parse::<NonZeroU8>().err().map(|e| e.kind().clone()),
+        Some(IntErrorKind::Overflow)
+    );
 }

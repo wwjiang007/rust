@@ -3,11 +3,11 @@ use rustc::mir;
 use rustc::ty;
 use rustc::ty::layout::{self, Align, LayoutOf, TyLayout};
 
-use base;
-use MemFlags;
-use glue;
+use crate::base;
+use crate::MemFlags;
+use crate::glue;
 
-use traits::*;
+use crate::traits::*;
 
 use std::fmt;
 
@@ -48,19 +48,19 @@ pub struct OperandRef<'tcx, V> {
 }
 
 impl<V: CodegenObject> fmt::Debug for OperandRef<'tcx, V> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "OperandRef({:?} @ {:?})", self.val, self.layout)
     }
 }
 
 impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
-    pub fn new_zst<Cx: CodegenMethods<'tcx, Value = V>>(
-        cx: &Cx,
+    pub fn new_zst<Bx: BuilderMethods<'a, 'tcx, Value = V>>(
+        bx: &mut Bx,
         layout: TyLayout<'tcx>
     ) -> OperandRef<'tcx, V> {
         assert!(layout.is_zst());
         OperandRef {
-            val: OperandValue::Immediate(cx.const_undef(cx.immediate_backend_type(layout))),
+            val: OperandValue::Immediate(bx.const_undef(bx.immediate_backend_type(layout))),
             layout
         }
     }
@@ -69,44 +69,43 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
         bx: &mut Bx,
         val: ty::Const<'tcx>
     ) -> Result<Self, ErrorHandled> {
-        let layout = bx.cx().layout_of(val.ty);
+        let layout = bx.layout_of(val.ty);
 
         if layout.is_zst() {
-            return Ok(OperandRef::new_zst(bx.cx(), layout));
+            return Ok(OperandRef::new_zst(bx, layout));
         }
 
         let val = match val.val {
+            ConstValue::Unevaluated(..) => bug!("unevaluated constant in `OperandRef::from_const`"),
+            ConstValue::Param(_) => bug!("encountered a ConstValue::Param in codegen"),
+            ConstValue::Infer(_) => bug!("encountered a ConstValue::Infer in codegen"),
             ConstValue::Scalar(x) => {
                 let scalar = match layout.abi {
                     layout::Abi::Scalar(ref x) => x,
                     _ => bug!("from_const: invalid ByVal layout: {:#?}", layout)
                 };
-                let llval = bx.cx().scalar_to_backend(
+                let llval = bx.scalar_to_backend(
                     x,
                     scalar,
-                    bx.cx().immediate_backend_type(layout),
+                    bx.immediate_backend_type(layout),
                 );
                 OperandValue::Immediate(llval)
             },
-            ConstValue::ScalarPair(a, b) => {
-                let (a_scalar, b_scalar) = match layout.abi {
-                    layout::Abi::ScalarPair(ref a, ref b) => (a, b),
+            ConstValue::Slice(a, b) => {
+                let a_scalar = match layout.abi {
+                    layout::Abi::ScalarPair(ref a, _) => a,
                     _ => bug!("from_const: invalid ScalarPair layout: {:#?}", layout)
                 };
-                let a_llval = bx.cx().scalar_to_backend(
+                let a_llval = bx.scalar_to_backend(
                     a,
                     a_scalar,
-                    bx.cx().scalar_pair_element_backend_type(layout, 0, true),
+                    bx.scalar_pair_element_backend_type(layout, 0, true),
                 );
-                let b_llval = bx.cx().scalar_to_backend(
-                    b,
-                    b_scalar,
-                    bx.cx().scalar_pair_element_backend_type(layout, 1, true),
-                );
+                let b_llval = bx.const_usize(b);
                 OperandValue::Pair(a_llval, b_llval)
             },
-            ConstValue::ByRef(_, alloc, offset) => {
-                return Ok(bx.load_operand(bx.cx().from_const_alloc(layout, alloc, offset)));
+            ConstValue::ByRef(ptr, alloc) => {
+                return Ok(bx.load_operand(bx.from_const_alloc(layout, alloc, ptr.offset)));
             },
         };
 
@@ -125,7 +124,7 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
         }
     }
 
-    pub fn deref<Cx: CodegenMethods<'tcx, Value = V>>(
+    pub fn deref<Cx: LayoutTypeMethods<'tcx>>(
         self,
         cx: &Cx
     ) -> PlaceRef<'tcx, V> {
@@ -200,7 +199,7 @@ impl<'a, 'tcx: 'a, V: CodegenObject> OperandRef<'tcx, V> {
         let mut val = match (self.val, &self.layout.abi) {
             // If the field is ZST, it has no data.
             _ if field.is_zst() => {
-                return OperandRef::new_zst(bx.cx(), field);
+                return OperandRef::new_zst(bx, field);
             }
 
             // Newtype of a scalar, scalar pair or vector.
@@ -382,7 +381,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         // watch out for locals that do not have an
         // alloca; they are handled somewhat differently
-        if let mir::Place::Local(index) = *place {
+        if let mir::Place::Base(mir::PlaceBase::Local(index)) = *place {
             match self.locals[index] {
                 LocalRef::Operand(Some(o)) => {
                     return Some(o);
@@ -410,7 +409,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         // checks in `codegen_consume` and `extract_field`.
                         let elem = o.layout.field(bx.cx(), 0);
                         if elem.is_zst() {
-                            return Some(OperandRef::new_zst(bx.cx(), elem));
+                            return Some(OperandRef::new_zst(bx, elem));
                         }
                     }
                     _ => {}
@@ -433,7 +432,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
         // ZSTs don't require any actual memory access.
         if layout.is_zst() {
-            return OperandRef::new_zst(bx.cx(), layout);
+            return OperandRef::new_zst(bx, layout);
         }
 
         if let Some(o) = self.maybe_codegen_consume_direct(bx, place) {
@@ -461,7 +460,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
             mir::Operand::Constant(ref constant) => {
                 let ty = self.monomorphize(&constant.ty);
-                self.eval_mir_constant(bx, constant)
+                self.eval_mir_constant(constant)
                     .and_then(|c| OperandRef::from_const(bx, c))
                     .unwrap_or_else(|err| {
                         match err {

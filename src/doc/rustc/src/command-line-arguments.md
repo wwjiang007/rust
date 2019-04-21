@@ -42,11 +42,11 @@ This flag prints out various information about the compiler.
 
 ## `-g`: include debug information
 
-A synonym for `-C debug-level=2`.
+A synonym for `-C debuginfo=2`, for more see [here](codegen-options/index.html#debuginfo).
 
 ## `-O`: optimize your code
 
-A synonym for `-C opt-level=2`.
+A synonym for `-C opt-level=2`, for more see [here](codegen-options/index.html#opt-level).
 
 ## `-o`: filename of the output
 
@@ -85,6 +85,13 @@ This flag will set which lints should be set to the [deny level](lints/levels.ht
 ## `-F`: set lint forbidden
 
 This flag will set which lints should be set to the [forbid level](lints/levels.html#forbid).
+
+## `-Z`: set unstable options
+
+This flag will allow you to set unstable options of rustc. In order to set multiple options,
+the -Z flag can be used multiple times. For example: `rustc -Z verbose -Z time`.
+Specifying options with -Z is only available on nightly. To view all available options
+run: `rustc -Z help`.
 
 ## `--cap-lints`: set the most restrictive lint level
 

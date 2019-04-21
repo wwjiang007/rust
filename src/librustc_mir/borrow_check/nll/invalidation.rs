@@ -1,18 +1,18 @@
-use borrow_check::borrow_set::BorrowSet;
-use borrow_check::location::LocationTable;
-use borrow_check::{JustWrite, WriteAndRead};
-use borrow_check::{AccessDepth, Deep, Shallow};
-use borrow_check::{ReadOrWrite, Activation, Read, Reservation, Write};
-use borrow_check::{Context, ContextKind};
-use borrow_check::{LocalMutationIsAllowed, MutateMode};
-use borrow_check::ArtificialField;
-use borrow_check::{ReadKind, WriteKind};
-use borrow_check::nll::facts::AllFacts;
-use borrow_check::path_utils::*;
-use dataflow::move_paths::indexes::BorrowIndex;
+use crate::borrow_check::borrow_set::BorrowSet;
+use crate::borrow_check::location::LocationTable;
+use crate::borrow_check::{JustWrite, WriteAndRead};
+use crate::borrow_check::{AccessDepth, Deep, Shallow};
+use crate::borrow_check::{ReadOrWrite, Activation, Read, Reservation, Write};
+use crate::borrow_check::{Context, ContextKind};
+use crate::borrow_check::{LocalMutationIsAllowed, MutateMode};
+use crate::borrow_check::ArtificialField;
+use crate::borrow_check::{ReadKind, WriteKind};
+use crate::borrow_check::nll::facts::AllFacts;
+use crate::borrow_check::path_utils::*;
+use crate::dataflow::indexes::BorrowIndex;
 use rustc::ty::TyCtxt;
 use rustc::mir::visit::Visitor;
-use rustc::mir::{BasicBlock, Location, Mir, Place, Rvalue};
+use rustc::mir::{BasicBlock, Location, Mir, Place, PlaceBase, Rvalue};
 use rustc::mir::{Statement, StatementKind};
 use rustc::mir::{Terminator, TerminatorKind};
 use rustc::mir::{Operand, BorrowKind};
@@ -53,8 +53,8 @@ struct InvalidationGenerator<'cx, 'tcx: 'cx, 'gcx: 'tcx> {
     borrow_set: &'cx BorrowSet<'tcx>,
 }
 
-/// Visits the whole MIR and generates invalidates() facts
-/// Most of the code implementing this was stolen from borrow_check/mod.rs
+/// Visits the whole MIR and generates `invalidates()` facts.
+/// Most of the code implementing this was stolen from `borrow_check/mod.rs`.
 impl<'cx, 'tcx, 'gcx> Visitor<'tcx> for InvalidationGenerator<'cx, 'tcx, 'gcx> {
     fn visit_statement(
         &mut self,
@@ -78,13 +78,8 @@ impl<'cx, 'tcx, 'gcx> Visitor<'tcx> for InvalidationGenerator<'cx, 'tcx, 'gcx> {
                     JustWrite
                 );
             }
-            StatementKind::FakeRead(_, ref place) => {
-                self.access_place(
-                    ContextKind::FakeRead.new(location),
-                    place,
-                    (Deep, Read(ReadKind::Borrow(BorrowKind::Shared))),
-                    LocalMutationIsAllowed::No,
-                );
+            StatementKind::FakeRead(_, _) => {
+                // Only relavent for initialized/liveness/safety checks.
             }
             StatementKind::SetDiscriminant {
                 ref place,
@@ -97,16 +92,12 @@ impl<'cx, 'tcx, 'gcx> Visitor<'tcx> for InvalidationGenerator<'cx, 'tcx, 'gcx> {
                     JustWrite,
                 );
             }
-            StatementKind::InlineAsm {
-                ref asm,
-                ref outputs,
-                ref inputs,
-            } => {
+            StatementKind::InlineAsm(ref asm) => {
                 let context = ContextKind::InlineAsm.new(location);
-                for (o, output) in asm.outputs.iter().zip(outputs.iter()) {
+                for (o, output) in asm.asm.outputs.iter().zip(asm.outputs.iter()) {
                     if o.is_indirect {
                         // FIXME(eddyb) indirect inline asm outputs should
-                        // be encoeded through MIR place derefs instead.
+                        // be encoded through MIR place derefs instead.
                         self.access_place(
                             context,
                             output,
@@ -122,7 +113,7 @@ impl<'cx, 'tcx, 'gcx> Visitor<'tcx> for InvalidationGenerator<'cx, 'tcx, 'gcx> {
                         );
                     }
                 }
-                for (_, input) in inputs.iter() {
+                for (_, input) in asm.inputs.iter() {
                     self.consume_operand(context, input);
                 }
             }
@@ -136,7 +127,7 @@ impl<'cx, 'tcx, 'gcx> Visitor<'tcx> for InvalidationGenerator<'cx, 'tcx, 'gcx> {
             StatementKind::StorageDead(local) => {
                 self.access_place(
                     ContextKind::StorageDead.new(location),
-                    &Place::Local(local),
+                    &Place::Base(PlaceBase::Local(local)),
                     (Shallow(None), Write(WriteKind::StorageDeadOrDrop)),
                     LocalMutationIsAllowed::Yes,
                 );
@@ -220,7 +211,7 @@ impl<'cx, 'tcx, 'gcx> Visitor<'tcx> for InvalidationGenerator<'cx, 'tcx, 'gcx> {
                 cleanup: _,
             } => {
                 self.consume_operand(ContextKind::Assert.new(location), cond);
-                use rustc::mir::interpret::EvalErrorKind::BoundsCheck;
+                use rustc::mir::interpret::InterpError::BoundsCheck;
                 if let BoundsCheck { ref len, ref index } = *msg {
                     self.consume_operand(ContextKind::Assert.new(location), len);
                     self.consume_operand(ContextKind::Assert.new(location), index);
@@ -272,7 +263,7 @@ impl<'cx, 'tcx, 'gcx> Visitor<'tcx> for InvalidationGenerator<'cx, 'tcx, 'gcx> {
 }
 
 impl<'cg, 'cx, 'tcx, 'gcx> InvalidationGenerator<'cx, 'tcx, 'gcx> {
-    /// Simulates mutation of a place
+    /// Simulates mutation of a place.
     fn mutate_place(
         &mut self,
         context: Context,
@@ -288,7 +279,7 @@ impl<'cg, 'cx, 'tcx, 'gcx> InvalidationGenerator<'cx, 'tcx, 'gcx> {
         );
     }
 
-    /// Simulates consumption of an operand
+    /// Simulates consumption of an operand.
     fn consume_operand(
         &mut self,
         context: Context,
@@ -384,7 +375,7 @@ impl<'cg, 'cx, 'tcx, 'gcx> InvalidationGenerator<'cx, 'tcx, 'gcx> {
         }
     }
 
-    /// Simulates an access to a place
+    /// Simulates an access to a place.
     fn access_place(
         &mut self,
         context: Context,
@@ -437,9 +428,11 @@ impl<'cg, 'cx, 'tcx, 'gcx> InvalidationGenerator<'cx, 'tcx, 'gcx> {
                         // have already taken the reservation
                     }
 
-                    (Read(_), BorrowKind::Shallow) | (Reservation(..), BorrowKind::Shallow)
-                    | (Read(_), BorrowKind::Shared) | (Reservation(..), BorrowKind::Shared) => {
-                        // Reads/reservations don't invalidate shared or shallow borrows
+                    (Read(_), BorrowKind::Shallow)
+                    | (Read(_), BorrowKind::Shared)
+                    | (Read(ReadKind::Borrow(BorrowKind::Shallow)), BorrowKind::Unique)
+                    | (Read(ReadKind::Borrow(BorrowKind::Shallow)), BorrowKind::Mut { .. }) => {
+                        // Reads don't invalidate shared or shallow borrows
                     }
 
                     (Read(_), BorrowKind::Unique) | (Read(_), BorrowKind::Mut { .. }) => {
@@ -455,16 +448,15 @@ impl<'cg, 'cx, 'tcx, 'gcx> InvalidationGenerator<'cx, 'tcx, 'gcx> {
                         this.generate_invalidates(borrow_index, context.loc);
                     }
 
-                    (Reservation(_), BorrowKind::Unique)
-                        | (Reservation(_), BorrowKind::Mut { .. })
-                        | (Activation(_, _), _)
-                        | (Write(_), _) => {
-                            // unique or mutable borrows are invalidated by writes.
-                            // Reservations count as writes since we need to check
-                            // that activating the borrow will be OK
-                            // FIXME(bob_twinkles) is this actually the right thing to do?
-                            this.generate_invalidates(borrow_index, context.loc);
-                        }
+                    (Reservation(_), _)
+                    | (Activation(_, _), _)
+                    | (Write(_), _) => {
+                        // unique or mutable borrows are invalidated by writes.
+                        // Reservations count as writes since we need to check
+                        // that activating the borrow will be OK
+                        // FIXME(bob_twinkles) is this actually the right thing to do?
+                        this.generate_invalidates(borrow_index, context.loc);
+                    }
                 }
                 Control::Continue
             },
@@ -472,7 +464,7 @@ impl<'cg, 'cx, 'tcx, 'gcx> InvalidationGenerator<'cx, 'tcx, 'gcx> {
     }
 
 
-    /// Generate a new invalidates(L, B) fact
+    /// Generates a new `invalidates(L, B)` fact.
     fn generate_invalidates(&mut self, b: BorrowIndex, l: Location) {
         let lidx = self.location_table.start_index(l);
         self.all_facts.invalidates.push((lidx, b));

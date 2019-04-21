@@ -9,13 +9,13 @@
                       integer constants",
             issue = "27778")]
 
-use borrow::{Borrow, BorrowMut};
-use cmp::Ordering;
-use convert::TryFrom;
-use fmt;
-use hash::{Hash, self};
-use marker::Unsize;
-use slice::{Iter, IterMut};
+use crate::borrow::{Borrow, BorrowMut};
+use crate::cmp::Ordering;
+use crate::convert::TryFrom;
+use crate::fmt;
+use crate::hash::{Hash, self};
+use crate::marker::Unsize;
+use crate::slice::{Iter, IterMut};
 
 /// Utility trait implemented only on arrays of fixed size
 ///
@@ -49,13 +49,13 @@ unsafe impl<T, A: Unsize<[T]>> FixedSizeArray<T> for A {
 }
 
 /// The error type returned when a conversion from a slice to an array fails.
-#[unstable(feature = "try_from", issue = "33417")]
+#[stable(feature = "try_from", since = "1.34.0")]
 #[derive(Debug, Copy, Clone)]
 pub struct TryFromSliceError(());
 
 impl fmt::Display for TryFromSliceError {
     #[inline]
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self.__description(), f)
     }
 }
@@ -138,8 +138,8 @@ macro_rules! array_impls {
                 }
             }
 
-            #[unstable(feature = "try_from", issue = "33417")]
-            impl<'a, T> TryFrom<&'a [T]> for [T; $N] where T: Copy {
+            #[stable(feature = "try_from", since = "1.34.0")]
+            impl<T> TryFrom<&[T]> for [T; $N] where T: Copy {
                 type Error = TryFromSliceError;
 
                 fn try_from(slice: &[T]) -> Result<[T; $N], TryFromSliceError> {
@@ -147,7 +147,7 @@ macro_rules! array_impls {
                 }
             }
 
-            #[unstable(feature = "try_from", issue = "33417")]
+            #[stable(feature = "try_from", since = "1.34.0")]
             impl<'a, T> TryFrom<&'a [T]> for &'a [T; $N] {
                 type Error = TryFromSliceError;
 
@@ -161,7 +161,7 @@ macro_rules! array_impls {
                 }
             }
 
-            #[unstable(feature = "try_from", issue = "33417")]
+            #[stable(feature = "try_from", since = "1.34.0")]
             impl<'a, T> TryFrom<&'a mut [T]> for &'a mut [T; $N] {
                 type Error = TryFromSliceError;
 
@@ -184,7 +184,7 @@ macro_rules! array_impls {
 
             #[stable(feature = "rust1", since = "1.0.0")]
             impl<T: fmt::Debug> fmt::Debug for [T; $N] {
-                fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                     fmt::Debug::fmt(&&self[..], f)
                 }
             }

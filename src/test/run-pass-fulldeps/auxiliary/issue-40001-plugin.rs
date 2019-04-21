@@ -26,16 +26,13 @@ pub fn plugin_registrar(reg: &mut Registry) {
     reg.register_attribute("whitelisted_attr".to_string(), Whitelisted);
 }
 
-declare_lint!(MISSING_WHITELISTED_ATTR, Deny,
-              "Checks for missing `whitelisted_attr` attribute");
-
-struct MissingWhitelistedAttrPass;
-
-impl LintPass for MissingWhitelistedAttrPass {
-    fn get_lints(&self) -> LintArray {
-        lint_array!(MISSING_WHITELISTED_ATTR)
-    }
+declare_lint! {
+    MISSING_WHITELISTED_ATTR,
+    Deny,
+    "Checks for missing `whitelisted_attr` attribute"
 }
+
+declare_lint_pass!(MissingWhitelistedAttrPass => [MISSING_WHITELISTED_ATTR]);
 
 impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingWhitelistedAttrPass {
     fn check_fn(&mut self,
@@ -44,11 +41,11 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for MissingWhitelistedAttrPass {
                 _: &'tcx hir::FnDecl,
                 _: &'tcx hir::Body,
                 span: source_map::Span,
-                id: ast::NodeId) {
+                id: hir::HirId) {
 
-        let item = match cx.tcx.hir().get(id) {
+        let item = match cx.tcx.hir().get_by_hir_id(id) {
             Node::Item(item) => item,
-            _ => cx.tcx.hir().expect_item(cx.tcx.hir().get_parent(id)),
+            _ => cx.tcx.hir().expect_item_by_hir_id(cx.tcx.hir().get_parent_item(id)),
         };
 
         if !attr::contains_name(&item.attrs, "whitelisted_attr") {

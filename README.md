@@ -13,8 +13,12 @@ Read ["Installation"] from [The Book].
 ["Installation"]: https://doc.rust-lang.org/book/ch01-01-installation.html
 [The Book]: https://doc.rust-lang.org/book/index.html
 
-## Building from Source
+## Installing from Source
 [building-from-source]: #building-from-source
+
+_Note: If you wish to contribute to the compiler, you should read
+[this chapter](https://rust-lang.github.io/rustc-guide/how-to-build-and-run.html)
+of the rustc-guide instead._
 
 ### Building on *nix
 1. Make sure you have installed the dependencies:
@@ -39,6 +43,22 @@ Read ["Installation"] from [The Book].
 
     ```sh
     $ ./x.py build && sudo ./x.py install
+    ```
+
+    If after running `sudo ./x.py install` you see an error message like
+
+    ```
+    error: failed to load source for a dependency on 'cc'
+    ```
+
+    then run these two commands and then try `sudo ./x.py install` again:
+
+    ```
+    $ cargo install cargo-vendor
+    ```
+
+    ```
+    $ cargo vendor
     ```
 
     > ***Note:*** Install locations can be adjusted by copying the config file
@@ -241,3 +261,19 @@ BSD-like licenses.
 
 See [LICENSE-APACHE](LICENSE-APACHE), [LICENSE-MIT](LICENSE-MIT), and
 [COPYRIGHT](COPYRIGHT) for details.
+
+## Trademark
+[trademark]: #trademark
+
+The Rust programming language is an open source, community project governed
+by a core team. It is also sponsored by the Mozilla Foundation (“Mozilla”),
+which owns and protects the Rust and Cargo trademarks and logos
+(the “Rust Trademarks”).
+
+If you want to use these names or brands, please read the [media guide][media-guide].
+
+Third-party logos may be subject to third-party copyrights and trademarks. See
+[Licenses][policies-licenses] for details.
+
+[media-guide]: https://www.rust-lang.org/policies/media-guide
+[policies-licenses]: https://www.rust-lang.org/policies/licenses
