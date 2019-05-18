@@ -31,7 +31,7 @@ use syntax::source_map;
 use syntax::edition::Edition;
 use syntax::parse::source_file_to_stream;
 use syntax::parse::parser::emit_unclosed_delims;
-use syntax::symbol::Symbol;
+use syntax::symbol::{Symbol, sym};
 use syntax_pos::{Span, NO_EXPANSION, FileName};
 use rustc_data_structures::bit_set::BitSet;
 
@@ -106,11 +106,11 @@ provide! { <'tcx> tcx, def_id, other, cdata,
         let _ = cdata;
         tcx.calculate_dtor(def_id, &mut |_,_| Ok(()))
     }
-    variances_of => { Lrc::new(cdata.get_item_variances(def_id.index)) }
+    variances_of => { tcx.arena.alloc_from_iter(cdata.get_item_variances(def_id.index)) }
     associated_item_def_ids => {
         let mut result = vec![];
         cdata.each_child_of_item(def_id.index,
-          |child| result.push(child.def.def_id()), tcx.sess);
+          |child| result.push(child.res.def_id()), tcx.sess);
         Lrc::new(result)
     }
     associated_item => { cdata.get_associated_item(def_id.index) }
@@ -131,13 +131,14 @@ provide! { <'tcx> tcx, def_id, other, cdata,
         mir
     }
     mir_const_qualif => {
-        (cdata.mir_const_qualif(def_id.index), Lrc::new(BitSet::new_empty(0)))
+        (cdata.mir_const_qualif(def_id.index), tcx.arena.alloc(BitSet::new_empty(0)))
     }
     fn_sig => { cdata.fn_sig(def_id.index, tcx) }
     inherent_impls => { Lrc::new(cdata.get_inherent_implementations_for_type(def_id.index)) }
     is_const_fn_raw => { cdata.is_const_fn_raw(def_id.index) }
     is_foreign_item => { cdata.is_foreign_item(def_id.index) }
-    describe_def => { cdata.get_def(def_id.index) }
+    static_mutability => { cdata.static_mutability(def_id.index) }
+    def_kind => { cdata.def_kind(def_id.index) }
     def_span => { cdata.get_span(def_id.index, &tcx.sess) }
     lookup_stability => {
         cdata.get_stability(def_id.index).map(|s| tcx.intern_stability(s))
@@ -354,7 +355,7 @@ pub fn provide<'tcx>(providers: &mut Providers<'tcx>) {
                         return;
                     }
 
-                    let child = child.def.def_id();
+                    let child = child.res.def_id();
 
                     match visible_parent_map.entry(child) {
                         Entry::Occupied(mut entry) => {
@@ -431,7 +432,7 @@ impl cstore::CStore {
         let data = self.get_crate_data(id.krate);
         if let Some(ref proc_macros) = data.proc_macros {
             return LoadedMacro::ProcMacro(proc_macros[id.index.to_proc_macro_index()].1.clone());
-        } else if data.name == "proc_macro" && data.item_name(id.index) == "quote" {
+        } else if data.name == sym::proc_macro && data.item_name(id.index) == "quote" {
             use syntax::ext::base::SyntaxExtension;
             use syntax_ext::proc_macro_impl::BangProcMacro;
 

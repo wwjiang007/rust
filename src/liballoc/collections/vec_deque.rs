@@ -1,3 +1,5 @@
+// ignore-tidy-filelength
+
 //! A double-ended queue implemented with a growable ring buffer.
 //!
 //! This queue has `O(1)` amortized inserts and removals from both ends of the
@@ -367,7 +369,7 @@ impl<T> VecDeque<T> {
         VecDeque::with_capacity(INITIAL_CAPACITY)
     }
 
-    /// Creates an empty `VecDeque` with space for at least `n` elements.
+    /// Creates an empty `VecDeque` with space for at least `capacity` elements.
     ///
     /// # Examples
     ///
@@ -377,10 +379,10 @@ impl<T> VecDeque<T> {
     /// let vector: VecDeque<u32> = VecDeque::with_capacity(10);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn with_capacity(n: usize) -> VecDeque<T> {
+    pub fn with_capacity(capacity: usize) -> VecDeque<T> {
         // +1 since the ringbuffer always leaves one space empty
-        let cap = cmp::max(n + 1, MINIMUM_CAPACITY + 1).next_power_of_two();
-        assert!(cap > n, "capacity overflow");
+        let cap = cmp::max(capacity + 1, MINIMUM_CAPACITY + 1).next_power_of_two();
+        assert!(cap > capacity, "capacity overflow");
 
         VecDeque {
             tail: 0,
@@ -1833,8 +1835,8 @@ impl<T> VecDeque<T> {
     /// Retains only the elements specified by the predicate.
     ///
     /// In other words, remove all elements `e` such that `f(&e)` returns false.
-    /// This method operates in place and preserves the order of the retained
-    /// elements.
+    /// This method operates in place, visiting each element exactly once in the
+    /// original order, and preserves the order of the retained elements.
     ///
     /// # Examples
     ///
@@ -1845,6 +1847,20 @@ impl<T> VecDeque<T> {
     /// buf.extend(1..5);
     /// buf.retain(|&x| x%2 == 0);
     /// assert_eq!(buf, [2, 4]);
+    /// ```
+    ///
+    /// The exact order may be useful for tracking external state, like an index.
+    ///
+    /// ```
+    /// use std::collections::VecDeque;
+    ///
+    /// let mut buf = VecDeque::new();
+    /// buf.extend(1..6);
+    ///
+    /// let keep = [false, true, true, false, true];
+    /// let mut i = 0;
+    /// buf.retain(|_| (keep[i], i += 1).0);
+    /// assert_eq!(buf, [2, 3, 5]);
     /// ```
     #[stable(feature = "vec_deque_retain", since = "1.4.0")]
     pub fn retain<F>(&mut self, mut f: F)

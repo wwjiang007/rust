@@ -16,6 +16,7 @@ use std::borrow::Cow;
 use std::io::prelude::*;
 use std::io;
 use std::cmp::{min, Reverse};
+use std::path::Path;
 use termcolor::{StandardStream, ColorChoice, ColorSpec, BufferWriter, Ansi};
 use termcolor::{WriteColor, Color, Buffer};
 
@@ -50,7 +51,12 @@ const ANONYMIZED_LINE_NUM: &str = "LL";
 /// Emitter trait for emitting errors.
 pub trait Emitter {
     /// Emit a structured diagnostic.
-    fn emit(&mut self, db: &DiagnosticBuilder<'_>);
+    fn emit_diagnostic(&mut self, db: &DiagnosticBuilder<'_>);
+
+    /// Emit a notification that an artifact has been output.
+    /// This is currently only supported for the JSON format,
+    /// other formats can, and will, simply ignore it.
+    fn emit_artifact_notification(&mut self, _path: &Path) {}
 
     /// Checks if should show explanations about "rustc --explain"
     fn should_show_explain(&self) -> bool {
@@ -59,7 +65,7 @@ pub trait Emitter {
 }
 
 impl Emitter for EmitterWriter {
-    fn emit(&mut self, db: &DiagnosticBuilder<'_>) {
+    fn emit_diagnostic(&mut self, db: &DiagnosticBuilder<'_>) {
         let mut primary_span = db.span.clone();
         let mut children = db.children.clone();
         let mut suggestions: &[_] = &[];
@@ -268,6 +274,7 @@ impl EmitterWriter {
                 // 6..7. This is degenerate input, but it's best to degrade
                 // gracefully -- and the parser likes to supply a span like
                 // that for EOF, in particular.
+
                 if lo.col_display == hi.col_display && lo.line == hi.line {
                     hi.col_display += 1;
                 }
@@ -547,6 +554,15 @@ impl EmitterWriter {
                     && j > i                      // multiline lines).
                     && p == 0  // We're currently on the first line, move the label one line down
                 {
+                    // If we're overlapping with an un-labelled annotation with the same span
+                    // we can just merge them in the output
+                    if next.start_col == annotation.start_col
+                    && next.end_col == annotation.end_col
+                    && !next.has_label()
+                    {
+                        continue;
+                    }
+
                     // This annotation needs a new line in the output.
                     p += 1;
                     break;

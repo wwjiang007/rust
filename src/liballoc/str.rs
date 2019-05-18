@@ -28,7 +28,7 @@
 // It's cleaner to just turn off the unused_imports warning than to fix them.
 #![allow(unused_imports)]
 
-use core::borrow::Borrow;
+use core::borrow::{Borrow, BorrowMut};
 use core::str::pattern::{Pattern, Searcher, ReverseSearcher, DoubleEndedSearcher};
 use core::mem;
 use core::ptr;
@@ -187,6 +187,14 @@ impl Borrow<str> for String {
     #[inline]
     fn borrow(&self) -> &str {
         &self[..]
+    }
+}
+
+#[stable(feature = "string_borrow_mut", since = "1.36.0")]
+impl BorrowMut<str> for String {
+    #[inline]
+    fn borrow_mut(&mut self) -> &mut str {
+        &mut self[..]
     }
 }
 
@@ -573,4 +581,3 @@ impl str {
 pub unsafe fn from_boxed_utf8_unchecked(v: Box<[u8]>) -> Box<str> {
     Box::from_raw(Box::into_raw(v) as *mut str)
 }
-

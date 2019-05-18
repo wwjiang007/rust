@@ -49,8 +49,6 @@ pub mod gather_loans;
 
 pub mod move_data;
 
-mod unused;
-
 #[derive(Clone, Copy)]
 pub struct LoanDataFlowOperator;
 
@@ -136,10 +134,6 @@ fn borrowck<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, owner_def_id: DefId)
                                      })
     {
         check_loans::check_loans(&mut bccx, &loan_dfcx, &flowed_moves, &all_loans, body);
-    }
-
-    if !tcx.use_mir_borrowck() {
-        unused::check(&mut bccx, body);
     }
 
     Lrc::new(BorrowCheckResult {
@@ -234,7 +228,7 @@ pub struct BorrowckCtxt<'a, 'tcx: 'a> {
     // Some in `borrowck_fn` and cleared later
     tables: &'a ty::TypeckTables<'tcx>,
 
-    region_scope_tree: Lrc<region::ScopeTree>,
+    region_scope_tree: &'tcx region::ScopeTree,
 
     owner_def_id: DefId,
 

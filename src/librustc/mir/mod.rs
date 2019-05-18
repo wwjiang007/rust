@@ -1,10 +1,12 @@
+// ignore-tidy-filelength
+
 //! MIR datatypes and passes. See the [rustc guide] for more info.
 //!
 //! [rustc guide]: https://rust-lang.github.io/rustc-guide/mir/index.html
 
 use crate::hir::def::{CtorKind, Namespace};
 use crate::hir::def_id::DefId;
-use crate::hir::{self, HirId, InlineAsm as HirInlineAsm};
+use crate::hir::{self, InlineAsm as HirInlineAsm};
 use crate::mir::interpret::{ConstValue, InterpError, Scalar};
 use crate::mir::visit::MirVisitable;
 use rustc_apfloat::ieee::{Double, Single};
@@ -138,15 +140,19 @@ pub struct Mir<'tcx> {
     /// If this MIR was built for a constant, this will be 0.
     pub arg_count: usize,
 
-    /// Names and capture modes of all the closure upvars, assuming
-    /// the first argument is either the closure or a reference to it.
-    pub upvar_decls: Vec<UpvarDecl>,
-
     /// Mark an argument local (which must be a tuple) as getting passed as
     /// its individual components at the LLVM level.
     ///
     /// This is used for the "rust-call" ABI.
     pub spread_arg: Option<Local>,
+
+    /// Names and capture modes of all the closure upvars, assuming
+    /// the first argument is either the closure or a reference to it.
+    // NOTE(eddyb) This is *strictly* a temporary hack for codegen
+    // debuginfo generation, and will be removed at some point.
+    // Do **NOT** use it for anything else, upvar information should not be
+    // in the MIR, please rely on local crate HIR or other side-channels.
+    pub __upvar_debuginfo_codegen_only_do_not_use: Vec<UpvarDebuginfo>,
 
     /// Mark this MIR of a const context other than const functions as having converted a `&&` or
     /// `||` expression into `&` or `|` respectively. This is problematic because if we ever stop
@@ -173,7 +179,7 @@ impl<'tcx> Mir<'tcx> {
         local_decls: LocalDecls<'tcx>,
         user_type_annotations: CanonicalUserTypeAnnotations<'tcx>,
         arg_count: usize,
-        upvar_decls: Vec<UpvarDecl>,
+        __upvar_debuginfo_codegen_only_do_not_use: Vec<UpvarDebuginfo>,
         span: Span,
         control_flow_destroyed: Vec<(Span, String)>,
     ) -> Self {
@@ -197,7 +203,7 @@ impl<'tcx> Mir<'tcx> {
             local_decls,
             user_type_annotations,
             arg_count,
-            upvar_decls,
+            __upvar_debuginfo_codegen_only_do_not_use,
             spread_arg: None,
             span,
             cache: cache::Cache::new(),
@@ -431,7 +437,7 @@ impl_stable_hash_for!(struct Mir<'tcx> {
     local_decls,
     user_type_annotations,
     arg_count,
-    upvar_decls,
+    __upvar_debuginfo_codegen_only_do_not_use,
     spread_arg,
     control_flow_destroyed,
     span,
@@ -983,16 +989,11 @@ impl<'tcx> LocalDecl<'tcx> {
 
 /// A closure capture, with its name and mode.
 #[derive(Clone, Debug, RustcEncodable, RustcDecodable, HashStable)]
-pub struct UpvarDecl {
+pub struct UpvarDebuginfo {
     pub debug_name: Name,
-
-    /// `HirId` of the captured variable
-    pub var_hir_id: ClearCrossCrate<HirId>,
 
     /// If true, the capture is behind a reference.
     pub by_ref: bool,
-
-    pub mutability: Mutability,
 }
 
 ///////////////////////////////////////////////////////////////////////////
@@ -2029,6 +2030,10 @@ impl<'tcx> Place<'tcx> {
             variant_index))
     }
 
+    pub fn downcast_unnamed(self, variant_index: VariantIdx) -> Place<'tcx> {
+        self.elem(ProjectionElem::Downcast(None, variant_index))
+    }
+
     pub fn index(self, index: Local) -> Place<'tcx> {
         self.elem(ProjectionElem::Index(index))
     }
@@ -2054,10 +2059,13 @@ impl<'tcx> Place<'tcx> {
 
     /// Finds the innermost `Local` from this `Place`.
     pub fn base_local(&self) -> Option<Local> {
-        match self {
-            Place::Base(PlaceBase::Local(local)) => Some(*local),
-            Place::Projection(box Projection { base, elem: _ }) => base.base_local(),
-            Place::Base(PlaceBase::Static(..)) => None,
+        let mut place = self;
+        loop {
+            match place {
+                Place::Projection(proj) => place = &proj.base,
+                Place::Base(PlaceBase::Static(_)) => return None,
+                Place::Base(PlaceBase::Local(local)) => return Some(*local),
+            }
         }
     }
 
@@ -2157,61 +2165,95 @@ impl<'p, 'tcx> FusedIterator for PlaceProjectionsIter<'p, 'tcx> {}
 
 impl<'tcx> Debug for Place<'tcx> {
     fn fmt(&self, fmt: &mut Formatter<'_>) -> fmt::Result {
-        use self::Place::*;
+        self.iterate(|_place_base, place_projections| {
+            // FIXME: remove this collect once we have migrated to slices
+            let projs_vec: Vec<_> = place_projections.collect();
+            for projection in projs_vec.iter().rev() {
+                match projection.elem {
+                    ProjectionElem::Downcast(_, _) |
+                    ProjectionElem::Field(_, _) => {
+                        write!(fmt, "(").unwrap();
+                    }
+                    ProjectionElem::Deref => {
+                        write!(fmt, "(*").unwrap();
+                    }
+                    ProjectionElem::Index(_) |
+                    ProjectionElem::ConstantIndex { .. } |
+                    ProjectionElem::Subslice { .. } => {}
+                }
+            }
+        });
 
-        match *self {
-            Base(PlaceBase::Local(id)) => write!(fmt, "{:?}", id),
-            Base(PlaceBase::Static(box self::Static { ty, kind: StaticKind::Static(def_id) })) => {
-                write!(
-                    fmt,
-                    "({}: {:?})",
-                    ty::tls::with(|tcx| tcx.def_path_str(def_id)),
-                    ty
-                )
-            },
-            Base(PlaceBase::Static(
-                box self::Static { ty, kind: StaticKind::Promoted(promoted) })
-            ) => {
-                write!(
-                    fmt,
-                    "({:?}: {:?})",
-                    promoted,
-                    ty
-                )
-            },
-            Projection(ref data) => match data.elem {
-                ProjectionElem::Downcast(Some(name), _index) => {
-                    write!(fmt, "({:?} as {})", data.base, name)
+        self.iterate(|place_base, place_projections| {
+            match place_base {
+                PlaceBase::Local(id) => {
+                    write!(fmt, "{:?}", id)?;
                 }
-                ProjectionElem::Downcast(None, index) => {
-                    write!(fmt, "({:?} as variant#{:?})", data.base, index)
+                PlaceBase::Static(box self::Static { ty, kind: StaticKind::Static(def_id) }) => {
+                    write!(
+                        fmt,
+                        "({}: {:?})",
+                        ty::tls::with(|tcx| tcx.def_path_str(*def_id)),
+                        ty
+                    )?;
+                },
+                PlaceBase::Static(
+                    box self::Static { ty, kind: StaticKind::Promoted(promoted) }
+                ) => {
+                    write!(
+                        fmt,
+                        "({:?}: {:?})",
+                        promoted,
+                        ty
+                    )?;
+                },
+            }
+
+            for projection in place_projections {
+                match projection.elem {
+                    ProjectionElem::Downcast(Some(name), _index) => {
+                        write!(fmt, " as {})", name)?;
+                    }
+                    ProjectionElem::Downcast(None, index) => {
+                        write!(fmt, " as variant#{:?})", index)?;
+                    }
+                    ProjectionElem::Deref => {
+                        write!(fmt, ")")?;
+                    }
+                    ProjectionElem::Field(field, ty) => {
+                        write!(fmt, ".{:?}: {:?})", field.index(), ty)?;
+                    }
+                    ProjectionElem::Index(ref index) => {
+                        write!(fmt, "[{:?}]", index)?;
+                    }
+                    ProjectionElem::ConstantIndex {
+                        offset,
+                        min_length,
+                        from_end: false,
+                    } => {
+                        write!(fmt, "[{:?} of {:?}]", offset, min_length)?;
+                    }
+                    ProjectionElem::ConstantIndex {
+                        offset,
+                        min_length,
+                        from_end: true,
+                    } => {
+                        write!(fmt, "[-{:?} of {:?}]", offset, min_length)?;
+                    }
+                    ProjectionElem::Subslice { from, to } if to == 0 => {
+                        write!(fmt, "[{:?}:]", from)?;
+                    }
+                    ProjectionElem::Subslice { from, to } if from == 0 => {
+                        write!(fmt, "[:-{:?}]", to)?;
+                    }
+                    ProjectionElem::Subslice { from, to } => {
+                        write!(fmt, "[{:?}:-{:?}]", from, to)?;
+                    }
                 }
-                ProjectionElem::Deref => write!(fmt, "(*{:?})", data.base),
-                ProjectionElem::Field(field, ty) => {
-                    write!(fmt, "({:?}.{:?}: {:?})", data.base, field.index(), ty)
-                }
-                ProjectionElem::Index(ref index) => write!(fmt, "{:?}[{:?}]", data.base, index),
-                ProjectionElem::ConstantIndex {
-                    offset,
-                    min_length,
-                    from_end: false,
-                } => write!(fmt, "{:?}[{:?} of {:?}]", data.base, offset, min_length),
-                ProjectionElem::ConstantIndex {
-                    offset,
-                    min_length,
-                    from_end: true,
-                } => write!(fmt, "{:?}[-{:?} of {:?}]", data.base, offset, min_length),
-                ProjectionElem::Subslice { from, to } if to == 0 => {
-                    write!(fmt, "{:?}[{:?}:]", data.base, from)
-                }
-                ProjectionElem::Subslice { from, to } if from == 0 => {
-                    write!(fmt, "{:?}[:-{:?}]", data.base, to)
-                }
-                ProjectionElem::Subslice { from, to } => {
-                    write!(fmt, "{:?}[{:?}:-{:?}]", data.base, from, to)
-                }
-            },
-        }
+            }
+
+            Ok(())
+        })
     }
 }
 
@@ -2530,12 +2572,12 @@ impl<'tcx> Debug for Rvalue<'tcx> {
                             };
                             let mut struct_fmt = fmt.debug_struct(&name);
 
-                            tcx.with_freevars(hir_id, |freevars| {
-                                for (freevar, place) in freevars.iter().zip(places) {
-                                    let var_name = tcx.hir().name_by_hir_id(freevar.var_id());
+                            if let Some(upvars) = tcx.upvars(def_id) {
+                                for (upvar, place) in upvars.iter().zip(places) {
+                                    let var_name = tcx.hir().name_by_hir_id(upvar.var_id());
                                     struct_fmt.field(&var_name.as_str(), place);
                                 }
-                            });
+                            }
 
                             struct_fmt.finish()
                         } else {
@@ -2549,17 +2591,12 @@ impl<'tcx> Debug for Rvalue<'tcx> {
                                                tcx.hir().span_by_hir_id(hir_id));
                             let mut struct_fmt = fmt.debug_struct(&name);
 
-                            tcx.with_freevars(hir_id, |freevars| {
-                                for (freevar, place) in freevars.iter().zip(places) {
-                                    let var_name = tcx.hir().name_by_hir_id(freevar.var_id());
+                            if let Some(upvars) = tcx.upvars(def_id) {
+                                for (upvar, place) in upvars.iter().zip(places) {
+                                    let var_name = tcx.hir().name_by_hir_id(upvar.var_id());
                                     struct_fmt.field(&var_name.as_str(), place);
                                 }
-                                struct_fmt.field("$state", &places[freevars.len()]);
-                                for i in (freevars.len() + 1)..places.len() {
-                                    struct_fmt
-                                        .field(&format!("${}", i - freevars.len() - 1), &places[i]);
-                                }
-                            });
+                            }
 
                             struct_fmt.finish()
                         } else {
@@ -2996,10 +3033,29 @@ pub struct UnsafetyCheckResult {
     pub unsafe_blocks: Lrc<[(hir::HirId, bool)]>,
 }
 
+newtype_index! {
+    pub struct GeneratorSavedLocal {
+        derive [HashStable]
+        DEBUG_FORMAT = "_{}",
+    }
+}
+
 /// The layout of generator state
 #[derive(Clone, Debug, RustcEncodable, RustcDecodable, HashStable)]
 pub struct GeneratorLayout<'tcx> {
-    pub fields: Vec<LocalDecl<'tcx>>,
+    /// The type of every local stored inside the generator.
+    pub field_tys: IndexVec<GeneratorSavedLocal, Ty<'tcx>>,
+
+    /// Which of the above fields are in each variant. Note that one field may
+    /// be stored in multiple variants.
+    pub variant_fields: IndexVec<VariantIdx, IndexVec<Field, GeneratorSavedLocal>>,
+
+    /// Names and scopes of all the stored generator locals.
+    /// NOTE(tmandry) This is *strictly* a temporary hack for codegen
+    /// debuginfo generation, and will be removed at some point.
+    /// Do **NOT** use it for anything else, local information should not be
+    /// in the MIR, please rely on local crate HIR or other side-channels.
+    pub __local_debuginfo_codegen_only_do_not_use: IndexVec<GeneratorSavedLocal, LocalDecl<'tcx>>,
 }
 
 #[derive(Clone, Debug, RustcEncodable, RustcDecodable, HashStable)]
@@ -3156,7 +3212,7 @@ CloneTypeFoldableAndLiftImpls! {
     MirPhase,
     Mutability,
     SourceInfo,
-    UpvarDecl,
+    UpvarDebuginfo,
     FakeReadCause,
     RetagKind,
     SourceScope,
@@ -3178,7 +3234,7 @@ BraceStructTypeFoldableImpl! {
         local_decls,
         user_type_annotations,
         arg_count,
-        upvar_decls,
+        __upvar_debuginfo_codegen_only_do_not_use,
         spread_arg,
         control_flow_destroyed,
         span,
@@ -3188,7 +3244,9 @@ BraceStructTypeFoldableImpl! {
 
 BraceStructTypeFoldableImpl! {
     impl<'tcx> TypeFoldable<'tcx> for GeneratorLayout<'tcx> {
-        fields
+        field_tys,
+        variant_fields,
+        __local_debuginfo_codegen_only_do_not_use,
     }
 }
 
@@ -3555,6 +3613,15 @@ where
 }
 
 impl<'tcx> TypeFoldable<'tcx> for Field {
+    fn super_fold_with<'gcx: 'tcx, F: TypeFolder<'gcx, 'tcx>>(&self, _: &mut F) -> Self {
+        *self
+    }
+    fn super_visit_with<V: TypeVisitor<'tcx>>(&self, _: &mut V) -> bool {
+        false
+    }
+}
+
+impl<'tcx> TypeFoldable<'tcx> for GeneratorSavedLocal {
     fn super_fold_with<'gcx: 'tcx, F: TypeFolder<'gcx, 'tcx>>(&self, _: &mut F) -> Self {
         *self
     }

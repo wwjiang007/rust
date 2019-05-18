@@ -4,6 +4,8 @@ use std::io::prelude::*;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
+use log::*;
+
 use crate::common::{self, CompareMode, Config, Mode};
 use crate::util;
 
@@ -88,6 +90,9 @@ impl EarlyProps {
             }
         }
 
+        let rustc_has_profiler_support = env::var_os("RUSTC_PROFILER_SUPPORT").is_some();
+        let rustc_has_sanitizer_support = env::var_os("RUSTC_SANITIZER_SUPPORT").is_some();
+
         iter_header(testfile, None, &mut |ln| {
             // we should check if any only-<platform> exists and if it exists
             // and does not matches the current platform, skip the test
@@ -114,6 +119,16 @@ impl EarlyProps {
 
                 if config.run_clang_based_tests_with.is_none() &&
                    config.parse_needs_matching_clang(ln) {
+                    props.ignore = Ignore::Ignore;
+                }
+
+                if !rustc_has_profiler_support &&
+                   config.parse_needs_profiler_support(ln) {
+                    props.ignore = Ignore::Ignore;
+                }
+
+                if !rustc_has_sanitizer_support &&
+                   config.parse_needs_sanitizer_support(ln) {
                     props.ignore = Ignore::Ignore;
                 }
             }
@@ -292,6 +307,9 @@ pub struct TestProps {
     pub extern_private: Vec<String>,
     // Environment settings to use for compiling
     pub rustc_env: Vec<(String, String)>,
+    // Environment variables to unset prior to compiling.
+    // Variables are unset before applying 'rustc_env'.
+    pub unset_rustc_env: Vec<String>,
     // Environment settings to use during execution
     pub exec_env: Vec<(String, String)>,
     // Lines to check if they appear in the expected debugger output
@@ -360,6 +378,7 @@ impl TestProps {
             extern_private: vec![],
             revisions: vec![],
             rustc_env: vec![],
+            unset_rustc_env: vec![],
             exec_env: vec![],
             check_lines: vec![],
             build_aux_docs: false,
@@ -484,6 +503,10 @@ impl TestProps {
 
             if let Some(ee) = config.parse_env(ln, "rustc-env") {
                 self.rustc_env.push(ee);
+            }
+
+            if let Some(ev) = config.parse_name_value_directive(ln, "unset-rustc-env") {
+                self.unset_rustc_env.push(ev);
             }
 
             if let Some(cl) = config.parse_check_line(ln) {
@@ -746,6 +769,14 @@ impl Config {
 
     fn parse_needs_matching_clang(&self, line: &str) -> bool {
         self.parse_name_directive(line, "needs-matching-clang")
+    }
+
+    fn parse_needs_profiler_support(&self, line: &str) -> bool {
+        self.parse_name_directive(line, "needs-profiler-support")
+    }
+
+    fn parse_needs_sanitizer_support(&self, line: &str) -> bool {
+        self.parse_name_directive(line, "needs-sanitizer-support")
     }
 
     /// Parses a name-value directive which contains config-specific information, e.g., `ignore-x86`

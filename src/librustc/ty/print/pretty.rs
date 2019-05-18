@@ -355,11 +355,10 @@ pub trait PrettyPrinter<'gcx: 'tcx, 'tcx>:
             // the children of the visible parent (as was done when computing
             // `visible_parent_map`), looking for the specific child we currently have and then
             // have access to the re-exported name.
-            DefPathData::Module(ref mut name) |
             DefPathData::TypeNs(ref mut name) if Some(visible_parent) != actual_parent => {
                 let reexport = self.tcx().item_children(visible_parent)
                     .iter()
-                    .find(|child| child.def.def_id() == def_id)
+                    .find(|child| child.res.def_id() == def_id)
                     .map(|child| child.ident.as_interned_str());
                 if let Some(reexport) = reexport {
                     *name = reexport;
@@ -367,7 +366,7 @@ pub trait PrettyPrinter<'gcx: 'tcx, 'tcx>:
             }
             // Re-exported `extern crate` (#43189).
             DefPathData::CrateRoot => {
-                data = DefPathData::Module(
+                data = DefPathData::TypeNs(
                     self.tcx().original_crate_name(def_id.krate).as_interned_str(),
                 );
             }
@@ -583,16 +582,16 @@ pub trait PrettyPrinter<'gcx: 'tcx, 'tcx>:
                 if let Some(hir_id) = self.tcx().hir().as_local_hir_id(did) {
                     p!(write("@{:?}", self.tcx().hir().span_by_hir_id(hir_id)));
                     let mut sep = " ";
-                    for (freevar, upvar_ty) in self.tcx().freevars(did)
+                    for (upvar, upvar_ty) in self.tcx().upvars(did)
                         .as_ref()
-                        .map_or(&[][..], |fv| &fv[..])
+                        .map_or(&[][..], |v| &v[..])
                         .iter()
                         .zip(upvar_tys)
                     {
                         p!(
                             write("{}{}:",
                                     sep,
-                                    self.tcx().hir().name_by_hir_id(freevar.var_id())),
+                                    self.tcx().hir().name_by_hir_id(upvar.var_id())),
                             print(upvar_ty));
                         sep = ", ";
                     }
@@ -626,16 +625,16 @@ pub trait PrettyPrinter<'gcx: 'tcx, 'tcx>:
                         p!(write("@{:?}", self.tcx().hir().span_by_hir_id(hir_id)));
                     }
                     let mut sep = " ";
-                    for (freevar, upvar_ty) in self.tcx().freevars(did)
+                    for (upvar, upvar_ty) in self.tcx().upvars(did)
                         .as_ref()
-                        .map_or(&[][..], |fv| &fv[..])
+                        .map_or(&[][..], |v| &v[..])
                         .iter()
                         .zip(upvar_tys)
                     {
                         p!(
                             write("{}{}:",
                                     sep,
-                                    self.tcx().hir().name_by_hir_id(freevar.var_id())),
+                                    self.tcx().hir().name_by_hir_id(upvar.var_id())),
                             print(upvar_ty));
                         sep = ", ";
                     }
@@ -701,7 +700,8 @@ pub trait PrettyPrinter<'gcx: 'tcx, 'tcx>:
                 if let ty::Tuple(ref args) = principal.substs.type_at(0).sty {
                     let mut projections = predicates.projection_bounds();
                     if let (Some(proj), None) = (projections.next(), projections.next()) {
-                        p!(pretty_fn_sig(args, false, proj.ty));
+                        let tys: Vec<_> = args.iter().map(|k| k.expect_ty()).collect();
+                        p!(pretty_fn_sig(&tys, false, proj.ty));
                         resugared = true;
                     }
                 }
@@ -711,7 +711,7 @@ pub trait PrettyPrinter<'gcx: 'tcx, 'tcx>:
             // in order to place the projections inside the `<...>`.
             if !resugared {
                 // Use a type that can't appear in defaults of type parameters.
-                let dummy_self = self.tcx().mk_infer(ty::FreshTy(0));
+                let dummy_self = self.tcx().mk_ty_infer(ty::FreshTy(0));
                 let principal = principal.with_self_ty(self.tcx(), dummy_self);
 
                 let args = self.generic_args_to_print(
@@ -858,15 +858,16 @@ impl TyCtxt<'_, '_, '_> {
     // (but also some things just print a `DefId` generally so maybe we need this?)
     fn guess_def_namespace(self, def_id: DefId) -> Namespace {
         match self.def_key(def_id).disambiguated_data.data {
-            DefPathData::ValueNs(..) |
-            DefPathData::EnumVariant(..) |
-            DefPathData::Field(..) |
-            DefPathData::AnonConst |
-            DefPathData::ConstParam(..) |
-            DefPathData::ClosureExpr |
-            DefPathData::Ctor => Namespace::ValueNS,
+            DefPathData::TypeNs(..)
+            | DefPathData::CrateRoot
+            | DefPathData::ImplTrait => Namespace::TypeNS,
 
-            DefPathData::MacroDef(..) => Namespace::MacroNS,
+            DefPathData::ValueNs(..)
+            | DefPathData::AnonConst
+            | DefPathData::ClosureExpr
+            | DefPathData::Ctor => Namespace::ValueNS,
+
+            DefPathData::MacroNs(..) => Namespace::MacroNS,
 
             _ => Namespace::TypeNS,
         }
@@ -1480,7 +1481,7 @@ define_print_and_forward_display! {
 
     ty::ExistentialTraitRef<'tcx> {
         // Use a type that can't appear in defaults of type parameters.
-        let dummy_self = cx.tcx().mk_infer(ty::FreshTy(0));
+        let dummy_self = cx.tcx().mk_ty_infer(ty::FreshTy(0));
         let trait_ref = self.with_self_ty(cx.tcx(), dummy_self);
         p!(print(trait_ref))
     }

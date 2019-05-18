@@ -91,7 +91,7 @@ rustc_queries! {
         /// Maps DefId's that have an associated Mir to the result
         /// of the MIR qualify_consts pass. The actual meaning of
         /// the value isn't known except to the pass itself.
-        query mir_const_qualif(key: DefId) -> (u8, Lrc<BitSet<mir::Local>>) {
+        query mir_const_qualif(key: DefId) -> (u8, &'tcx BitSet<mir::Local>) {
             cache { key.is_local() }
         }
 
@@ -174,7 +174,7 @@ rustc_queries! {
 
         /// Returns the inferred outlives predicates (e.g., for `struct
         /// Foo<'a, T> { x: &'a T }`, this would return `T: 'a`).
-        query inferred_outlives_of(_: DefId) -> Lrc<Vec<ty::Predicate<'tcx>>> {}
+        query inferred_outlives_of(_: DefId) -> &'tcx [ty::Predicate<'tcx>] {}
 
         /// Maps from the `DefId` of a trait to the list of
         /// super-predicates. This is a subset of the full list of
@@ -235,18 +235,23 @@ rustc_queries! {
         /// constructor function).
         query is_promotable_const_fn(_: DefId) -> bool {}
 
+        query const_fn_is_allowed_fn_ptr(_: DefId) -> bool {}
+
         /// True if this is a foreign item (i.e., linked via `extern { ... }`).
         query is_foreign_item(_: DefId) -> bool {}
 
+        /// Returns `Some(mutability)` if the node pointed to by `def_id` is a static item.
+        query static_mutability(_: DefId) -> Option<hir::Mutability> {}
+
         /// Get a map with the variance of every item; use `item_variance`
         /// instead.
-        query crate_variances(_: CrateNum) -> Lrc<ty::CrateVariancesMap> {
+        query crate_variances(_: CrateNum) -> Lrc<ty::CrateVariancesMap<'tcx>> {
             desc { "computing the variances for items in this crate" }
         }
 
         /// Maps from def-id of a type or region parameter to its
         /// (inferred) variance.
-        query variances_of(_: DefId) -> Lrc<Vec<ty::Variance>> {}
+        query variances_of(_: DefId) -> &'tcx [ty::Variance] {}
     }
 
     TypeChecking {
@@ -451,7 +456,7 @@ rustc_queries! {
 
         /// Per-body `region::ScopeTree`. The `DefId` should be the owner `DefId` for the body;
         /// in the case of closures, this will be redirected to the enclosing function.
-        query region_scope_tree(_: DefId) -> Lrc<region::ScopeTree> {}
+        query region_scope_tree(_: DefId) -> &'tcx region::ScopeTree {}
 
         query mir_shims(key: ty::InstanceDef<'tcx>) -> &'tcx mir::Mir<'tcx> {
             no_force
@@ -464,7 +469,7 @@ rustc_queries! {
             cache { true }
         }
 
-        query describe_def(_: DefId) -> Option<Def> {}
+        query def_kind(_: DefId) -> Option<DefKind> {}
         query def_span(_: DefId) -> Span {
             // FIXME(mw): DefSpans are not really inputs since they are derived from
             // HIR. But at the moment HIR hashing still contains some hacks that allow
@@ -499,7 +504,7 @@ rustc_queries! {
             }
             cache { true }
         }
-        query rvalue_promotable_map(key: DefId) -> Lrc<ItemLocalSet> {
+        query rvalue_promotable_map(key: DefId) -> &'tcx ItemLocalSet {
             desc { |tcx|
                 "checking which parts of `{}` are promotable to static",
                 tcx.def_path_str(key)
@@ -535,7 +540,7 @@ rustc_queries! {
     }
 
     TypeChecking {
-        query trait_impls_of(key: DefId) -> Lrc<ty::trait_def::TraitImpls> {
+        query trait_impls_of(key: DefId) -> &'tcx ty::trait_def::TraitImpls {
             desc { |tcx| "trait impls of `{}`", tcx.def_path_str(key) }
         }
         query specialization_graph_of(_: DefId) -> &'tcx specialization_graph::Graph {}
@@ -819,7 +824,7 @@ rustc_queries! {
             desc { "generating a postorder list of CrateNums" }
         }
 
-        query freevars(_: DefId) -> Option<Lrc<Vec<hir::Freevar>>> {
+        query upvars(_: DefId) -> Option<Lrc<Vec<hir::Upvar>>> {
             eval_always
         }
         query maybe_unused_trait_import(_: DefId) -> bool {
@@ -887,7 +892,7 @@ rustc_queries! {
         query normalize_projection_ty(
             goal: CanonicalProjectionGoal<'tcx>
         ) -> Result<
-            Lrc<Canonical<'tcx, canonical::QueryResponse<'tcx, NormalizationResult<'tcx>>>>,
+            &'tcx Canonical<'tcx, canonical::QueryResponse<'tcx, NormalizationResult<'tcx>>>,
             NoSolution,
         > {
             no_force
@@ -905,7 +910,7 @@ rustc_queries! {
         query implied_outlives_bounds(
             goal: CanonicalTyGoal<'tcx>
         ) -> Result<
-            Lrc<Canonical<'tcx, canonical::QueryResponse<'tcx, Vec<OutlivesBound<'tcx>>>>>,
+            &'tcx Canonical<'tcx, canonical::QueryResponse<'tcx, Vec<OutlivesBound<'tcx>>>>,
             NoSolution,
         > {
             no_force
@@ -916,7 +921,7 @@ rustc_queries! {
         query dropck_outlives(
             goal: CanonicalTyGoal<'tcx>
         ) -> Result<
-            Lrc<Canonical<'tcx, canonical::QueryResponse<'tcx, DropckOutlivesResult<'tcx>>>>,
+            &'tcx Canonical<'tcx, canonical::QueryResponse<'tcx, DropckOutlivesResult<'tcx>>>,
             NoSolution,
         > {
             no_force
@@ -935,7 +940,7 @@ rustc_queries! {
         query evaluate_goal(
             goal: traits::ChalkCanonicalGoal<'tcx>
         ) -> Result<
-            Lrc<Canonical<'tcx, canonical::QueryResponse<'tcx, ()>>>,
+            &'tcx Canonical<'tcx, canonical::QueryResponse<'tcx, ()>>,
             NoSolution
         > {
             no_force
@@ -946,7 +951,7 @@ rustc_queries! {
         query type_op_ascribe_user_type(
             goal: CanonicalTypeOpAscribeUserTypeGoal<'tcx>
         ) -> Result<
-            Lrc<Canonical<'tcx, canonical::QueryResponse<'tcx, ()>>>,
+            &'tcx Canonical<'tcx, canonical::QueryResponse<'tcx, ()>>,
             NoSolution,
         > {
             no_force
@@ -957,7 +962,7 @@ rustc_queries! {
         query type_op_eq(
             goal: CanonicalTypeOpEqGoal<'tcx>
         ) -> Result<
-            Lrc<Canonical<'tcx, canonical::QueryResponse<'tcx, ()>>>,
+            &'tcx Canonical<'tcx, canonical::QueryResponse<'tcx, ()>>,
             NoSolution,
         > {
             no_force
@@ -968,7 +973,7 @@ rustc_queries! {
         query type_op_subtype(
             goal: CanonicalTypeOpSubtypeGoal<'tcx>
         ) -> Result<
-            Lrc<Canonical<'tcx, canonical::QueryResponse<'tcx, ()>>>,
+            &'tcx Canonical<'tcx, canonical::QueryResponse<'tcx, ()>>,
             NoSolution,
         > {
             no_force
@@ -979,7 +984,7 @@ rustc_queries! {
         query type_op_prove_predicate(
             goal: CanonicalTypeOpProvePredicateGoal<'tcx>
         ) -> Result<
-            Lrc<Canonical<'tcx, canonical::QueryResponse<'tcx, ()>>>,
+            &'tcx Canonical<'tcx, canonical::QueryResponse<'tcx, ()>>,
             NoSolution,
         > {
             no_force
@@ -990,7 +995,7 @@ rustc_queries! {
         query type_op_normalize_ty(
             goal: CanonicalTypeOpNormalizeGoal<'tcx, Ty<'tcx>>
         ) -> Result<
-            Lrc<Canonical<'tcx, canonical::QueryResponse<'tcx, Ty<'tcx>>>>,
+            &'tcx Canonical<'tcx, canonical::QueryResponse<'tcx, Ty<'tcx>>>,
             NoSolution,
         > {
             no_force
@@ -1001,7 +1006,7 @@ rustc_queries! {
         query type_op_normalize_predicate(
             goal: CanonicalTypeOpNormalizeGoal<'tcx, ty::Predicate<'tcx>>
         ) -> Result<
-            Lrc<Canonical<'tcx, canonical::QueryResponse<'tcx, ty::Predicate<'tcx>>>>,
+            &'tcx Canonical<'tcx, canonical::QueryResponse<'tcx, ty::Predicate<'tcx>>>,
             NoSolution,
         > {
             no_force
@@ -1012,7 +1017,7 @@ rustc_queries! {
         query type_op_normalize_poly_fn_sig(
             goal: CanonicalTypeOpNormalizeGoal<'tcx, ty::PolyFnSig<'tcx>>
         ) -> Result<
-            Lrc<Canonical<'tcx, canonical::QueryResponse<'tcx, ty::PolyFnSig<'tcx>>>>,
+            &'tcx Canonical<'tcx, canonical::QueryResponse<'tcx, ty::PolyFnSig<'tcx>>>,
             NoSolution,
         > {
             no_force
@@ -1023,7 +1028,7 @@ rustc_queries! {
         query type_op_normalize_fn_sig(
             goal: CanonicalTypeOpNormalizeGoal<'tcx, ty::FnSig<'tcx>>
         ) -> Result<
-            Lrc<Canonical<'tcx, canonical::QueryResponse<'tcx, ty::FnSig<'tcx>>>>,
+            &'tcx Canonical<'tcx, canonical::QueryResponse<'tcx, ty::FnSig<'tcx>>>,
             NoSolution,
         > {
             no_force
@@ -1047,7 +1052,7 @@ rustc_queries! {
     }
 
     Other {
-        query target_features_whitelist(_: CrateNum) -> Lrc<FxHashMap<String, Option<String>>> {
+        query target_features_whitelist(_: CrateNum) -> Lrc<FxHashMap<String, Option<Symbol>>> {
             eval_always
             desc { "looking up the whitelist of target features" }
         }

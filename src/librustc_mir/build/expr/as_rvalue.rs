@@ -74,7 +74,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     BorrowKind::Shared => unpack!(block = this.as_read_only_place(block, arg)),
                     _ => unpack!(block = this.as_place(block, arg)),
                 };
-                block.and(Rvalue::Ref(this.hir.tcx().types.re_erased, borrow_kind, arg_place))
+                block.and(Rvalue::Ref(this.hir.tcx().lifetimes.re_erased, borrow_kind, arg_place))
             }
             ExprKind::Binary { op, lhs, rhs } => {
                 let lhs = unpack!(block = this.as_operand(block, scope, lhs));
@@ -150,10 +150,6 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 let source = unpack!(block = this.as_operand(block, scope, source));
                 block.and(Rvalue::Cast(CastKind::Misc, source, expr.ty))
             }
-            ExprKind::Use { source } => {
-                let source = unpack!(block = this.as_operand(block, scope, source));
-                block.and(Rvalue::Use(source))
-            }
             ExprKind::Pointer { cast, source } => {
                 let source = unpack!(block = this.as_operand(block, scope, source));
                 block.and(Rvalue::Cast(CastKind::Pointer(cast), source, expr.ty))
@@ -211,7 +207,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 movability,
             } => {
                 // see (*) above
-                let mut operands: Vec<_> = upvars
+                let operands: Vec<_> = upvars
                     .into_iter()
                     .map(|upvar| {
                         let upvar = this.hir.mirror(upvar);
@@ -252,21 +248,9 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     }).collect();
                 let result = match substs {
                     UpvarSubsts::Generator(substs) => {
+                        // We implicitly set the discriminant to 0. See
+                        // librustc_mir/transform/deaggregator.rs for details.
                         let movability = movability.unwrap();
-                        // Add the state operand since it follows the upvars in the generator
-                        // struct. See librustc_mir/transform/generator.rs for more details.
-                        operands.push(Operand::Constant(box Constant {
-                            span: expr_span,
-                            ty: this.hir.tcx().types.u32,
-                            user_ty: None,
-                            literal: this.hir.tcx().mk_const(
-                                ty::Const::from_bits(
-                                    this.hir.tcx(),
-                                    0,
-                                    ty::ParamEnv::empty().and(this.hir.tcx().types.u32),
-                                ),
-                            ),
-                        }));
                         box AggregateKind::Generator(closure_id, substs, movability)
                     }
                     UpvarSubsts::Closure(substs) => box AggregateKind::Closure(closure_id, substs),
@@ -361,8 +345,8 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             ExprKind::Literal { .. }
             | ExprKind::Block { .. }
             | ExprKind::Match { .. }
-            | ExprKind::If { .. }
             | ExprKind::NeverToAny { .. }
+            | ExprKind::Use { .. }
             | ExprKind::Loop { .. }
             | ExprKind::LogicalOp { .. }
             | ExprKind::Call { .. }
@@ -556,10 +540,10 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 );
                 // Not in a closure
                 debug_assert!(
-                    this.upvar_decls.len() > upvar_index.index(),
+                    this.upvar_mutbls.len() > upvar_index.index(),
                     "Unexpected capture place"
                 );
-                this.upvar_decls[upvar_index.index()].mutability
+                this.upvar_mutbls[upvar_index.index()]
             }
             _ => bug!("Unexpected capture place"),
         };
@@ -575,7 +559,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             block,
             source_info,
             &Place::Base(PlaceBase::Local(temp)),
-            Rvalue::Ref(this.hir.tcx().types.re_erased, borrow_kind, arg_place),
+            Rvalue::Ref(this.hir.tcx().lifetimes.re_erased, borrow_kind, arg_place),
         );
 
         // In constants, temp_lifetime is None. We should not need to drop

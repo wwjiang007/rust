@@ -1,3 +1,5 @@
+// ignore-tidy-filelength
+
 //! Manually manage memory through raw pointers.
 //!
 //! *[See also the pointer primitive types](../../std/primitive.pointer.html).*
@@ -372,10 +374,7 @@ unsafe fn swap_nonoverlapping_bytes(x: *mut u8, y: *mut u8, len: usize) {
     // #[repr(simd)], even if we don't actually use this struct directly.
     //
     // FIXME repr(simd) broken on emscripten and redox
-    // It's also broken on big-endian powerpc64 and s390x.  #42778
-    #[cfg_attr(not(any(target_os = "emscripten", target_os = "redox",
-                       target_endian = "big")),
-               repr(simd))]
+    #[cfg_attr(not(any(target_os = "emscripten", target_os = "redox")), repr(simd))]
     struct Block(u64, u64, u64, u64);
     struct UnalignedBlock(u64, u64, u64, u64);
 
@@ -972,6 +971,13 @@ impl<T: ?Sized> *const T {
         (self as *const u8) == null()
     }
 
+    /// Cast to a pointer to a different type
+    #[unstable(feature = "ptr_cast", issue = "60602")]
+    #[inline]
+    pub const fn cast<U>(self) -> *const U {
+        self as _
+    }
+
     /// Returns `None` if the pointer is null, or else returns a reference to
     /// the value wrapped in `Some`.
     ///
@@ -1538,7 +1544,6 @@ impl<T: ?Sized> *const T {
     /// Accessing adjacent `u8` as `u16`
     ///
     /// ```
-    /// # #![feature(align_offset)]
     /// # fn foo(n: usize) {
     /// # use std::mem::align_of;
     /// # unsafe {
@@ -1554,7 +1559,7 @@ impl<T: ?Sized> *const T {
     /// }
     /// # } }
     /// ```
-    #[unstable(feature = "align_offset", issue = "44488")]
+    #[stable(feature = "align_offset", since = "1.36.0")]
     pub fn align_offset(self, align: usize) -> usize where T: Sized {
         if !align.is_power_of_two() {
             panic!("align_offset: align is not a power-of-two");
@@ -1590,6 +1595,13 @@ impl<T: ?Sized> *mut T {
         // Compare via a cast to a thin pointer, so fat pointers are only
         // considering their "data" part for null-ness.
         (self as *mut u8) == null_mut()
+    }
+
+    /// Cast to a pointer to a different type
+    #[unstable(feature = "ptr_cast", issue = "60602")]
+    #[inline]
+    pub const fn cast<U>(self) -> *mut U {
+        self as _
     }
 
     /// Returns `None` if the pointer is null, or else returns a reference to
@@ -2310,7 +2322,6 @@ impl<T: ?Sized> *mut T {
     /// Accessing adjacent `u8` as `u16`
     ///
     /// ```
-    /// # #![feature(align_offset)]
     /// # fn foo(n: usize) {
     /// # use std::mem::align_of;
     /// # unsafe {
@@ -2326,7 +2337,7 @@ impl<T: ?Sized> *mut T {
     /// }
     /// # } }
     /// ```
-    #[unstable(feature = "align_offset", issue = "44488")]
+    #[stable(feature = "align_offset", since = "1.36.0")]
     pub fn align_offset(self, align: usize) -> usize where T: Sized {
         if !align.is_power_of_two() {
             panic!("align_offset: align is not a power-of-two");
@@ -2959,7 +2970,6 @@ impl<T: Sized> NonNull<T> {
     /// some other means.
     #[stable(feature = "nonnull", since = "1.25.0")]
     #[inline]
-    #[rustc_const_unstable(feature = "const_ptr_nonnull")]
     pub const fn dangling() -> Self {
         unsafe {
             let ptr = mem::align_of::<T>() as *mut T;
@@ -3023,7 +3033,6 @@ impl<T: ?Sized> NonNull<T> {
     /// Cast to a pointer of another type
     #[stable(feature = "nonnull_cast", since = "1.27.0")]
     #[inline]
-    #[rustc_const_unstable(feature = "const_ptr_nonnull")]
     pub const fn cast<U>(self) -> NonNull<U> {
         unsafe {
             NonNull::new_unchecked(self.as_ptr() as *mut U)

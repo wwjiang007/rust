@@ -1,4 +1,3 @@
-// ignore-tidy-linelength
 #![allow(non_snake_case)]
 
 // Error messages for EXXXX errors.
@@ -362,10 +361,6 @@ Here are some simple examples of where you'll run into this error:
 struct Foo1 { x: &bool }
               // ^ expected lifetime parameter
 struct Foo2<'a> { x: &'a bool } // correct
-
-impl Foo2 {}
-  // ^^^^ expected lifetime parameter
-impl<'a> Foo2<'a> {} // correct
 
 struct Bar1 { x: Foo2 }
               // ^^^^ expected lifetime parameter
@@ -2043,6 +2038,36 @@ a (non-transparent) struct containing a single float, while `Grams` is a
 transparent wrapper around a float. This can make a difference for the ABI.
 "##,
 
+E0698: r##"
+When using generators (or async) all type variables must be bound so a
+generator can be constructed.
+
+Erroneous code example:
+
+```edition2018,compile-fail,E0698
+#![feature(futures_api, async_await, await_macro)]
+async fn bar<T>() -> () {}
+
+async fn foo() {
+  await!(bar());  // error: cannot infer type for `T`
+}
+```
+
+In the above example `T` is unknowable by the compiler.
+To fix this you must bind `T` to a concrete type such as `String`
+so that a generator can then be constructed:
+
+```edition2018
+#![feature(futures_api, async_await, await_macro)]
+async fn bar<T>() -> () {}
+
+async fn foo() {
+  await!(bar::<String>());
+  //          ^^^^^^^^ specify type explicitly
+}
+```
+"##,
+
 E0700: r##"
 The `impl Trait` return type captures lifetime parameters that do not
 appear within the `impl Trait` itself.
@@ -2179,4 +2204,7 @@ register_diagnostics! {
     E0710, // an unknown tool name found in scoped lint
     E0711, // a feature has been declared with conflicting stability attributes
 //  E0702, // replaced with a generic attribute input check
+    E0726, // non-explicit (not `'_`) elided lifetime in unsupported position
+    E0727, // `async` generators are not yet supported
+    E0728, // `await` must be in an `async` function or block
 }

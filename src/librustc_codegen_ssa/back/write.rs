@@ -28,7 +28,7 @@ use rustc_target::spec::MergeFunctions;
 use syntax::attr;
 use syntax::ext::hygiene::Mark;
 use syntax_pos::MultiSpan;
-use syntax_pos::symbol::Symbol;
+use syntax_pos::symbol::{Symbol, sym};
 use jobserver::{Client, Acquired};
 
 use std::any::Any;
@@ -350,7 +350,7 @@ fn generate_lto_work<B: ExtraBackendMethods>(
 
 pub struct CompiledModules {
     pub modules: Vec<CompiledModule>,
-    pub metadata_module: CompiledModule,
+    pub metadata_module: Option<CompiledModule>,
     pub allocator_module: Option<CompiledModule>,
 }
 
@@ -382,11 +382,11 @@ pub fn start_async_codegen<B: ExtraBackendMethods>(
     let sess = tcx.sess;
     let crate_name = tcx.crate_name(LOCAL_CRATE);
     let crate_hash = tcx.crate_hash(LOCAL_CRATE);
-    let no_builtins = attr::contains_name(&tcx.hir().krate().attrs, "no_builtins");
+    let no_builtins = attr::contains_name(&tcx.hir().krate().attrs, sym::no_builtins);
     let subsystem = attr::first_attr_value_str_by_name(&tcx.hir().krate().attrs,
-                                                       "windows_subsystem");
+                                                       sym::windows_subsystem);
     let windows_subsystem = subsystem.map(|subsystem| {
-        if subsystem != "windows" && subsystem != "console" {
+        if subsystem != sym::windows && subsystem != sym::console {
             tcx.sess.fatal(&format!("invalid windows subsystem `{}`, only \
                                      `windows` and `console` are allowed",
                                     subsystem));
@@ -682,8 +682,10 @@ fn produce_final_output_artifacts(sess: &Session,
         }
 
         if !user_wants_bitcode {
-            if let Some(ref path) = compiled_modules.metadata_module.bytecode {
-                remove(sess, &path);
+            if let Some(ref metadata_module) = compiled_modules.metadata_module {
+                if let Some(ref path) = metadata_module.bytecode {
+                    remove(sess, &path);
+                }
             }
 
             if let Some(ref allocator_module) = compiled_modules.allocator_module {
@@ -1564,9 +1566,6 @@ fn start_executing_work<B: ExtraBackendMethods>(
         // out deterministic results.
         compiled_modules.sort_by(|a, b| a.name.cmp(&b.name));
 
-        let compiled_metadata_module = compiled_metadata_module
-            .expect("Metadata module not compiled?");
-
         Ok(CompiledModules {
             modules: compiled_modules,
             metadata_module: compiled_metadata_module,
@@ -1727,7 +1726,7 @@ impl SharedEmitter {
 }
 
 impl Emitter for SharedEmitter {
-    fn emit(&mut self, db: &DiagnosticBuilder<'_>) {
+    fn emit_diagnostic(&mut self, db: &DiagnosticBuilder<'_>) {
         drop(self.sender.send(SharedEmitterMessage::Diagnostic(Diagnostic {
             msg: db.message(),
             code: db.code.clone(),
@@ -1866,7 +1865,7 @@ impl<B: ExtraBackendMethods> OngoingCodegen<B> {
         self.wait_for_signal_to_codegen_item();
         self.check_for_errors(tcx.sess);
 
-        // These are generally cheap and won't through off scheduling.
+        // These are generally cheap and won't throw off scheduling.
         let cost = 0;
         submit_codegened_module_to_llvm(&self.backend, tcx, module, cost);
     }

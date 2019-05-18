@@ -1,5 +1,3 @@
-// ignore-tidy-linelength
-
 fn foo() -> i32 {
     42
 }
@@ -34,4 +32,3 @@ fn main() {
     //~| ERROR `fn(usize) -> Foo {Foo::Bar}` doesn't implement `std::fmt::Debug` [E0277]
     //~| ERROR `fn(usize) -> Foo {Foo::Bar}` doesn't implement `std::fmt::Debug` [E0277]
 }
-

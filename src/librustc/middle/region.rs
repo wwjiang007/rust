@@ -12,7 +12,6 @@ use crate::ty;
 
 use std::mem;
 use std::fmt;
-use rustc_data_structures::sync::Lrc;
 use rustc_macros::HashStable;
 use syntax::source_map;
 use syntax::ast;
@@ -885,17 +884,6 @@ fn resolve_expr<'a, 'tcx>(visitor: &mut RegionResolutionVisitor<'a, 'tcx>, expr:
                     terminating(r.hir_id.local_id);
             }
 
-            hir::ExprKind::If(ref expr, ref then, Some(ref otherwise)) => {
-                terminating(expr.hir_id.local_id);
-                terminating(then.hir_id.local_id);
-                terminating(otherwise.hir_id.local_id);
-            }
-
-            hir::ExprKind::If(ref expr, ref then, None) => {
-                terminating(expr.hir_id.local_id);
-                terminating(then.hir_id.local_id);
-            }
-
             hir::ExprKind::Loop(ref body, _, _) => {
                 terminating(body.hir_id.local_id);
             }
@@ -907,6 +895,12 @@ fn resolve_expr<'a, 'tcx>(visitor: &mut RegionResolutionVisitor<'a, 'tcx>, expr:
 
             hir::ExprKind::Match(..) => {
                 visitor.cx.var_parent = visitor.cx.parent;
+            }
+
+            hir::ExprKind::DropTemps(ref expr) => {
+                // `DropTemps(expr)` does not denote a conditional scope.
+                // Rather, we want to achieve the same behavior as `{ let _t = expr; _t }`.
+                terminating(expr.hir_id.local_id);
             }
 
             hir::ExprKind::AssignOp(..) | hir::ExprKind::Index(..) |
@@ -1323,7 +1317,7 @@ impl<'a, 'tcx> Visitor<'tcx> for RegionResolutionVisitor<'a, 'tcx> {
 }
 
 fn region_scope_tree<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId)
-    -> Lrc<ScopeTree>
+    -> &'tcx ScopeTree
 {
     let closure_base_def_id = tcx.closure_base_def_id(def_id);
     if closure_base_def_id != def_id {
@@ -1365,7 +1359,7 @@ fn region_scope_tree<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId)
         ScopeTree::default()
     };
 
-    Lrc::new(scope_tree)
+    tcx.arena.alloc(scope_tree)
 }
 
 pub fn provide(providers: &mut Providers<'_>) {

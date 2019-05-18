@@ -1,3 +1,5 @@
+// ignore-tidy-filelength
+
 //! Cross-platform path manipulation.
 //!
 //! This module provides two types, [`PathBuf`] and [`Path`][`Path`] (akin to [`String`]
@@ -886,6 +888,11 @@ impl<'a> Iterator for Iter<'a> {
     fn next(&mut self) -> Option<&'a OsStr> {
         self.inner.next().map(Component::as_os_str)
     }
+
+    #[inline]
+    fn last(mut self) -> Option<&'a OsStr> {
+        self.next_back()
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -948,6 +955,11 @@ impl<'a> Iterator for Components<'a> {
             }
         }
         None
+    }
+
+    #[inline]
+    fn last(mut self) -> Option<Self::Item> {
+        self.next_back()
     }
 }
 

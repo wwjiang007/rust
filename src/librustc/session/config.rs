@@ -1,3 +1,5 @@
+// ignore-tidy-filelength
+
 //! Contains infrastructure for configuring the compiler, including parsing
 //! command line options.
 
@@ -153,13 +155,12 @@ impl_stable_hash_via_hash!(OutputType);
 impl OutputType {
     fn is_compatible_with_codegen_units_and_single_output_file(&self) -> bool {
         match *self {
-            OutputType::Exe | OutputType::DepInfo => true,
+            OutputType::Exe | OutputType::DepInfo | OutputType::Metadata => true,
             OutputType::Bitcode
             | OutputType::Assembly
             | OutputType::LlvmAssembly
             | OutputType::Mir
-            | OutputType::Object
-            | OutputType::Metadata => false,
+            | OutputType::Object => false,
         }
     }
 
@@ -460,9 +461,7 @@ pub enum PrintRequest {
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BorrowckMode {
-    Ast,
     Mir,
-    Compare,
     Migrate,
 }
 
@@ -471,8 +470,6 @@ impl BorrowckMode {
     /// on the AST borrow check if the MIR-based one errors.
     pub fn migrate(self) -> bool {
         match self {
-            BorrowckMode::Ast => false,
-            BorrowckMode::Compare => false,
             BorrowckMode::Mir => false,
             BorrowckMode::Migrate => true,
         }
@@ -481,19 +478,8 @@ impl BorrowckMode {
     /// Should we emit the AST-based borrow checker errors?
     pub fn use_ast(self) -> bool {
         match self {
-            BorrowckMode::Ast => true,
-            BorrowckMode::Compare => true,
             BorrowckMode::Mir => false,
             BorrowckMode::Migrate => false,
-        }
-    }
-    /// Should we emit the MIR-based borrow checker errors?
-    pub fn use_mir(self) -> bool {
-        match self {
-            BorrowckMode::Ast => false,
-            BorrowckMode::Compare => true,
-            BorrowckMode::Mir => true,
-            BorrowckMode::Migrate => true,
         }
     }
 }
@@ -627,7 +613,7 @@ impl Default for Options {
             incremental: None,
             debugging_opts: basic_debugging_options(),
             prints: Vec::new(),
-            borrowck_mode: BorrowckMode::Ast,
+            borrowck_mode: BorrowckMode::Migrate,
             cg: basic_codegen_options(),
             error_format: ErrorOutputType::default(),
             externs: Externs(BTreeMap::new()),
@@ -1225,11 +1211,7 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
     identify_regions: bool = (false, parse_bool, [UNTRACKED],
         "make unnamed regions display as '# (where # is some non-ident unique id)"),
     borrowck: Option<String> = (None, parse_opt_string, [UNTRACKED],
-        "select which borrowck is used (`ast`, `mir`, `migrate`, or `compare`)"),
-    two_phase_borrows: bool = (false, parse_bool, [UNTRACKED],
-        "use two-phase reserved/active distinction for `&mut` borrows in MIR borrowck"),
-    two_phase_beyond_autoref: bool = (false, parse_bool, [UNTRACKED],
-        "when using two-phase-borrows, allow two phases even for non-autoref `&mut` borrows"),
+        "select which borrowck is used (`mir` or `migrate`)"),
     time_passes: bool = (false, parse_bool, [UNTRACKED],
         "measure time of each rustc pass"),
     time: bool = (false, parse_bool, [UNTRACKED],
@@ -1480,6 +1462,8 @@ options! {DebuggingOptions, DebuggingSetter, basic_debugging_options,
          the same values as the target option of the same name"),
     allow_features: Option<Vec<String>> = (None, parse_opt_comma_list, [TRACKED],
         "only allow the listed language features to be enabled in code (space separated)"),
+    emit_artifact_notifications: bool = (false, parse_bool, [UNTRACKED],
+        "emit notifications after each artifact has been output (only in the JSON format)"),
 }
 
 pub fn default_lib_output() -> CrateType {
@@ -1760,8 +1744,7 @@ pub fn rustc_short_optgroups() -> Vec<RustcOptGroup> {
         opt::multi_s(
             "",
             "print",
-            "Comma separated list of compiler information to \
-             print on stdout",
+            "Compiler information to print on stdout",
             "[crate-name|file-names|sysroot|cfg|target-list|\
              target-cpus|target-features|relocation-models|\
              code-models|tls-models|target-spec-json|native-static-libs]",
@@ -2197,10 +2180,21 @@ pub fn build_session_options_and_crate_config(
         TargetTriple::from_triple(host_triple())
     };
     let opt_level = {
-        if matches.opt_present("O") {
-            if cg.opt_level.is_some() {
-                early_error(error_format, "-O and -C opt-level both provided");
+        // The `-O` and `-C opt-level` flags specify the same setting, so we want to be able
+        // to use them interchangeably. However, because they're technically different flags,
+        // we need to work out manually which should take precedence if both are supplied (i.e.
+        // the rightmost flag). We do this by finding the (rightmost) position of both flags and
+        // comparing them. Note that if a flag is not found, its position will be `None`, which
+        // always compared less than `Some(_)`.
+        let max_o = matches.opt_positions("O").into_iter().max();
+        let max_c = matches.opt_strs_pos("C").into_iter().flat_map(|(i, s)| {
+            if let Some("opt-level") = s.splitn(2, '=').next() {
+                Some(i)
+            } else {
+                None
             }
+        }).max();
+        if max_o > max_c {
             OptLevel::Default
         } else {
             match cg.opt_level.as_ref().map(String::as_ref) {
@@ -2224,11 +2218,19 @@ pub fn build_session_options_and_crate_config(
             }
         }
     };
+    // The `-g` and `-C debuginfo` flags specify the same setting, so we want to be able
+    // to use them interchangeably. See the note above (regarding `-O` and `-C opt-level`)
+    // for more details.
     let debug_assertions = cg.debug_assertions.unwrap_or(opt_level == OptLevel::No);
-    let debuginfo = if matches.opt_present("g") {
-        if cg.debuginfo.is_some() {
-            early_error(error_format, "-g and -C debuginfo both provided");
+    let max_g = matches.opt_positions("g").into_iter().max();
+    let max_c = matches.opt_strs_pos("C").into_iter().flat_map(|(i, s)| {
+        if let Some("debuginfo") = s.splitn(2, '=').next() {
+            Some(i)
+        } else {
+            None
         }
+    }).max();
+    let debuginfo = if max_g > max_c {
         DebugInfo::Full
     } else {
         match cg.debuginfo {
@@ -2326,10 +2328,8 @@ pub fn build_session_options_and_crate_config(
     }));
 
     let borrowck_mode = match debugging_opts.borrowck.as_ref().map(|s| &s[..]) {
-        None | Some("ast") => BorrowckMode::Ast,
+        None | Some("migrate") => BorrowckMode::Migrate,
         Some("mir") => BorrowckMode::Mir,
-        Some("compare") => BorrowckMode::Compare,
-        Some("migrate") => BorrowckMode::Migrate,
         Some(m) => early_error(error_format, &format!("unknown borrowck mode `{}`", m)),
     };
 
@@ -2752,6 +2752,7 @@ mod tests {
     // another --cfg test
     #[test]
     fn test_switch_implies_cfg_test_unless_cfg_test() {
+        use syntax::symbol::sym;
         syntax::with_globals(|| {
             let matches = &match optgroups().parse(&["--test".to_string(),
                                                      "--cfg=test".to_string()]) {
@@ -2762,7 +2763,7 @@ mod tests {
             let (sessopts, cfg) = build_session_options_and_crate_config(matches);
             let sess = build_session(sessopts, None, registry);
             let cfg = build_configuration(&sess, to_crate_config(cfg));
-            let mut test_items = cfg.iter().filter(|&&(name, _)| name == "test");
+            let mut test_items = cfg.iter().filter(|&&(name, _)| name == sym::test);
             assert!(test_items.next().is_some());
             assert!(test_items.next().is_none());
         });

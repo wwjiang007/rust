@@ -1,4 +1,5 @@
-// ignore-tidy-linelength
+// ignore-tidy-filelength
+
 #![allow(non_snake_case)]
 
 register_long_diagnostics! {
@@ -1941,9 +1942,11 @@ E0207: r##"
 Any type parameter or lifetime parameter of an `impl` must meet at least one of
 the following criteria:
 
- - it appears in the self type of the impl
- - for a trait impl, it appears in the trait reference
- - it is bound as an associated type
+ - it appears in the _implementing type_ of the impl, e.g. `impl<T> Foo<T>`
+ - for a trait impl, it appears in the _implemented trait_, e.g.
+   `impl<T> SomeTrait<T> for Foo`
+ - it is bound as an associated type, e.g. `impl<T, U> SomeTrait for T
+   where T: AnotherTrait<AssocType=U>`
 
 ### Error example 1
 
@@ -1962,9 +1965,9 @@ impl<T: Default> Foo {
 }
 ```
 
-The problem is that the parameter `T` does not appear in the self type (`Foo`)
-of the impl. In this case, we can fix the error by moving the type parameter
-from the `impl` to the method `get`:
+The problem is that the parameter `T` does not appear in the implementing type
+(`Foo`) of the impl. In this case, we can fix the error by moving the type
+parameter from the `impl` to the method `get`:
 
 
 ```
@@ -4728,7 +4731,6 @@ register_diagnostics! {
     E0640, // infer outlives requirements
     E0641, // cannot cast to/from a pointer with an unknown kind
     E0645, // trait aliases not finished
-    E0698, // type inside generator must be known in this context
     E0719, // duplicate values for associated type binding
     E0722, // Malformed #[optimize] attribute
     E0724, // `#[ffi_returns_twice]` is only allowed in foreign functions

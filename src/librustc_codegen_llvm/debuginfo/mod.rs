@@ -63,7 +63,7 @@ pub struct CrateDebugContext<'a, 'tcx> {
     llcontext: &'a llvm::Context,
     llmod: &'a llvm::Module,
     builder: &'a mut DIBuilder<'a>,
-    created_files: RefCell<FxHashMap<(Symbol, Symbol), &'a DIFile>>,
+    created_files: RefCell<FxHashMap<(Option<Symbol>, Option<Symbol>), &'a DIFile>>,
     created_enum_disr_types: RefCell<FxHashMap<(DefId, layout::Primitive), &'a DIType>>,
 
     type_map: RefCell<TypeMap<'a, 'tcx>>,
@@ -392,7 +392,7 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
                 if let ty::Tuple(args) = sig.inputs()[sig.inputs().len() - 1].sty {
                     signature.extend(
                         args.iter().map(|argument_type| {
-                            Some(type_metadata(cx, argument_type, syntax_pos::DUMMY_SP))
+                            Some(type_metadata(cx, argument_type.expect_ty(), syntax_pos::DUMMY_SP))
                         })
                     );
                 }
@@ -542,7 +542,7 @@ impl DebugInfoMethods<'tcx> for CodegenCx<'ll, 'tcx> {
         finalize(self)
     }
 
-    fn debuginfo_upvar_decls_ops_sequence(&self, byte_offset_of_var_in_env: u64) -> [i64; 4] {
+    fn debuginfo_upvar_ops_sequence(&self, byte_offset_of_var_in_env: u64) -> [i64; 4] {
         unsafe {
             [llvm::LLVMRustDIBuilderCreateOpDeref(),
              llvm::LLVMRustDIBuilderCreateOpPlusUconst(),

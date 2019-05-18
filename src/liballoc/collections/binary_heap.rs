@@ -207,6 +207,30 @@ use super::SpecExtend;
 /// // The heap should now be empty.
 /// assert!(heap.is_empty())
 /// ```
+///
+/// ## Min-heap
+///
+/// Either `std::cmp::Reverse` or a custom `Ord` implementation can be used to
+/// make `BinaryHeap` a min-heap. This makes `heap.pop()` return the smallest
+/// value instead of the greatest one.
+///
+/// ```
+/// use std::collections::BinaryHeap;
+/// use std::cmp::Reverse;
+///
+/// let mut heap = BinaryHeap::new();
+///
+/// // Wrap values in `Reverse`
+/// heap.push(Reverse(1));
+/// heap.push(Reverse(5));
+/// heap.push(Reverse(2));
+///
+/// // If we pop these scores now, they should come back in the reverse order.
+/// assert_eq!(heap.pop(), Some(Reverse(1)));
+/// assert_eq!(heap.pop(), Some(Reverse(2)));
+/// assert_eq!(heap.pop(), Some(Reverse(5)));
+/// assert_eq!(heap.pop(), None);
+/// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct BinaryHeap<T> {
     data: Vec<T>,
@@ -968,6 +992,11 @@ impl<'a, T> Iterator for Iter<'a, T> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
     }
+
+    #[inline]
+    fn last(mut self) -> Option<&'a T> {
+        self.next_back()
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1023,6 +1052,11 @@ impl<T> Iterator for IntoIter<T> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
     }
+
+    #[inline]
+    fn last(mut self) -> Option<T> {
+        self.next_back()
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1068,6 +1102,11 @@ impl<T> Iterator for Drain<'_, T> {
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
+    }
+
+    #[inline]
+    fn last(mut self) -> Option<T> {
+        self.next_back()
     }
 }
 
