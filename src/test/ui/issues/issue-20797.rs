@@ -1,4 +1,4 @@
-// compile-pass
+// build-pass
 // ignore-cloudabi no std::fs
 
 // Regression test for #20797.

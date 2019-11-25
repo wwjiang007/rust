@@ -1,9 +1,6 @@
 //! Auto-generate stub docs for the unstable book
 
-#![deny(rust_2018_idioms)]
 #![deny(warnings)]
-
-
 
 use tidy::features::{Feature, Features, collect_lib_features, collect_lang_features};
 use tidy::unstable_book::{collect_unstable_feature_names, collect_unstable_book_section_file_names,

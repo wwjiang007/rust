@@ -13,17 +13,30 @@ fn bar(y: bool) -> X {
     return (X { y }); //~ ERROR unnecessary parentheses around `return` value
 }
 
+fn unused_parens_around_return_type() -> (u32) { //~ ERROR unnecessary parentheses around type
+    panic!()
+}
+
+trait Trait {
+    fn test(&self);
+}
+
+fn passes_unused_parens_lint() -> &'static (dyn Trait) {
+    panic!()
+}
+
 fn main() {
     foo();
     bar((true)); //~ ERROR unnecessary parentheses around function argument
 
     if (true) {} //~ ERROR unnecessary parentheses around `if` condition
     while (true) {} //~ ERROR unnecessary parentheses around `while` condition
+    //~^ WARN denote infinite loops with
     match (true) { //~ ERROR unnecessary parentheses around `match` head expression
         _ => {}
     }
-    if let 1 = (1) {} //~ ERROR unnecessary parentheses around `if let` head expression
-    while let 1 = (2) {} //~ ERROR unnecessary parentheses around `while let` head expression
+    if let 1 = (1) {} //~ ERROR unnecessary parentheses around `let` head expression
+    while let 1 = (2) {} //~ ERROR unnecessary parentheses around `let` head expression
     let v = X { y: false };
     // struct lits needs parens, so these shouldn't warn.
     if (v == X { y: true }) {}

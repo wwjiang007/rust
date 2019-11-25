@@ -9,9 +9,12 @@ use std::str;
 
 use crate::llvm::archive_ro::{ArchiveRO, Child};
 use crate::llvm::{self, ArchiveKind};
-use rustc_codegen_ssa::{METADATA_FILENAME, RLIB_BYTECODE_EXTENSION};
+use rustc_codegen_ssa::{
+    METADATA_FILENAME, RLIB_BYTECODE_EXTENSION, looks_like_rust_object_file
+};
 use rustc_codegen_ssa::back::archive::{ArchiveBuilder, find_library};
 use rustc::session::Session;
+use syntax::symbol::Symbol;
 
 struct ArchiveConfig<'a> {
     pub sess: &'a Session,
@@ -36,9 +39,18 @@ enum Addition {
         name_in_archive: String,
     },
     Archive {
+        path: PathBuf,
         archive: ArchiveRO,
         skip: Box<dyn FnMut(&str) -> bool>,
     },
+}
+
+impl Addition {
+    fn path(&self) -> &Path {
+        match self {
+            Addition::File { path, .. } | Addition::Archive { path, .. } => path,
+        }
+    }
 }
 
 fn is_relevant_child(c: &Child<'_>) -> bool {
@@ -100,7 +112,7 @@ impl<'a> ArchiveBuilder<'a> for LlvmArchiveBuilder<'a> {
 
     /// Adds all of the contents of a native library to this archive. This will
     /// search in the relevant locations for a library named `name`.
-    fn add_native_library(&mut self, name: &str) {
+    fn add_native_library(&mut self, name: Symbol) {
         let location = find_library(name, &self.config.lib_search_paths,
                                     self.config.sess);
         self.add_archive(&location, |_| false).unwrap_or_else(|e| {
@@ -131,7 +143,7 @@ impl<'a> ArchiveBuilder<'a> for LlvmArchiveBuilder<'a> {
             }
 
             // Don't include Rust objects if LTO is enabled
-            if lto && fname.starts_with(&obj_start) && fname.ends_with(".o") {
+            if lto && looks_like_rust_object_file(fname) {
                 return true
             }
 
@@ -188,12 +200,16 @@ impl<'a> LlvmArchiveBuilder<'a> {
                       -> io::Result<()>
         where F: FnMut(&str) -> bool + 'static
     {
-        let archive = match ArchiveRO::open(archive) {
+        let archive_ro = match ArchiveRO::open(archive) {
             Ok(ar) => ar,
             Err(e) => return Err(io::Error::new(io::ErrorKind::Other, e)),
         };
+        if self.additions.iter().any(|ar| ar.path() == archive) {
+            return Ok(())
+        }
         self.additions.push(Addition::Archive {
-            archive,
+            path: archive.to_path_buf(),
+            archive: archive_ro,
             skip: Box::new(skip),
         });
         Ok(())
@@ -205,8 +221,8 @@ impl<'a> LlvmArchiveBuilder<'a> {
     }
 
     fn build_with_llvm(&mut self, kind: ArchiveKind) -> io::Result<()> {
-        let removals = mem::replace(&mut self.removals, Vec::new());
-        let mut additions = mem::replace(&mut self.additions, Vec::new());
+        let removals = mem::take(&mut self.removals);
+        let mut additions = mem::take(&mut self.additions);
         let mut strings = Vec::new();
         let mut members = Vec::new();
 
@@ -243,7 +259,7 @@ impl<'a> LlvmArchiveBuilder<'a> {
                         strings.push(path);
                         strings.push(name);
                     }
-                    Addition::Archive { archive, skip } => {
+                    Addition::Archive { archive, skip, .. } => {
                         for child in archive.iter() {
                             let child = child.map_err(string_to_io_error)?;
                             if !is_relevant_child(&child) {

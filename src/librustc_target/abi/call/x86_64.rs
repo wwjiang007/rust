@@ -1,7 +1,7 @@
 // The classification code for the x86_64 ABI is taken from the clay language
 // https://github.com/jckarter/clay/blob/master/compiler/src/externals.cpp
 
-use crate::abi::call::{ArgType, CastTarget, FnType, Reg, RegKind};
+use crate::abi::call::{ArgAbi, CastTarget, FnAbi, Reg, RegKind};
 use crate::abi::{self, Abi, HasDataLayout, LayoutOf, Size, TyLayout, TyLayoutMethods};
 
 /// Classification of "eightbyte" components.
@@ -21,7 +21,7 @@ struct Memory;
 const LARGEST_VECTOR_SIZE: usize = 512;
 const MAX_EIGHTBYTES: usize = LARGEST_VECTOR_SIZE / 64;
 
-fn classify_arg<'a, Ty, C>(cx: &C, arg: &ArgType<'a, Ty>)
+fn classify_arg<'a, Ty, C>(cx: &C, arg: &ArgAbi<'a, Ty>)
                           -> Result<[Option<Class>; MAX_EIGHTBYTES], Memory>
     where Ty: TyLayoutMethods<'a, C> + Copy,
           C: LayoutOf<Ty = Ty, TyLayout = TyLayout<'a, Ty>> + HasDataLayout
@@ -45,7 +45,7 @@ fn classify_arg<'a, Ty, C>(cx: &C, arg: &ArgType<'a, Ty>)
                 match scalar.value {
                     abi::Int(..) |
                     abi::Pointer => Class::Int,
-                    abi::Float(_) => Class::Sse
+                    abi::F32 | abi::F64 => Class::Sse
                 }
             }
 
@@ -167,20 +167,23 @@ fn cast_target(cls: &[Option<Class>], size: Size) -> CastTarget {
     target
 }
 
-pub fn compute_abi_info<'a, Ty, C>(cx: &C, fty: &mut FnType<'a, Ty>)
+const MAX_INT_REGS: usize = 6; // RDI, RSI, RDX, RCX, R8, R9
+const MAX_SSE_REGS: usize = 8; // XMM0-7
+
+pub fn compute_abi_info<'a, Ty, C>(cx: &C, fn_abi: &mut FnAbi<'a, Ty>)
     where Ty: TyLayoutMethods<'a, C> + Copy,
           C: LayoutOf<Ty = Ty, TyLayout = TyLayout<'a, Ty>> + HasDataLayout
 {
-    let mut int_regs = 6; // RDI, RSI, RDX, RCX, R8, R9
-    let mut sse_regs = 8; // XMM0-7
+    let mut int_regs = MAX_INT_REGS;
+    let mut sse_regs = MAX_SSE_REGS;
 
-    let mut x86_64_ty = |arg: &mut ArgType<'a, Ty>, is_arg: bool| {
+    let mut x86_64_arg_or_ret = |arg: &mut ArgAbi<'a, Ty>, is_arg: bool| {
         let mut cls_or_mem = classify_arg(cx, arg);
 
-        let mut needed_int = 0;
-        let mut needed_sse = 0;
         if is_arg {
             if let Ok(cls) = cls_or_mem {
+                let mut needed_int = 0;
+                let mut needed_sse = 0;
                 for &c in &cls {
                     match c {
                         Some(Class::Int) => needed_int += 1,
@@ -188,8 +191,20 @@ pub fn compute_abi_info<'a, Ty, C>(cx: &C, fty: &mut FnType<'a, Ty>)
                         _ => {}
                     }
                 }
-                if arg.layout.is_aggregate() && (int_regs < needed_int || sse_regs < needed_sse) {
-                    cls_or_mem = Err(Memory);
+                match (int_regs.checked_sub(needed_int), sse_regs.checked_sub(needed_sse)) {
+                    (Some(left_int), Some(left_sse)) => {
+                        int_regs = left_int;
+                        sse_regs = left_sse;
+                    }
+                    _ => {
+                        // Not enough registers for this argument, so it will be
+                        // passed on the stack, but we only mark aggregates
+                        // explicitly as indirect `byval` arguments, as LLVM will
+                        // automatically put immediates on the stack itself.
+                        if arg.layout.is_aggregate() {
+                            cls_or_mem = Err(Memory);
+                        }
+                    }
                 }
             }
         }
@@ -201,14 +216,14 @@ pub fn compute_abi_info<'a, Ty, C>(cx: &C, fty: &mut FnType<'a, Ty>)
                 } else {
                     // `sret` parameter thus one less integer register available
                     arg.make_indirect();
+                    // NOTE(eddyb) return is handled first, so no registers
+                    // should've been used yet.
+                    assert_eq!(int_regs, MAX_INT_REGS);
                     int_regs -= 1;
                 }
             }
             Ok(ref cls) => {
                 // split into sized chunks passed individually
-                int_regs -= needed_int;
-                sse_regs -= needed_sse;
-
                 if arg.layout.is_aggregate() {
                     let size = arg.layout.size;
                     arg.cast_to(cast_target(cls, size))
@@ -219,12 +234,12 @@ pub fn compute_abi_info<'a, Ty, C>(cx: &C, fty: &mut FnType<'a, Ty>)
         }
     };
 
-    if !fty.ret.is_ignore() {
-        x86_64_ty(&mut fty.ret, false);
+    if !fn_abi.ret.is_ignore() {
+        x86_64_arg_or_ret(&mut fn_abi.ret, false);
     }
 
-    for arg in &mut fty.args {
+    for arg in &mut fn_abi.args {
         if arg.is_ignore() { continue; }
-        x86_64_ty(arg, true);
+        x86_64_arg_or_ret(arg, true);
     }
 }

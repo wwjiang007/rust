@@ -4,11 +4,13 @@ use crate::build::expr::category::{Category, RvalueFunc};
 use crate::build::{BlockAnd, BlockAndExtension, BlockFrame, Builder};
 use crate::hair::*;
 use rustc::mir::*;
-use rustc::ty;
+use rustc::ty::{self, CanonicalUserTypeAnnotation};
+use rustc_data_structures::fx::FxHashMap;
+use syntax_pos::symbol::sym;
 
 use rustc_target::spec::abi::Abi;
 
-impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// Compile `expr`, storing the result into `destination`, which
     /// is assumed to be uninitialized.
     pub fn into_expr(
@@ -46,7 +48,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 value,
             } => {
                 let region_scope = (region_scope, source_info);
-                this.in_scope(region_scope, lint_level, block, |this| {
+                this.in_scope(region_scope, lint_level, |this| {
                     this.into(destination, block, value)
                 })
             }
@@ -79,17 +81,18 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             ExprKind::LogicalOp { op, lhs, rhs } => {
                 // And:
                 //
-                // [block: If(lhs)] -true-> [else_block: dest = (rhs)]
-                //        | (false)
-                //  [shortcurcuit_block: dest = false]
+                // [block: If(lhs)] -true-> [else_block: If(rhs)] -true-> [true_block]
+                //        |                          | (false)
+                //        +----------false-----------+------------------> [false_block]
                 //
                 // Or:
                 //
-                // [block: If(lhs)] -false-> [else_block: dest = (rhs)]
-                //        | (true)
-                //  [shortcurcuit_block: dest = true]
+                // [block: If(lhs)] -false-> [else_block: If(rhs)] -true-> [true_block]
+                //        | (true)                   | (false)
+                //  [true_block]               [false_block]
 
-                let (shortcircuit_block, mut else_block, join_block) = (
+                let (true_block, false_block, mut else_block, join_block) = (
+                    this.cfg.start_new_block(),
                     this.cfg.start_new_block(),
                     this.cfg.start_new_block(),
                     this.cfg.start_new_block(),
@@ -97,60 +100,52 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
                 let lhs = unpack!(block = this.as_local_operand(block, lhs));
                 let blocks = match op {
-                    LogicalOp::And => (else_block, shortcircuit_block),
-                    LogicalOp::Or => (shortcircuit_block, else_block),
+                    LogicalOp::And => (else_block, false_block),
+                    LogicalOp::Or => (true_block, else_block),
                 };
                 let term = TerminatorKind::if_(this.hir.tcx(), lhs, blocks.0, blocks.1);
                 this.cfg.terminate(block, source_info, term);
 
+                let rhs = unpack!(else_block = this.as_local_operand(else_block, rhs));
+                let term = TerminatorKind::if_(this.hir.tcx(), rhs, true_block, false_block);
+                this.cfg.terminate(else_block, source_info, term);
+
                 this.cfg.push_assign_constant(
-                    shortcircuit_block,
+                    true_block,
                     source_info,
                     destination,
                     Constant {
                         span: expr_span,
-                        ty: this.hir.bool_ty(),
                         user_ty: None,
-                        literal: match op {
-                            LogicalOp::And => this.hir.false_literal(),
-                            LogicalOp::Or => this.hir.true_literal(),
-                        },
+                        literal: this.hir.true_literal(),
                     },
                 );
+
+                this.cfg.push_assign_constant(
+                    false_block,
+                    source_info,
+                    destination,
+                    Constant {
+                        span: expr_span,
+                        user_ty: None,
+                        literal: this.hir.false_literal(),
+                    },
+                );
+
                 this.cfg.terminate(
-                    shortcircuit_block,
+                    true_block,
                     source_info,
                     TerminatorKind::Goto { target: join_block },
                 );
-
-                let rhs = unpack!(else_block = this.as_local_operand(else_block, rhs));
-                this.cfg.push_assign(
-                    else_block,
-                    source_info,
-                    destination,
-                    Rvalue::Use(rhs),
-                );
                 this.cfg.terminate(
-                    else_block,
+                    false_block,
                     source_info,
                     TerminatorKind::Goto { target: join_block },
                 );
 
                 join_block.unit()
             }
-            ExprKind::Loop {
-                condition: opt_cond_expr,
-                body,
-            } => {
-                // [block] --> [loop_block] -/eval. cond./-> [loop_block_end] -1-> [exit_block]
-                //                  ^                               |
-                //                  |                               0
-                //                  |                               |
-                //                  |                               v
-                //           [body_block_end] <-/eval. body/-- [body_block]
-                //
-                // If `opt_cond_expr` is `None`, then the graph is somewhat simplified:
-                //
+            ExprKind::Loop { body } => {
                 // [block]
                 //    |
                 //   [loop_block] -> [body_block] -/eval. body/-> [body_block_end]
@@ -177,34 +172,16 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     destination.clone(),
                     move |this| {
                         // conduct the test, if necessary
-                        let body_block;
-                        if let Some(cond_expr) = opt_cond_expr {
-                            let loop_block_end;
-                            let cond = unpack!(
-                                loop_block_end = this.as_local_operand(loop_block, cond_expr)
-                            );
-                            body_block = this.cfg.start_new_block();
-                            let term =
-                                TerminatorKind::if_(this.hir.tcx(), cond, body_block, exit_block);
-                            this.cfg.terminate(loop_block_end, source_info, term);
-
-                            // if the test is false, there's no `break` to assign `destination`, so
-                            // we have to do it; this overwrites any `break`-assigned value but it's
-                            // always `()` anyway
-                            this.cfg
-                                .push_assign_unit(exit_block, source_info, destination);
-                        } else {
-                            body_block = this.cfg.start_new_block();
-                            let diverge_cleanup = this.diverge_cleanup();
-                            this.cfg.terminate(
-                                loop_block,
-                                source_info,
-                                TerminatorKind::FalseUnwind {
-                                    real_target: body_block,
-                                    unwind: Some(diverge_cleanup),
-                                },
-                            )
-                        }
+                        let body_block = this.cfg.start_new_block();
+                        let diverge_cleanup = this.diverge_cleanup();
+                        this.cfg.terminate(
+                            loop_block,
+                            source_info,
+                            TerminatorKind::FalseUnwind {
+                                real_target: body_block,
+                                unwind: Some(diverge_cleanup),
+                            },
+                        );
 
                         // The “return” value of the loop body must always be an unit. We therefore
                         // introduce a unit temporary as the destination for the loop body.
@@ -221,20 +198,19 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 exit_block.unit()
             }
             ExprKind::Call { ty, fun, args, from_hir_call } => {
-                let intrinsic = match ty.sty {
+                let intrinsic = match ty.kind {
                     ty::FnDef(def_id, _) => {
                         let f = ty.fn_sig(this.hir.tcx());
                         if f.abi() == Abi::RustIntrinsic || f.abi() == Abi::PlatformIntrinsic {
-                            Some(this.hir.tcx().item_name(def_id).as_str())
+                            Some(this.hir.tcx().item_name(def_id))
                         } else {
                             None
                         }
                     }
                     _ => None,
                 };
-                let intrinsic = intrinsic.as_ref().map(|s| &s[..]);
                 let fun = unpack!(block = this.as_local_operand(block, fun));
-                if intrinsic == Some("move_val_init") {
+                if let Some(sym::move_val_init) = intrinsic {
                     // `move_val_init` has "magic" semantics - the second argument is
                     // always evaluated "directly" into the first one.
 
@@ -255,12 +231,12 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                         source_info,
                         visibility_scope: source_info.scope,
                         internal: true,
-                        is_user_variable: None,
+                        local_info: LocalInfo::Other,
                         is_block_tail: None,
                     });
-                    let ptr_temp = Place::Base(PlaceBase::Local(ptr_temp));
+                    let ptr_temp = Place::from(ptr_temp);
                     let block = unpack!(this.into(&ptr_temp, block, ptr));
-                    this.into(&ptr_temp.deref(), block, val)
+                    this.into(&this.hir.tcx().mk_place_deref(ptr_temp), block, val)
                 } else {
                     let args: Vec<_> = args
                         .into_iter()
@@ -269,6 +245,9 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
                     let success = this.cfg.start_new_block();
                     let cleanup = this.diverge_cleanup();
+
+                    this.record_operands_moved(&args);
+
                     this.cfg.terminate(
                         block,
                         source_info,
@@ -293,6 +272,102 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             ExprKind::Use { source } => {
                 this.into(destination, block, source)
             }
+            ExprKind::Borrow { arg, borrow_kind } => {
+                // We don't do this in `as_rvalue` because we use `as_place`
+                // for borrow expressions, so we cannot create an `RValue` that
+                // remains valid across user code. `as_rvalue` is usually called
+                // by this method anyway, so this shouldn't cause too many
+                // unnecessary temporaries.
+                let arg_place = match borrow_kind {
+                    BorrowKind::Shared => unpack!(block = this.as_read_only_place(block, arg)),
+                    _ => unpack!(block = this.as_place(block, arg)),
+                };
+                let borrow = Rvalue::Ref(
+                    this.hir.tcx().lifetimes.re_erased,
+                    borrow_kind,
+                    arg_place,
+                );
+                this.cfg.push_assign(block, source_info, destination, borrow);
+                block.unit()
+            }
+            ExprKind::Adt {
+                adt_def,
+                variant_index,
+                substs,
+                user_ty,
+                fields,
+                base,
+            } => {
+                // See the notes for `ExprKind::Array` in `as_rvalue` and for
+                // `ExprKind::Borrow` above.
+                let is_union = adt_def.is_union();
+                let active_field_index = if is_union {
+                    Some(fields[0].name.index())
+                } else {
+                    None
+                };
+
+                let scope =  this.local_scope();
+
+                // first process the set of fields that were provided
+                // (evaluating them in order given by user)
+                let fields_map: FxHashMap<_, _> = fields
+                    .into_iter()
+                    .map(|f| {
+                        (
+                            f.name,
+                            unpack!(block = this.as_operand(block, scope, f.expr)),
+                        )
+                    }).collect();
+
+                let field_names = this.hir.all_fields(adt_def, variant_index);
+
+                let fields = if let Some(FruInfo { base, field_types }) = base {
+                    let base = unpack!(block = this.as_place(block, base));
+
+                    // MIR does not natively support FRU, so for each
+                    // base-supplied field, generate an operand that
+                    // reads it from the base.
+                    field_names
+                        .into_iter()
+                        .zip(field_types.into_iter())
+                        .map(|(n, ty)| match fields_map.get(&n) {
+                            Some(v) => v.clone(),
+                            None => this.consume_by_copy_or_move(
+                                this.hir.tcx().mk_place_field(base.clone(), n, ty),
+                            ),
+                        }).collect()
+                } else {
+                    field_names
+                        .iter()
+                        .filter_map(|n| fields_map.get(n).cloned())
+                        .collect()
+                };
+
+                let inferred_ty = expr.ty;
+                let user_ty = user_ty.map(|ty| {
+                    this.canonical_user_type_annotations.push(CanonicalUserTypeAnnotation {
+                        span: source_info.span,
+                        user_ty: ty,
+                        inferred_ty,
+                    })
+                });
+                let adt = box AggregateKind::Adt(
+                    adt_def,
+                    variant_index,
+                    substs,
+                    user_ty,
+                    active_field_index,
+                );
+                this.cfg.push_assign(
+                    block,
+                    source_info,
+                    destination,
+                    Rvalue::Aggregate(adt, fields)
+                );
+                block.unit()
+            }
+
 
             // These cases don't actually need a destination
             ExprKind::Assign { .. }
@@ -309,7 +384,6 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             // Avoid creating a temporary
             ExprKind::VarRef { .. } |
             ExprKind::SelfRef |
-            ExprKind::StaticRef { .. } |
             ExprKind::PlaceTypeAscription { .. } |
             ExprKind::ValueTypeAscription { .. } => {
                 debug_assert!(Category::of(&expr.kind) == Some(Category::Place));
@@ -326,7 +400,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 // Create a "fake" temporary variable so that we check that the
                 // value is Sized. Usually, this is caught in type checking, but
                 // in the case of box expr there is no such check.
-                if let Place::Projection(..) = destination {
+                if !destination.projection.is_empty() {
                     this.local_decls
                         .push(LocalDecl::new_temp(expr.ty, expr.span));
                 }
@@ -347,12 +421,11 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             | ExprKind::Cast { .. }
             | ExprKind::Pointer { .. }
             | ExprKind::Repeat { .. }
-            | ExprKind::Borrow { .. }
             | ExprKind::Array { .. }
             | ExprKind::Tuple { .. }
-            | ExprKind::Adt { .. }
             | ExprKind::Closure { .. }
             | ExprKind::Literal { .. }
+            | ExprKind::StaticRef { .. }
             | ExprKind::Yield { .. } => {
                 debug_assert!(match Category::of(&expr.kind).unwrap() {
                     // should be handled above

@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 #![allow(dead_code)]
 #![allow(stable_features)]
 #![feature(associated_consts)]

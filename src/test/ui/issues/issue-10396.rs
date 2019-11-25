@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 #![allow(dead_code)]
 #[derive(Debug)]
 enum Foo<'s> {

@@ -2,6 +2,8 @@ use crate::fmt::{Formatter, Result, LowerExp, UpperExp, Display, Debug};
 use crate::mem::MaybeUninit;
 use crate::num::flt2dec;
 
+// ignore-tidy-undocumented-unsafe
+
 // Don't inline this so callers don't use the stack space this function
 // requires unless they have to.
 #[inline(never)]
@@ -12,10 +14,11 @@ fn float_to_decimal_common_exact<T>(fmt: &mut Formatter<'_>, num: &T,
     unsafe {
         let mut buf = MaybeUninit::<[u8; 1024]>::uninit(); // enough for f32 and f64
         let mut parts = MaybeUninit::<[flt2dec::Part<'_>; 4]>::uninit();
-        // FIXME(#53491): Technically, this is calling `get_mut` on an uninitialized
-        // `MaybeUninit` (here and elsewhere in this file).  Revisit this once
+        // FIXME(#53491): This is calling `get_mut` on an uninitialized
+        // `MaybeUninit` (here and elsewhere in this file). Revisit this once
         // we decided whether that is valid or not.
-        // Using `freeze` is *not enough*; `flt2dec::Part` is an enum!
+        // We can do this only because we are libstd and coupled to the compiler.
+        // (FWIW, using `freeze` would not be enough; `flt2dec::Part` is an enum!)
         let formatted = flt2dec::to_exact_fixed_str(flt2dec::strategy::grisu::format_exact,
                                                     *num, sign, precision,
                                                     false, buf.get_mut(), parts.get_mut());

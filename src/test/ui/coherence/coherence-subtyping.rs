@@ -5,9 +5,7 @@
 // universe transition (#56105) may eventually become an error.
 
 // revisions: old re
-// compile-pass
-
-#![cfg_attr(re, feature(re_rebalance_coherence))]
+// build-pass (FIXME(62277): could be check-pass?)
 
 trait TheTrait {
     fn foo(&self) { }

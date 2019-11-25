@@ -1,3 +1,6 @@
+#![allow(non_camel_case_types)]
+#![allow(non_upper_case_globals)]
+
 use super::debuginfo::{
     DIBuilder, DIDescriptor, DIFile, DILexicalBlock, DISubprogram, DIType,
     DIBasicType, DIDerivedType, DICompositeType, DIScope, DIVariable,
@@ -47,7 +50,7 @@ pub enum CallConv {
 }
 
 /// LLVMRustLinkage
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
+#[derive(PartialEq)]
 #[repr(C)]
 pub enum Linkage {
     ExternalLinkage = 0,
@@ -64,7 +67,6 @@ pub enum Linkage {
 }
 
 // LLVMRustVisibility
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 #[repr(C)]
 pub enum Visibility {
     Default = 0,
@@ -507,6 +509,7 @@ extern { pub type Module; }
 extern { pub type Context; }
 extern { pub type Type; }
 extern { pub type Value; }
+extern { pub type ConstantInt; }
 extern { pub type Metadata; }
 extern { pub type BasicBlock; }
 #[repr(C)]
@@ -564,9 +567,9 @@ pub mod debuginfo {
 
     // These values **must** match with LLVMRustDIFlags!!
     bitflags! {
-        #[repr(C)]
+        #[repr(transparent)]
         #[derive(Default)]
-        pub struct DIFlags: ::libc::uint32_t {
+        pub struct DIFlags: u32 {
             const FlagZero                = 0;
             const FlagPrivate             = 1;
             const FlagProtected           = 2;
@@ -593,9 +596,9 @@ pub mod debuginfo {
 
     // These values **must** match with LLVMRustDISPFlags!!
     bitflags! {
-        #[repr(C)]
+        #[repr(transparent)]
         #[derive(Default)]
-        pub struct DISPFlags: ::libc::uint32_t {
+        pub struct DISPFlags: u32 {
             const SPFlagZero              = 0;
             const SPFlagVirtual           = 1;
             const SPFlagPureVirtual       = 2;
@@ -715,10 +718,10 @@ extern "C" {
     // Operations on scalar constants
     pub fn LLVMConstInt(IntTy: &Type, N: c_ulonglong, SignExtend: Bool) -> &Value;
     pub fn LLVMConstIntOfArbitraryPrecision(IntTy: &Type, Wn: c_uint, Ws: *const u64) -> &Value;
-    pub fn LLVMConstIntGetZExtValue(ConstantVal: &Value) -> c_ulonglong;
-    pub fn LLVMRustConstInt128Get(ConstantVal: &Value, SExt: bool,
+    pub fn LLVMConstReal(RealTy: &Type, N: f64) -> &Value;
+    pub fn LLVMConstIntGetZExtValue(ConstantVal: &ConstantInt) -> c_ulonglong;
+    pub fn LLVMRustConstInt128Get(ConstantVal: &ConstantInt, SExt: bool,
                                   high: &mut u64, low: &mut u64) -> bool;
-    pub fn LLVMConstRealGetDouble (ConstantVal: &Value, losesInfo: &mut Bool) -> f64;
 
 
     // Operations on composite constants
@@ -794,6 +797,7 @@ extern "C" {
     pub fn LLVMRustAddAlignmentAttr(Fn: &Value, index: c_uint, bytes: u32);
     pub fn LLVMRustAddDereferenceableAttr(Fn: &Value, index: c_uint, bytes: u64);
     pub fn LLVMRustAddDereferenceableOrNullAttr(Fn: &Value, index: c_uint, bytes: u64);
+    pub fn LLVMRustAddByValAttr(Fn: &Value, index: c_uint, ty: &Type);
     pub fn LLVMRustAddFunctionAttribute(Fn: &Value, index: c_uint, attr: Attribute);
     pub fn LLVMRustAddFunctionAttrStringValue(Fn: &Value,
                                               index: c_uint,
@@ -802,6 +806,7 @@ extern "C" {
     pub fn LLVMRustRemoveFunctionAttributes(Fn: &Value, index: c_uint, attr: Attribute);
 
     // Operations on parameters
+    pub fn LLVMIsAArgument(Val: &Value) -> Option<&Value>;
     pub fn LLVMCountParams(Fn: &Value) -> c_uint;
     pub fn LLVMGetParam(Fn: &Value, Index: c_uint) -> &Value;
 
@@ -814,6 +819,7 @@ extern "C" {
     pub fn LLVMDeleteBasicBlock(BB: &BasicBlock);
 
     // Operations on instructions
+    pub fn LLVMIsAInstruction(Val: &Value) -> Option<&Value>;
     pub fn LLVMGetFirstBasicBlock(Fn: &Value) -> &BasicBlock;
 
     // Operations on call sites
@@ -824,6 +830,7 @@ extern "C" {
     pub fn LLVMRustAddDereferenceableOrNullCallSiteAttr(Instr: &Value,
                                                         index: c_uint,
                                                         bytes: u64);
+    pub fn LLVMRustAddByValCallSiteAttr(Instr: &Value, index: c_uint, ty: &Type);
 
     // Operations on load/store instructions (only)
     pub fn LLVMSetVolatile(MemoryAccessInst: &Value, volatile: Bool);
@@ -1002,6 +1009,36 @@ extern "C" {
                          RHS: &'a Value,
                          Name: *const c_char)
                          -> &'a Value;
+    pub fn LLVMBuildNSWAdd(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
+    pub fn LLVMBuildNUWAdd(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
+    pub fn LLVMBuildNSWSub(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
+    pub fn LLVMBuildNUWSub(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
+    pub fn LLVMBuildNSWMul(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
+    pub fn LLVMBuildNUWMul(B: &Builder<'a>,
+                           LHS: &'a Value,
+                           RHS: &'a Value,
+                           Name: *const c_char)
+                           -> &'a Value;
     pub fn LLVMBuildAnd(B: &Builder<'a>,
                         LHS: &'a Value,
                         RHS: &'a Value,
@@ -1629,12 +1666,14 @@ extern "C" {
     #[allow(improper_ctypes)]
     pub fn LLVMRustWriteValueToString(value_ref: &Value, s: &RustString);
 
-    pub fn LLVMIsAConstantInt(value_ref: &Value) -> Option<&Value>;
-    pub fn LLVMIsAConstantFP(value_ref: &Value) -> Option<&Value>;
+    pub fn LLVMIsAConstantInt(value_ref: &Value) -> Option<&ConstantInt>;
 
     pub fn LLVMRustPassKind(Pass: &Pass) -> PassKind;
     pub fn LLVMRustFindAndCreatePass(Pass: *const c_char) -> Option<&'static mut Pass>;
     pub fn LLVMRustAddPass(PM: &PassManager<'_>, Pass: &'static mut Pass);
+    pub fn LLVMRustAddLastExtensionPasses(PMB: &PassManagerBuilder,
+                                          Passes: *const &'static mut Pass,
+                                          NumPasses: size_t);
 
     pub fn LLVMRustHasFeature(T: &TargetMachine, s: *const c_char) -> bool;
 
@@ -1645,6 +1684,7 @@ extern "C" {
     pub fn LLVMRustCreateTargetMachine(Triple: *const c_char,
                                        CPU: *const c_char,
                                        Features: *const c_char,
+                                       Abi: *const c_char,
                                        Model: CodeModel,
                                        Reloc: RelocMode,
                                        Level: CodeGenOptLevel,
@@ -1690,6 +1730,7 @@ extern "C" {
                                ) -> LLVMRustResult;
     pub fn LLVMRustSetLLVMOptions(Argc: c_int, Argv: *const *const c_char);
     pub fn LLVMRustPrintPasses();
+    pub fn LLVMRustGetInstructionCount(M: &Module) -> u32;
     pub fn LLVMRustSetNormalizedTarget(M: &Module, triple: *const c_char);
     pub fn LLVMRustAddAlwaysInlinePass(P: &PassManagerBuilder, AddLifetimes: bool);
     pub fn LLVMRustRunRestrictionPass(M: &Module, syms: *const *const c_char, len: size_t);
@@ -1706,7 +1747,9 @@ extern "C" {
     pub fn LLVMRustArchiveIteratorFree(AIR: &'a mut ArchiveIterator<'a>);
     pub fn LLVMRustDestroyArchive(AR: &'static mut Archive);
 
-    pub fn LLVMRustGetSectionName(SI: &SectionIterator<'_>, data: &mut *const c_char) -> size_t;
+    #[allow(improper_ctypes)]
+    pub fn LLVMRustGetSectionName(SI: &SectionIterator<'_>,
+                                  data: &mut Option<std::ptr::NonNull<c_char>>) -> size_t;
 
     #[allow(improper_ctypes)]
     pub fn LLVMRustWriteTwineToString(T: &Twine, s: &RustString);
@@ -1764,6 +1807,7 @@ extern "C" {
 
     pub fn LLVMRustSetComdat(M: &'a Module, V: &'a Value, Name: *const c_char);
     pub fn LLVMRustUnsetComdat(V: &Value);
+    pub fn LLVMRustSetModulePICLevel(M: &Module);
     pub fn LLVMRustSetModulePIELevel(M: &Module);
     pub fn LLVMRustModuleBufferCreate(M: &Module) -> &'static mut ModuleBuffer;
     pub fn LLVMRustModuleBufferPtr(p: &ModuleBuffer) -> *const u8;

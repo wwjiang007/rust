@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 
 pub struct GstRc {
     _obj: *const (),

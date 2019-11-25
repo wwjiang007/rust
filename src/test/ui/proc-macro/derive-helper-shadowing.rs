@@ -1,29 +1,53 @@
+// edition:2018
+// aux-build:test-macros.rs
 // aux-build:derive-helper-shadowing.rs
 
+#[macro_use]
+extern crate test_macros;
+#[macro_use]
 extern crate derive_helper_shadowing;
-use derive_helper_shadowing::*;
 
-#[my_attr] //~ ERROR `my_attr` is ambiguous
-#[derive(MyTrait)]
+use test_macros::empty_attr as empty_helper;
+
+macro_rules! gen_helper_use {
+    () => {
+        #[empty_helper] //~ ERROR cannot find attribute `empty_helper` in this scope
+        struct W;
+    }
+}
+
+#[empty_helper] //~ ERROR `empty_helper` is ambiguous
+#[derive(Empty)]
 struct S {
-    // FIXME No ambiguity, attributes in non-macro positions are not resolved properly
-    #[my_attr]
+    #[empty_helper] // OK, no ambiguity, derive helpers have highest priority
     field: [u8; {
-        // FIXME No ambiguity, derive helpers are not put into scope for non-attributes
-        use my_attr;
+        use empty_helper; //~ ERROR `empty_helper` is ambiguous
 
-        // FIXME No ambiguity, derive helpers are not put into scope for inner items
-        #[my_attr]
+        #[empty_helper] // OK, no ambiguity, derive helpers have highest priority
         struct U;
 
         mod inner {
-            #[my_attr] //~ ERROR attribute `my_attr` is currently unknown
+            // OK, no ambiguity, the non-helper attribute is not in scope here, only the helper.
+            #[empty_helper]
             struct V;
+
+            gen_helper_use!();
+
+            #[derive(GenHelperUse)] //~ ERROR cannot find attribute `empty_helper` in this scope
+            struct Owo;
+
+            use empty_helper as renamed;
+            #[renamed] //~ ERROR cannot use a derive helper attribute through an import
+            struct Wow;
         }
 
         0
     }]
 }
+
+// OK, no ambiguity, only the non-helper attribute is in scope.
+#[empty_helper]
+struct Z;
 
 fn main() {
     let s = S { field: [] };

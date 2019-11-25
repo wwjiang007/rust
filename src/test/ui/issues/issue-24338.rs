@@ -1,5 +1,5 @@
 //
-// compile-pass
+// check-pass
 
 trait DictLike<'a> {
     type ItemsIterator: Iterator<Item=u8>;

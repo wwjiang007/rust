@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 pub struct Xyz<'a, V> {
     pub v: (V, &'a u32),
 }

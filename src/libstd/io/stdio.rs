@@ -201,9 +201,9 @@ pub struct StdinLock<'a> {
 ///
 /// Each handle returned is a reference to a shared global buffer whose access
 /// is synchronized via a mutex. If you need more explicit control over
-/// locking, see the [`lock() method`][lock].
+/// locking, see the [`Stdin::lock`] method.
 ///
-/// [lock]: struct.Stdin.html#method.lock
+/// [`Stdin::lock`]: struct.Stdin.html#method.lock
 ///
 /// ### Note: Windows Portability Consideration
 /// When operating in a console, the Windows implementation of this stream does not support
@@ -425,9 +425,9 @@ pub struct StdoutLock<'a> {
 ///
 /// Each handle returned is a reference to a shared global buffer whose access
 /// is synchronized via a mutex. If you need more explicit control over
-/// locking, see the [Stdout::lock] method.
+/// locking, see the [`Stdout::lock`] method.
 ///
-/// [Stdout::lock]: struct.Stdout.html#method.lock
+/// [`Stdout::lock`]: struct.Stdout.html#method.lock
 ///
 /// ### Note: Windows Portability Consideration
 /// When operating in a console, the Windows implementation of this stream does not support
@@ -762,7 +762,7 @@ pub fn set_print(sink: Option<Box<dyn Write + Send>>) -> Option<Box<dyn Write + 
 /// otherwise. `label` identifies the stream in a panic message.
 ///
 /// This function is used to print error messages, so it takes extra
-/// care to avoid causing a panic when `local_stream` is unusable.
+/// care to avoid causing a panic when `local_s` is unusable.
 /// For instance, if the TLS key for the local stream is
 /// already destroyed, or if the local stream is locked by another
 /// thread, it will just fall back to the global stream.

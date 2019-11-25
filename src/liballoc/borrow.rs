@@ -207,6 +207,47 @@ impl<B: ?Sized + ToOwned> Clone for Cow<'_, B> {
 }
 
 impl<B: ?Sized + ToOwned> Cow<'_, B> {
+    /// Returns true if the data is borrowed, i.e. if `to_mut` would require additional work.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(cow_is_borrowed)]
+    /// use std::borrow::Cow;
+    ///
+    /// let cow = Cow::Borrowed("moo");
+    /// assert!(cow.is_borrowed());
+    ///
+    /// let bull: Cow<'_, str> = Cow::Owned("...moo?".to_string());
+    /// assert!(!bull.is_borrowed());
+    /// ```
+    #[unstable(feature = "cow_is_borrowed", issue = "65143")]
+    pub fn is_borrowed(&self) -> bool {
+        match *self {
+            Borrowed(_) => true,
+            Owned(_) => false,
+        }
+    }
+
+    /// Returns true if the data is owned, i.e. if `to_mut` would be a no-op.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(cow_is_borrowed)]
+    /// use std::borrow::Cow;
+    ///
+    /// let cow: Cow<'_, str> = Cow::Owned("moo".to_string());
+    /// assert!(cow.is_owned());
+    ///
+    /// let bull = Cow::Borrowed("...moo?");
+    /// assert!(!bull.is_owned());
+    /// ```
+    #[unstable(feature = "cow_is_borrowed", issue = "65143")]
+    pub fn is_owned(&self) -> bool {
+        !self.is_borrowed()
+    }
+
     /// Acquires a mutable reference to the owned form of the data.
     ///
     /// Clones the data if it is not already owned.
@@ -329,8 +370,8 @@ impl<'a, B: ?Sized> PartialOrd for Cow<'a, B>
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<B: ?Sized> fmt::Debug for Cow<'_, B>
-    where B: fmt::Debug + ToOwned,
-          <B as ToOwned>::Owned: fmt::Debug
+where
+    B: fmt::Debug + ToOwned<Owned: fmt::Debug>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
@@ -342,8 +383,8 @@ impl<B: ?Sized> fmt::Debug for Cow<'_, B>
 
 #[stable(feature = "rust1", since = "1.0.0")]
 impl<B: ?Sized> fmt::Display for Cow<'_, B>
-    where B: fmt::Display + ToOwned,
-          <B as ToOwned>::Owned: fmt::Display
+where
+    B: fmt::Display + ToOwned<Owned: fmt::Display>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
@@ -355,8 +396,8 @@ impl<B: ?Sized> fmt::Display for Cow<'_, B>
 
 #[stable(feature = "default", since = "1.11.0")]
 impl<B: ?Sized> Default for Cow<'_, B>
-    where B: ToOwned,
-          <B as ToOwned>::Owned: Default
+where
+    B: ToOwned<Owned: Default>,
 {
     /// Creates an owned Cow<'a, B> with the default value for the contained owned value.
     fn default() -> Self {

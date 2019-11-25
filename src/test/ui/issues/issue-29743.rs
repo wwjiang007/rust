@@ -1,5 +1,4 @@
-//
-// compile-pass
+// check-pass
 
 fn main() {
     let mut i = [1, 2, 3];

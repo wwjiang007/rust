@@ -18,7 +18,7 @@ impl<'tcx> ExplicitPredicatesMap<'tcx> {
 
     pub fn explicit_predicates_of(
         &mut self,
-        tcx: TyCtxt<'_, 'tcx, 'tcx>,
+        tcx: TyCtxt<'tcx>,
         def_id: DefId,
     ) -> &RequiredPredicates<'tcx> {
         self.map.entry(def_id).or_insert_with(|| {
@@ -30,11 +30,17 @@ impl<'tcx> ExplicitPredicatesMap<'tcx> {
             let mut required_predicates = RequiredPredicates::default();
 
             // process predicates and convert to `RequiredPredicates` entry, see below
-            for (pred, _) in predicates.predicates.iter() {
-                match pred {
+            for &(predicate, span) in predicates.predicates {
+                match predicate {
                     ty::Predicate::TypeOutlives(predicate) => {
                         let OutlivesPredicate(ref ty, ref reg) = predicate.skip_binder();
-                        insert_outlives_predicate(tcx, (*ty).into(), reg, &mut required_predicates)
+                        insert_outlives_predicate(
+                            tcx,
+                            (*ty).into(),
+                            reg,
+                            span,
+                            &mut required_predicates,
+                        )
                     }
 
                     ty::Predicate::RegionOutlives(predicate) => {
@@ -43,6 +49,7 @@ impl<'tcx> ExplicitPredicatesMap<'tcx> {
                             tcx,
                             (*reg1).into(),
                             reg2,
+                            span,
                             &mut required_predicates,
                         )
                     }

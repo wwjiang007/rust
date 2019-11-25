@@ -1,7 +1,8 @@
-use crate::build;
+use crate::{build, shim};
+use rustc_index::vec::IndexVec;
 use rustc::hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
-use rustc::mir::{Mir, MirPhase, Promoted};
-use rustc::ty::{TyCtxt, InstanceDef};
+use rustc::mir::{Body, MirPhase, Promoted, ConstQualifs};
+use rustc::ty::{TyCtxt, InstanceDef, TypeFoldable};
 use rustc::ty::query::Providers;
 use rustc::ty::steal::Steal;
 use rustc::hir;
@@ -14,8 +15,10 @@ use syntax_pos::Span;
 pub mod add_retag;
 pub mod add_moves_for_packed_drops;
 pub mod cleanup_post_borrowck;
+pub mod check_consts;
 pub mod check_unsafety;
 pub mod simplify_branches;
+pub mod simplify_try;
 pub mod simplify;
 pub mod erase_regions;
 pub mod no_landing_pads;
@@ -23,7 +26,6 @@ pub mod rustc_peek;
 pub mod elaborate_drops;
 pub mod add_call_guards;
 pub mod promote_consts;
-pub mod qualify_consts;
 pub mod qualify_min_const_fn;
 pub mod remove_noop_landing_pads;
 pub mod dump_mir;
@@ -33,31 +35,31 @@ pub mod copy_prop;
 pub mod const_prop;
 pub mod generator;
 pub mod inline;
-pub mod lower_128bit;
 pub mod uniform_array_move_out;
+pub mod uninhabited_enum_branching;
 
 pub(crate) fn provide(providers: &mut Providers<'_>) {
-    self::qualify_consts::provide(providers);
     self::check_unsafety::provide(providers);
     *providers = Providers {
         mir_keys,
         mir_built,
         mir_const,
+        mir_const_qualif,
         mir_validated,
         optimized_mir,
         is_mir_available,
+        promoted_mir,
         ..*providers
     };
 }
 
-fn is_mir_available<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> bool {
+fn is_mir_available(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
     tcx.mir_keys(def_id.krate).contains(&def_id)
 }
 
 /// Finds the full set of `DefId`s within the current crate that have
 /// MIR associated with them.
-fn mir_keys<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, krate: CrateNum)
-                      -> &'tcx DefIdSet {
+fn mir_keys(tcx: TyCtxt<'_>, krate: CrateNum) -> &DefIdSet {
     assert_eq!(krate, LOCAL_CRATE);
 
     let mut set = DefIdSet::default();
@@ -67,8 +69,8 @@ fn mir_keys<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, krate: CrateNum)
 
     // Additionally, tuple struct/variant constructors have MIR, but
     // they don't have a BodyId, so we need to build them separately.
-    struct GatherCtors<'a, 'tcx: 'a> {
-        tcx: TyCtxt<'a, 'tcx, 'tcx>,
+    struct GatherCtors<'a, 'tcx> {
+        tcx: TyCtxt<'tcx>,
         set: &'a mut DefIdSet,
     }
     impl<'a, 'tcx> Visitor<'tcx> for GatherCtors<'a, 'tcx> {
@@ -79,7 +81,7 @@ fn mir_keys<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, krate: CrateNum)
                               _: hir::HirId,
                               _: Span) {
             if let hir::VariantData::Tuple(_, hir_id) = *v {
-                self.set.insert(self.tcx.hir().local_def_id_from_hir_id(hir_id));
+                self.set.insert(self.tcx.hir().local_def_id(hir_id));
             }
             intravisit::walk_struct_def(self, v)
         }
@@ -95,12 +97,12 @@ fn mir_keys<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, krate: CrateNum)
     tcx.arena.alloc(set)
 }
 
-fn mir_built<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> &'tcx Steal<Mir<'tcx>> {
+fn mir_built(tcx: TyCtxt<'_>, def_id: DefId) -> &Steal<Body<'_>> {
     let mir = build::mir_build(tcx, def_id);
     tcx.alloc_steal_mir(mir)
 }
 
-/// Where a specific Mir comes from.
+/// Where a specific `mir::Body` comes from.
 #[derive(Debug, Copy, Clone)]
 pub struct MirSource<'tcx> {
     pub instance: InstanceDef<'tcx>,
@@ -126,7 +128,7 @@ impl<'tcx> MirSource<'tcx> {
 /// Generates a default name for the pass based on the name of the
 /// type `T`.
 pub fn default_name<T: ?Sized>() -> Cow<'static, str> {
-    let name = unsafe { ::std::intrinsics::type_name::<T>() };
+    let name = ::std::any::type_name::<T>();
     if let Some(tail) = name.rfind(":") {
         Cow::from(&name[tail+1..])
     } else {
@@ -137,109 +139,129 @@ pub fn default_name<T: ?Sized>() -> Cow<'static, str> {
 /// A streamlined trait that you can implement to create a pass; the
 /// pass will be named after the type, and it will consist of a main
 /// loop that goes over each available MIR and applies `run_pass`.
-pub trait MirPass {
-    fn name<'a>(&'a self) -> Cow<'a, str> {
+pub trait MirPass<'tcx> {
+    fn name(&self) -> Cow<'_, str> {
         default_name::<Self>()
     }
 
-    fn run_pass<'a, 'tcx>(&self,
-                          tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          source: MirSource<'tcx>,
-                          mir: &mut Mir<'tcx>);
+    fn run_pass(&self, tcx: TyCtxt<'tcx>, source: MirSource<'tcx>, body: &mut Body<'tcx>);
 }
 
 pub fn run_passes(
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
-    mir: &mut Mir<'tcx>,
+    tcx: TyCtxt<'tcx>,
+    body: &mut Body<'tcx>,
     instance: InstanceDef<'tcx>,
+    promoted: Option<Promoted>,
     mir_phase: MirPhase,
-    passes: &[&dyn MirPass],
+    passes: &[&dyn MirPass<'tcx>],
 ) {
     let phase_index = mir_phase.phase_index();
 
-    let run_passes = |mir: &mut Mir<'tcx>, promoted| {
-        if mir.phase >= mir_phase {
-            return;
-        }
+    if body.phase >= mir_phase {
+        return;
+    }
 
-        let source = MirSource {
-            instance,
-            promoted,
+    let source = MirSource {
+        instance,
+        promoted,
+    };
+    let mut index = 0;
+    let mut run_pass = |pass: &dyn MirPass<'tcx>| {
+        let run_hooks = |body: &_, index, is_after| {
+            dump_mir::on_mir_pass(tcx, &format_args!("{:03}-{:03}", phase_index, index),
+                                    &pass.name(), source, body, is_after);
         };
-        let mut index = 0;
-        let mut run_pass = |pass: &dyn MirPass| {
-            let run_hooks = |mir: &_, index, is_after| {
-                dump_mir::on_mir_pass(tcx, &format_args!("{:03}-{:03}", phase_index, index),
-                                      &pass.name(), source, mir, is_after);
-            };
-            run_hooks(mir, index, false);
-            pass.run_pass(tcx, source, mir);
-            run_hooks(mir, index, true);
+        run_hooks(body, index, false);
+        pass.run_pass(tcx, source, body);
+        run_hooks(body, index, true);
 
-            index += 1;
-        };
-
-        for pass in passes {
-            run_pass(*pass);
-        }
-
-        mir.phase = mir_phase;
+        index += 1;
     };
 
-    run_passes(mir, None);
-
-    for (index, promoted_mir) in mir.promoted.iter_enumerated_mut() {
-        run_passes(promoted_mir, Some(index));
-
-        //Let's make sure we don't miss any nested instances
-        assert!(promoted_mir.promoted.is_empty())
+    for pass in passes {
+        run_pass(*pass);
     }
+
+    body.phase = mir_phase;
 }
 
-fn mir_const<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> &'tcx Steal<Mir<'tcx>> {
+fn mir_const_qualif(tcx: TyCtxt<'_>, def_id: DefId) -> ConstQualifs {
+    let const_kind = check_consts::ConstKind::for_item(tcx, def_id);
+
+    // No need to const-check a non-const `fn`.
+    if const_kind.is_none() {
+        return Default::default();
+    }
+
+    // N.B., this `borrow()` is guaranteed to be valid (i.e., the value
+    // cannot yet be stolen), because `mir_validated()`, which steals
+    // from `mir_const(), forces this query to execute before
+    // performing the steal.
+    let body = &tcx.mir_const(def_id).borrow();
+
+    if body.return_ty().references_error() {
+        tcx.sess.delay_span_bug(body.span, "mir_const_qualif: MIR had errors");
+        return Default::default();
+    }
+
+    let item = check_consts::Item {
+        body,
+        tcx,
+        def_id,
+        const_kind,
+        param_env: tcx.param_env(def_id),
+    };
+
+    let mut validator = check_consts::validation::Validator::new(&item);
+    validator.check_body();
+
+    // We return the qualifs in the return place for every MIR body, even though it is only used
+    // when deciding to promote a reference to a `const` for now.
+    validator.qualifs_in_return_place().into()
+}
+
+fn mir_const(tcx: TyCtxt<'_>, def_id: DefId) -> &Steal<Body<'_>> {
     // Unsafety check uses the raw mir, so make sure it is run
     let _ = tcx.unsafety_check_result(def_id);
 
-    let mut mir = tcx.mir_built(def_id).steal();
-    run_passes(tcx, &mut mir, InstanceDef::Item(def_id), MirPhase::Const, &[
+    let mut body = tcx.mir_built(def_id).steal();
+    run_passes(tcx, &mut body, InstanceDef::Item(def_id), None, MirPhase::Const, &[
         // What we need to do constant evaluation.
         &simplify::SimplifyCfg::new("initial"),
         &rustc_peek::SanityCheck,
         &uniform_array_move_out::UniformArrayMoveOut,
     ]);
-    tcx.alloc_steal_mir(mir)
+    tcx.alloc_steal_mir(body)
 }
 
-fn mir_validated<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> &'tcx Steal<Mir<'tcx>> {
-    let hir_id = tcx.hir().as_local_hir_id(def_id).unwrap();
-    if let hir::BodyOwnerKind::Const = tcx.hir().body_owner_kind_by_hir_id(hir_id) {
-        // Ensure that we compute the `mir_const_qualif` for constants at
-        // this point, before we steal the mir-const result.
-        let _ = tcx.mir_const_qualif(def_id);
-    }
+fn mir_validated(
+    tcx: TyCtxt<'tcx>,
+    def_id: DefId,
+) -> (&'tcx Steal<Body<'tcx>>, &'tcx Steal<IndexVec<Promoted, Body<'tcx>>>) {
+    // Ensure that we compute the `mir_const_qualif` for constants at
+    // this point, before we steal the mir-const result.
+    let _ = tcx.mir_const_qualif(def_id);
 
-    let mut mir = tcx.mir_const(def_id).steal();
-    run_passes(tcx, &mut mir, InstanceDef::Item(def_id), MirPhase::Validated, &[
+    let mut body = tcx.mir_const(def_id).steal();
+    let promote_pass = promote_consts::PromoteTemps::default();
+    run_passes(tcx, &mut body, InstanceDef::Item(def_id), None, MirPhase::Validated, &[
         // What we need to run borrowck etc.
-        &qualify_consts::QualifyAndPromoteConstants,
+        &promote_pass,
         &simplify::SimplifyCfg::new("qualify-consts"),
     ]);
-    tcx.alloc_steal_mir(mir)
+    let promoted = promote_pass.promoted_fragments.into_inner();
+    (tcx.alloc_steal_mir(body), tcx.alloc_steal_promoted(promoted))
 }
 
-fn optimized_mir<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> &'tcx Mir<'tcx> {
-    // (Mir-)Borrowck uses `mir_validated`, so we have to force it to
-    // execute before we can steal.
-    tcx.ensure().mir_borrowck(def_id);
-
-    if tcx.use_ast_borrowck() {
-        tcx.ensure().borrowck(def_id);
-    }
-
-    let mut mir = tcx.mir_validated(def_id).steal();
-    run_passes(tcx, &mut mir, InstanceDef::Item(def_id), MirPhase::Optimized, &[
+fn run_optimization_passes<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &mut Body<'tcx>,
+    def_id: DefId,
+    promoted: Option<Promoted>,
+) {
+    run_passes(tcx, body, InstanceDef::Item(def_id), promoted, MirPhase::Optimized, &[
         // Remove all things only needed by analysis
-        &no_landing_pads::NoLandingPads,
+        &no_landing_pads::NoLandingPads::new(tcx),
         &simplify_branches::SimplifyBranches::new("initial"),
         &remove_noop_landing_pads::RemoveNoopLandingPads,
         &cleanup_post_borrowck::CleanupNonCodegenStatements,
@@ -249,7 +271,7 @@ fn optimized_mir<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> &'tcx 
         // These next passes must be executed together
         &add_call_guards::CriticalCallEdges,
         &elaborate_drops::ElaborateDrops,
-        &no_landing_pads::NoLandingPads,
+        &no_landing_pads::NoLandingPads::new(tcx),
         // AddMovesForPackedDrops needs to run after drop
         // elaboration.
         &add_moves_for_packed_drops::AddMovesForPackedDrops,
@@ -266,11 +288,11 @@ fn optimized_mir<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> &'tcx 
         // From here on out, regions are gone.
         &erase_regions::EraseRegions,
 
-        &lower_128bit::Lower128Bit,
-
 
         // Optimizations begin.
-        &uniform_array_move_out::RestoreSubsliceArrayMoveOut,
+        &uninhabited_enum_branching::UninhabitedEnumBranching,
+        &simplify::SimplifyCfg::new("after-uninhabited-enum-branching"),
+        &uniform_array_move_out::RestoreSubsliceArrayMoveOut::new(tcx),
         &inline::Inline,
 
         // Lowering generator control-flow and variables
@@ -284,11 +306,48 @@ fn optimized_mir<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>, def_id: DefId) -> &'tcx 
         &copy_prop::CopyPropagation,
         &simplify_branches::SimplifyBranches::new("after-copy-prop"),
         &remove_noop_landing_pads::RemoveNoopLandingPads,
+        &simplify::SimplifyCfg::new("after-remove-noop-landing-pads"),
+        &simplify_try::SimplifyArmIdentity,
+        &simplify_try::SimplifyBranchSame,
         &simplify::SimplifyCfg::new("final"),
         &simplify::SimplifyLocals,
 
         &add_call_guards::CriticalCallEdges,
         &dump_mir::Marker("PreCodegen"),
     ]);
-    tcx.alloc_mir(mir)
+}
+
+fn optimized_mir(tcx: TyCtxt<'_>, def_id: DefId) -> &Body<'_> {
+    if tcx.is_constructor(def_id) {
+        // There's no reason to run all of the MIR passes on constructors when
+        // we can just output the MIR we want directly. This also saves const
+        // qualification and borrow checking the trouble of special casing
+        // constructors.
+        return shim::build_adt_ctor(tcx, def_id);
+    }
+
+    // (Mir-)Borrowck uses `mir_validated`, so we have to force it to
+    // execute before we can steal.
+    tcx.ensure().mir_borrowck(def_id);
+
+    let (body, _) = tcx.mir_validated(def_id);
+    let mut body = body.steal();
+    run_optimization_passes(tcx, &mut body, def_id, None);
+    tcx.arena.alloc(body)
+}
+
+fn promoted_mir<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> &'tcx IndexVec<Promoted, Body<'tcx>> {
+    if tcx.is_constructor(def_id) {
+        return tcx.intern_promoted(IndexVec::new());
+    }
+
+    tcx.ensure().mir_borrowck(def_id);
+    let (_, promoted) = tcx.mir_validated(def_id);
+    let mut promoted = promoted.steal();
+
+    for (p, mut body) in promoted.iter_enumerated_mut() {
+        run_optimization_passes(tcx, &mut body, def_id, Some(p));
+    }
+
+    tcx.intern_promoted(promoted)
 }

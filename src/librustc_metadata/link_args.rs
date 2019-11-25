@@ -4,21 +4,21 @@ use rustc::ty::TyCtxt;
 use rustc_target::spec::abi::Abi;
 use syntax::symbol::sym;
 
-pub fn collect<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) -> Vec<String> {
+crate fn collect(tcx: TyCtxt<'_>) -> Vec<String> {
     let mut collector = Collector {
         args: Vec::new(),
     };
     tcx.hir().krate().visit_all_item_likes(&mut collector);
 
     for attr in tcx.hir().krate().attrs.iter() {
-        if attr.path == sym::link_args {
+        if attr.has_name(sym::link_args) {
             if let Some(linkarg) = attr.value_str() {
                 collector.add_link_args(&linkarg.as_str());
             }
         }
     }
 
-    return collector.args
+    return collector.args;
 }
 
 struct Collector {
@@ -27,7 +27,7 @@ struct Collector {
 
 impl<'tcx> ItemLikeVisitor<'tcx> for Collector {
     fn visit_item(&mut self, it: &'tcx hir::Item) {
-        let fm = match it.node {
+        let fm = match it.kind {
             hir::ItemKind::ForeignMod(ref fm) => fm,
             _ => return,
         };

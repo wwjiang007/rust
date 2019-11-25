@@ -1,4 +1,5 @@
 // ignore-tidy-filelength
+// ignore-tidy-undocumented-unsafe
 
 //! String manipulation.
 //!
@@ -176,7 +177,7 @@ Section: Creating a string
 /// ```
 /// fn from_utf8_lossy<F>(mut input: &[u8], mut push: F) where F: FnMut(&str) {
 ///     loop {
-///         match ::std::str::from_utf8(input) {
+///         match std::str::from_utf8(input) {
 ///             Ok(valid) => {
 ///                 push(valid);
 ///                 break
@@ -184,7 +185,7 @@ Section: Creating a string
 ///             Err(error) => {
 ///                 let (valid, after_valid) = input.split_at(error.valid_up_to());
 ///                 unsafe {
-///                     push(::std::str::from_utf8_unchecked(valid))
+///                     push(std::str::from_utf8_unchecked(valid))
 ///                 }
 ///                 push("\u{FFFD}");
 ///
@@ -464,7 +465,7 @@ Section: Iterators
 ///
 /// [`chars`]: ../../std/primitive.str.html#method.chars
 /// [`str`]: ../../std/primitive.str.html
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct Chars<'a> {
     iter: slice::Iter<'a, u8>
@@ -597,6 +598,16 @@ impl<'a> Iterator for Chars<'a> {
     fn last(mut self) -> Option<char> {
         // No need to go through the entire string.
         self.next_back()
+    }
+}
+
+#[stable(feature = "chars_debug_impl", since = "1.38.0")]
+impl fmt::Debug for Chars<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Chars(")?;
+        f.debug_list().entries(self.clone()).finish()?;
+        write!(f, ")")?;
+        Ok(())
     }
 }
 
@@ -841,8 +852,9 @@ unsafe impl TrustedRandomAccess for Bytes<'_> {
 /// wrapper types of the form X<'a, P>
 macro_rules! derive_pattern_clone {
     (clone $t:ident with |$s:ident| $e:expr) => {
-        impl<'a, P: Pattern<'a>> Clone for $t<'a, P>
-            where P::Searcher: Clone
+        impl<'a, P> Clone for $t<'a, P>
+        where
+            P: Pattern<'a, Searcher: Clone>,
         {
             fn clone(&self) -> Self {
                 let $s = self;
@@ -918,8 +930,9 @@ macro_rules! generate_pattern_iterators {
         pub struct $forward_iterator<'a, P: Pattern<'a>>($internal_iterator<'a, P>);
 
         $(#[$common_stability_attribute])*
-        impl<'a, P: Pattern<'a>> fmt::Debug for $forward_iterator<'a, P>
-            where P::Searcher: fmt::Debug
+        impl<'a, P> fmt::Debug for $forward_iterator<'a, P>
+        where
+            P: Pattern<'a, Searcher: fmt::Debug>,
         {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.debug_tuple(stringify!($forward_iterator))
@@ -939,8 +952,9 @@ macro_rules! generate_pattern_iterators {
         }
 
         $(#[$common_stability_attribute])*
-        impl<'a, P: Pattern<'a>> Clone for $forward_iterator<'a, P>
-            where P::Searcher: Clone
+        impl<'a, P> Clone for $forward_iterator<'a, P>
+        where
+            P: Pattern<'a, Searcher: Clone>,
         {
             fn clone(&self) -> Self {
                 $forward_iterator(self.0.clone())
@@ -952,8 +966,9 @@ macro_rules! generate_pattern_iterators {
         pub struct $reverse_iterator<'a, P: Pattern<'a>>($internal_iterator<'a, P>);
 
         $(#[$common_stability_attribute])*
-        impl<'a, P: Pattern<'a>> fmt::Debug for $reverse_iterator<'a, P>
-            where P::Searcher: fmt::Debug
+        impl<'a, P> fmt::Debug for $reverse_iterator<'a, P>
+        where
+            P: Pattern<'a, Searcher: fmt::Debug>,
         {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.debug_tuple(stringify!($reverse_iterator))
@@ -963,8 +978,9 @@ macro_rules! generate_pattern_iterators {
         }
 
         $(#[$common_stability_attribute])*
-        impl<'a, P: Pattern<'a>> Iterator for $reverse_iterator<'a, P>
-            where P::Searcher: ReverseSearcher<'a>
+        impl<'a, P> Iterator for $reverse_iterator<'a, P>
+        where
+            P: Pattern<'a, Searcher: ReverseSearcher<'a>>,
         {
             type Item = $iterty;
 
@@ -975,8 +991,9 @@ macro_rules! generate_pattern_iterators {
         }
 
         $(#[$common_stability_attribute])*
-        impl<'a, P: Pattern<'a>> Clone for $reverse_iterator<'a, P>
-            where P::Searcher: Clone
+        impl<'a, P> Clone for $reverse_iterator<'a, P>
+        where
+            P: Pattern<'a, Searcher: Clone>,
         {
             fn clone(&self) -> Self {
                 $reverse_iterator(self.0.clone())
@@ -987,8 +1004,10 @@ macro_rules! generate_pattern_iterators {
         impl<'a, P: Pattern<'a>> FusedIterator for $forward_iterator<'a, P> {}
 
         #[stable(feature = "fused", since = "1.26.0")]
-        impl<'a, P: Pattern<'a>> FusedIterator for $reverse_iterator<'a, P>
-            where P::Searcher: ReverseSearcher<'a> {}
+        impl<'a, P> FusedIterator for $reverse_iterator<'a, P>
+        where
+            P: Pattern<'a, Searcher: ReverseSearcher<'a>>,
+        {}
 
         generate_pattern_iterators!($($t)* with $(#[$common_stability_attribute])*,
                                                 $forward_iterator,
@@ -1000,8 +1019,9 @@ macro_rules! generate_pattern_iterators {
                            $reverse_iterator:ident, $iterty:ty
     } => {
         $(#[$common_stability_attribute])*
-        impl<'a, P: Pattern<'a>> DoubleEndedIterator for $forward_iterator<'a, P>
-            where P::Searcher: DoubleEndedSearcher<'a>
+        impl<'a, P> DoubleEndedIterator for $forward_iterator<'a, P>
+        where
+            P: Pattern<'a, Searcher: DoubleEndedSearcher<'a>>,
         {
             #[inline]
             fn next_back(&mut self) -> Option<$iterty> {
@@ -1010,8 +1030,9 @@ macro_rules! generate_pattern_iterators {
         }
 
         $(#[$common_stability_attribute])*
-        impl<'a, P: Pattern<'a>> DoubleEndedIterator for $reverse_iterator<'a, P>
-            where P::Searcher: DoubleEndedSearcher<'a>
+        impl<'a, P> DoubleEndedIterator for $reverse_iterator<'a, P>
+        where
+            P: Pattern<'a, Searcher: DoubleEndedSearcher<'a>>,
         {
             #[inline]
             fn next_back(&mut self) -> Option<$iterty> {
@@ -1039,7 +1060,10 @@ struct SplitInternal<'a, P: Pattern<'a>> {
     finished: bool,
 }
 
-impl<'a, P: Pattern<'a>> fmt::Debug for SplitInternal<'a, P> where P::Searcher: fmt::Debug {
+impl<'a, P> fmt::Debug for SplitInternal<'a, P>
+where
+    P: Pattern<'a, Searcher: fmt::Debug>,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SplitInternal")
             .field("start", &self.start)
@@ -1156,7 +1180,10 @@ struct SplitNInternal<'a, P: Pattern<'a>> {
     count: usize,
 }
 
-impl<'a, P: Pattern<'a>> fmt::Debug for SplitNInternal<'a, P> where P::Searcher: fmt::Debug {
+impl<'a, P> fmt::Debug for SplitNInternal<'a, P>
+where
+    P: Pattern<'a, Searcher: fmt::Debug>,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SplitNInternal")
             .field("iter", &self.iter)
@@ -1212,7 +1239,10 @@ derive_pattern_clone!{
 
 struct MatchIndicesInternal<'a, P: Pattern<'a>>(P::Searcher);
 
-impl<'a, P: Pattern<'a>> fmt::Debug for MatchIndicesInternal<'a, P> where P::Searcher: fmt::Debug {
+impl<'a, P> fmt::Debug for MatchIndicesInternal<'a, P>
+where
+    P: Pattern<'a, Searcher: fmt::Debug>,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("MatchIndicesInternal")
             .field(&self.0)
@@ -1263,7 +1293,10 @@ derive_pattern_clone!{
 
 struct MatchesInternal<'a, P: Pattern<'a>>(P::Searcher);
 
-impl<'a, P: Pattern<'a>> fmt::Debug for MatchesInternal<'a, P> where P::Searcher: fmt::Debug {
+impl<'a, P> fmt::Debug for MatchesInternal<'a, P>
+where
+    P: Pattern<'a, Searcher: fmt::Debug>,
+{
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("MatchesInternal")
             .field(&self.0)
@@ -1335,7 +1368,7 @@ impl<'a> Iterator for Lines<'a> {
     }
 
     #[inline]
-    fn last(mut self) -> Option<Self::Item> {
+    fn last(mut self) -> Option<&'a str> {
         self.next_back()
     }
 }
@@ -1384,11 +1417,6 @@ impl<'a> Iterator for LinesAny<'a> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.0.size_hint()
     }
-
-    #[inline]
-    fn last(mut self) -> Option<Self::Item> {
-        self.next_back()
-    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1427,6 +1455,7 @@ fn run_utf8_validation(v: &[u8]) -> Result<(), Utf8Error> {
     let usize_bytes = mem::size_of::<usize>();
     let ascii_block_size = 2 * usize_bytes;
     let blocks_end = if len >= ascii_block_size { len - ascii_block_size + 1 } else { 0 };
+    let align = v.as_ptr().align_offset(usize_bytes);
 
     while index < len {
         let old_offset = index;
@@ -1506,12 +1535,8 @@ fn run_utf8_validation(v: &[u8]) -> Result<(), Utf8Error> {
             // Ascii case, try to skip forward quickly.
             // When the pointer is aligned, read 2 words of data per iteration
             // until we find a word containing a non-ascii byte.
-            let ptr = v.as_ptr();
-            let align = unsafe {
-                // the offset is safe, because `index` is guaranteed inbounds
-                ptr.add(index).align_offset(usize_bytes)
-            };
-            if align == 0 {
+            if align != usize::max_value() && align.wrapping_sub(index) % usize_bytes == 0 {
+                let ptr = v.as_ptr();
                 while index < blocks_end {
                     unsafe {
                         let block = ptr.add(index) as *const usize;
@@ -2061,12 +2086,11 @@ impl str {
     /// let len = "foo".len();
     /// assert_eq!(3, len);
     ///
-    /// let len = "ƒoo".len(); // fancy f!
-    /// assert_eq!(4, len);
+    /// assert_eq!("ƒoo".len(), 4); // fancy f!
+    /// assert_eq!("ƒoo".chars().count(), 3);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    #[rustc_const_unstable(feature = "const_str_len")]
     pub const fn len(&self) -> usize {
         self.as_bytes().len()
     }
@@ -2086,7 +2110,6 @@ impl str {
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
-    #[rustc_const_unstable(feature = "const_str_len")]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -2144,8 +2167,11 @@ impl str {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline(always)]
-    #[rustc_const_unstable(feature="const_str_as_bytes")]
+    // SAFETY: const sound because we transmute two types with the same layout
+    #[allow(unused_attributes)]
+    #[allow_internal_unstable(const_fn_union)]
     pub const fn as_bytes(&self) -> &[u8] {
+        #[repr(C)]
         union Slices<'a> {
             str: &'a str,
             slice: &'a [u8],
@@ -2880,8 +2906,9 @@ impl str {
     /// assert!(!bananas.ends_with("nana"));
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn ends_with<'a, P: Pattern<'a>>(&'a self, pat: P) -> bool
-        where P::Searcher: ReverseSearcher<'a>
+    pub fn ends_with<'a, P>(&'a self, pat: P) -> bool
+    where
+        P: Pattern<'a, Searcher: ReverseSearcher<'a>>,
     {
         pat.is_suffix_of(self)
     }
@@ -2973,8 +3000,9 @@ impl str {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn rfind<'a, P: Pattern<'a>>(&'a self, pat: P) -> Option<usize>
-        where P::Searcher: ReverseSearcher<'a>
+    pub fn rfind<'a, P>(&'a self, pat: P) -> Option<usize>
+    where
+        P: Pattern<'a, Searcher: ReverseSearcher<'a>>,
     {
         pat.into_searcher(self).next_match_back().map(|(i, _)| i)
     }
@@ -3140,8 +3168,9 @@ impl str {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn rsplit<'a, P: Pattern<'a>>(&'a self, pat: P) -> RSplit<'a, P>
-        where P::Searcher: ReverseSearcher<'a>
+    pub fn rsplit<'a, P>(&'a self, pat: P) -> RSplit<'a, P>
+    where
+        P: Pattern<'a, Searcher: ReverseSearcher<'a>>,
     {
         RSplit(self.split(pat).0)
     }
@@ -3231,8 +3260,9 @@ impl str {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn rsplit_terminator<'a, P: Pattern<'a>>(&'a self, pat: P) -> RSplitTerminator<'a, P>
-        where P::Searcher: ReverseSearcher<'a>
+    pub fn rsplit_terminator<'a, P>(&'a self, pat: P) -> RSplitTerminator<'a, P>
+    where
+        P: Pattern<'a, Searcher: ReverseSearcher<'a>>,
     {
         RSplitTerminator(self.split_terminator(pat).0)
     }
@@ -3331,8 +3361,9 @@ impl str {
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
     #[inline]
-    pub fn rsplitn<'a, P: Pattern<'a>>(&'a self, n: usize, pat: P) -> RSplitN<'a, P>
-        where P::Searcher: ReverseSearcher<'a>
+    pub fn rsplitn<'a, P>(&'a self, n: usize, pat: P) -> RSplitN<'a, P>
+    where
+        P: Pattern<'a, Searcher: ReverseSearcher<'a>>,
     {
         RSplitN(self.splitn(n, pat).0)
     }
@@ -3404,8 +3435,9 @@ impl str {
     /// ```
     #[stable(feature = "str_matches", since = "1.2.0")]
     #[inline]
-    pub fn rmatches<'a, P: Pattern<'a>>(&'a self, pat: P) -> RMatches<'a, P>
-        where P::Searcher: ReverseSearcher<'a>
+    pub fn rmatches<'a, P>(&'a self, pat: P) -> RMatches<'a, P>
+    where
+        P: Pattern<'a, Searcher: ReverseSearcher<'a>>,
     {
         RMatches(self.matches(pat).0)
     }
@@ -3489,8 +3521,9 @@ impl str {
     /// ```
     #[stable(feature = "str_match_indices", since = "1.5.0")]
     #[inline]
-    pub fn rmatch_indices<'a, P: Pattern<'a>>(&'a self, pat: P) -> RMatchIndices<'a, P>
-        where P::Searcher: ReverseSearcher<'a>
+    pub fn rmatch_indices<'a, P>(&'a self, pat: P) -> RMatchIndices<'a, P>
+    where
+        P: Pattern<'a, Searcher: ReverseSearcher<'a>>,
     {
         RMatchIndices(self.match_indices(pat).0)
     }
@@ -3526,7 +3559,7 @@ impl str {
     /// A string is a sequence of bytes. `start` in this context means the first
     /// position of that byte string; for a left-to-right language like English or
     /// Russian, this will be left side, and for right-to-left languages like
-    /// like Arabic or Hebrew, this will be the right side.
+    /// Arabic or Hebrew, this will be the right side.
     ///
     /// # Examples
     ///
@@ -3563,7 +3596,7 @@ impl str {
     /// A string is a sequence of bytes. `end` in this context means the last
     /// position of that byte string; for a left-to-right language like English or
     /// Russian, this will be right side, and for right-to-left languages like
-    /// like Arabic or Hebrew, this will be the left side.
+    /// Arabic or Hebrew, this will be the left side.
     ///
     /// # Examples
     ///
@@ -3698,8 +3731,9 @@ impl str {
     #[must_use = "this returns the trimmed string as a new slice, \
                   without modifying the original"]
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn trim_matches<'a, P: Pattern<'a>>(&'a self, pat: P) -> &'a str
-        where P::Searcher: DoubleEndedSearcher<'a>
+    pub fn trim_matches<'a, P>(&'a self, pat: P) -> &'a str
+    where
+        P: Pattern<'a, Searcher: DoubleEndedSearcher<'a>>,
     {
         let mut i = 0;
         let mut j = 0;
@@ -3726,10 +3760,10 @@ impl str {
     ///
     /// # Text directionality
     ///
-    /// A string is a sequence of bytes. 'Left' in this context means the first
-    /// position of that byte string; for a language like Arabic or Hebrew
-    /// which are 'right to left' rather than 'left to right', this will be
-    /// the _right_ side, not the left.
+    /// A string is a sequence of bytes. `start` in this context means the first
+    /// position of that byte string; for a left-to-right language like English or
+    /// Russian, this will be left side, and for right-to-left languages like
+    /// Arabic or Hebrew, this will be the right side.
     ///
     /// # Examples
     ///
@@ -3765,10 +3799,10 @@ impl str {
     ///
     /// # Text directionality
     ///
-    /// A string is a sequence of bytes. 'Right' in this context means the last
-    /// position of that byte string; for a language like Arabic or Hebrew
-    /// which are 'right to left' rather than 'left to right', this will be
-    /// the _left_ side, not the right.
+    /// A string is a sequence of bytes. `end` in this context means the last
+    /// position of that byte string; for a left-to-right language like English or
+    /// Russian, this will be right side, and for right-to-left languages like
+    /// Arabic or Hebrew, this will be the left side.
     ///
     /// # Examples
     ///
@@ -3790,8 +3824,9 @@ impl str {
     #[must_use = "this returns the trimmed string as a new slice, \
                   without modifying the original"]
     #[stable(feature = "trim_direction", since = "1.30.0")]
-    pub fn trim_end_matches<'a, P: Pattern<'a>>(&'a self, pat: P) -> &'a str
-        where P::Searcher: ReverseSearcher<'a>
+    pub fn trim_end_matches<'a, P>(&'a self, pat: P) -> &'a str
+    where
+        P: Pattern<'a, Searcher: ReverseSearcher<'a>>,
     {
         let mut j = 0;
         let mut matcher = pat.into_searcher(self);
@@ -3814,10 +3849,10 @@ impl str {
     ///
     /// # Text directionality
     ///
-    /// A string is a sequence of bytes. `start` in this context means the first
-    /// position of that byte string; for a left-to-right language like English or
-    /// Russian, this will be left side, and for right-to-left languages like
-    /// like Arabic or Hebrew, this will be the right side.
+    /// A string is a sequence of bytes. 'Left' in this context means the first
+    /// position of that byte string; for a language like Arabic or Hebrew
+    /// which are 'right to left' rather than 'left to right', this will be
+    /// the _right_ side, not the left.
     ///
     /// # Examples
     ///
@@ -3850,10 +3885,10 @@ impl str {
     ///
     /// # Text directionality
     ///
-    /// A string is a sequence of bytes. `end` in this context means the last
-    /// position of that byte string; for a left-to-right language like English or
-    /// Russian, this will be right side, and for right-to-left languages like
-    /// like Arabic or Hebrew, this will be the left side.
+    /// A string is a sequence of bytes. 'Right' in this context means the last
+    /// position of that byte string; for a language like Arabic or Hebrew
+    /// which are 'right to left' rather than 'left to right', this will be
+    /// the _left_ side, not the right.
     ///
     /// # Examples
     ///
@@ -3878,8 +3913,9 @@ impl str {
         reason = "superseded by `trim_end_matches`",
         suggestion = "trim_end_matches",
     )]
-    pub fn trim_right_matches<'a, P: Pattern<'a>>(&'a self, pat: P) -> &'a str
-        where P::Searcher: ReverseSearcher<'a>
+    pub fn trim_right_matches<'a, P>(&'a self, pat: P) -> &'a str
+    where
+        P: Pattern<'a, Searcher: ReverseSearcher<'a>>,
     {
         self.trim_end_matches(pat)
     }
@@ -3981,6 +4017,16 @@ impl str {
     /// [`to_ascii_uppercase`].
     ///
     /// [`to_ascii_uppercase`]: #method.to_ascii_uppercase
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut s = String::from("Grüße, Jürgen ❤");
+    ///
+    /// s.make_ascii_uppercase();
+    ///
+    /// assert_eq!("GRüßE, JüRGEN ❤", s);
+    /// ```
     #[stable(feature = "ascii_methods_on_intrinsics", since = "1.23.0")]
     pub fn make_ascii_uppercase(&mut self) {
         let me = unsafe { self.as_bytes_mut() };
@@ -3996,6 +4042,16 @@ impl str {
     /// [`to_ascii_lowercase`].
     ///
     /// [`to_ascii_lowercase`]: #method.to_ascii_lowercase
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// let mut s = String::from("GRÜßE, JÜRGEN ❤");
+    ///
+    /// s.make_ascii_lowercase();
+    ///
+    /// assert_eq!("grÜße, jÜrgen ❤", s);
+    /// ```
     #[stable(feature = "ascii_methods_on_intrinsics", since = "1.23.0")]
     pub fn make_ascii_lowercase(&mut self) {
         let me = unsafe { self.as_bytes_mut() };
@@ -4233,7 +4289,7 @@ impl<'a> Iterator for SplitWhitespace<'a> {
     }
 
     #[inline]
-    fn last(mut self) -> Option<Self::Item> {
+    fn last(mut self) -> Option<&'a str> {
         self.next_back()
     }
 }
@@ -4264,7 +4320,7 @@ impl<'a> Iterator for SplitAsciiWhitespace<'a> {
     }
 
     #[inline]
-    fn last(mut self) -> Option<Self::Item> {
+    fn last(mut self) -> Option<&'a str> {
         self.next_back()
     }
 }

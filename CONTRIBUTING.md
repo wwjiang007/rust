@@ -15,7 +15,7 @@ links to the major sections:
 * [Helpful Links and Information](#helpful-links-and-information)
 
 If you have questions, please make a post on [internals.rust-lang.org][internals] or
-hop on the [Rust Discord server][rust-discord], [Rust Zulip server][rust-zulip] or [#rust-internals][pound-rust-internals].
+hop on the [Rust Discord server][rust-discord] or [Rust Zulip server][rust-zulip].
 
 As a reminder, all contributors are expected to follow our [Code of Conduct][coc].
 
@@ -25,7 +25,6 @@ to contribute to it in more detail than this document.
 If this is your first time contributing, the [walkthrough] chapter of the guide
 can give you a good example of how a typical contribution would go.
 
-[pound-rust-internals]: https://chat.mibbit.com/?server=irc.mozilla.org&channel=%23rust-internals
 [internals]: https://internals.rust-lang.org
 [rust-discord]: http://discord.gg/rust-lang
 [rust-zulip]: https://rust-lang.zulipchat.com
@@ -106,7 +105,7 @@ contributions to the compiler and the standard library. It also lists some
 really useful commands to the build system (`./x.py`), which could save you a
 lot of time.
 
-[rustcguidebuild]: https://rust-lang.github.io/rustc-guide/how-to-build-and-run.html
+[rustcguidebuild]: https://rust-lang.github.io/rustc-guide/building/how-to-build-and-run.html
 
 ## Pull Requests
 [pull-requests]: #pull-requests
@@ -128,6 +127,14 @@ E.g. always use rebase when bringing the latest changes from
 the master branch to your feature branch.
 Also, please make sure that fixup commits are squashed into other related
 commits with meaningful commit messages.
+
+GitHub allows [closing issues using keywords][closing-keywords]. This feature
+should be used to keep the issue tracker tidy. However, it is generally preferred
+to put the "closes #123" text in the PR description rather than the issue commit;
+particularly during rebasing, citing the issue number in the commit can "spam"
+the issue in question.
+
+[closing-keywords]: https://help.github.com/en/articles/closing-issues-using-keywords
 
 Please make sure your pull request is in compliance with Rust's style
 guidelines by running
@@ -179,7 +186,6 @@ Speaking of tests, Rust has a comprehensive test suite. More information about
 it can be found [here][rctd].
 
 ### External Dependencies
-[external-dependencies]: #external-dependencies
 
 Currently building Rust will also build the following external projects:
 
@@ -209,7 +215,6 @@ Breakage is not allowed in the beta and stable channels, and must be addressed
 before the PR is merged.
 
 #### Breaking Tools Built With The Compiler
-[breaking-tools-built-with-the-compiler]: #breaking-tools-built-with-the-compiler
 
 Rust's build system builds a number of tools that make use of the
 internals of the compiler. This includes
@@ -242,7 +247,7 @@ Here are those same steps in detail:
    `config.toml.example` in the root directory of the Rust repository.
    Set `submodules = false` in the `[build]` section. This will prevent `x.py`
    from resetting to the original branch after you make your changes. If you
-   need to [update any submodules to their latest versions][updating-submodules],
+   need to [update any submodules to their latest versions](#updating-submodules),
    see the section of this file about that for more information.
 2. (optional) Run `./x.py test src/tools/rustfmt` (substituting the submodule
    that broke for `rustfmt`). Fix any errors in the submodule (and possibly others).
@@ -256,7 +261,6 @@ Here are those same steps in detail:
 8. (optional) Send a PR to rust-lang/rust updating the submodule.
 
 #### Updating submodules
-[updating-submodules]: #updating-submodules
 
 These instructions are specific to updating `rustfmt`, however they may apply
 to the other submodules as well. Please help by improving these instructions
@@ -310,7 +314,6 @@ This should change the version listed in `Cargo.lock` to the new version you upd
 the submodule to. Running `./x.py build` should work now.
 
 ## Writing Documentation
-[writing-documentation]: #writing-documentation
 
 Documentation improvements are very welcome. The source of `doc.rust-lang.org`
 is located in `src/doc` in the tree, and standard API documentation is generated
@@ -337,7 +340,6 @@ tracker in that repo is also a great way to find things that need doing. There
 are issues for beginners and advanced compiler devs alike!
 
 ## Issue Triage
-[issue-triage]: #issue-triage
 
 Sometimes, an issue will stay open, even though the bug has been fixed. And
 sometimes, the original bug may go stale because something has changed in the
@@ -405,12 +407,11 @@ If you're looking for somewhere to start, check out the [E-easy][eeasy] tag.
 [rfcbot]: https://github.com/anp/rfcbot-rs/
 
 ## Out-of-tree Contributions
-[out-of-tree-contributions]: #out-of-tree-contributions
 
 There are a number of other ways to contribute to Rust that don't deal with
 this repository.
 
-Answer questions in [#rust][pound-rust], or on [users.rust-lang.org][users],
+Answer questions in the _Get Help!_ channels from the [Rust Discord server][rust-discord], on [users.rust-lang.org][users],
 or on [StackOverflow][so].
 
 Participate in the [RFC process](https://github.com/rust-lang/rfcs).
@@ -419,13 +420,12 @@ Find a [requested community library][community-library], build it, and publish
 it to [Crates.io](http://crates.io). Easier said than done, but very, very
 valuable!
 
-[pound-rust]: http://chat.mibbit.com/?server=irc.mozilla.org&channel=%23rust
+[rust-discord]: https://discord.gg/rust-lang
 [users]: https://users.rust-lang.org/
 [so]: http://stackoverflow.com/questions/tagged/rust
 [community-library]: https://github.com/rust-lang/rfcs/labels/A-community-library
 
 ## Helpful Links and Information
-[helpful-info]: #helpful-info
 
 For people new to Rust, and just starting to contribute, or even for
 more seasoned developers, some useful places to look for information

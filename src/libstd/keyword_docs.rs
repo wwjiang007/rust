@@ -33,9 +33,72 @@ mod as_keyword { }
 //
 /// Exit early from a loop.
 ///
-/// The documentation for this keyword is [not yet complete]. Pull requests welcome!
+/// When `break` is encountered, execution of the associated loop body is
+/// immediately terminated.
 ///
-/// [not yet complete]: https://github.com/rust-lang/rust/issues/34601
+/// ```rust
+/// let mut last = 0;
+///
+/// for x in 1..100 {
+///     if x > 12 {
+///         break;
+///     }
+///     last = x;
+/// }
+///
+/// assert_eq!(last, 12);
+/// println!("{}", last);
+/// ```
+///
+/// A break expression is normally associated with the innermost loop enclosing the
+/// `break` but a label can be used to specify which enclosing loop is affected.
+///
+///```rust
+/// 'outer: for i in 1..=5 {
+///     println!("outer iteration (i): {}", i);
+///
+///     'inner: for j in 1..=200 {
+///         println!("    inner iteration (j): {}", j);
+///         if j >= 3 {
+///             // breaks from inner loop, let's outer loop continue.
+///             break;
+///         }
+///         if i >= 2 {
+///             // breaks from outer loop, and directly to "Bye".
+///             break 'outer;
+///         }
+///     }
+/// }
+/// println!("Bye.");
+///```
+///
+/// When associated with `loop`, a break expression may be used to return a value from that loop.
+/// This is only valid with `loop` and not with any other type of loop.
+/// If no value is specified, `break;` returns `()`.
+/// Every `break` within a loop must return the same type.
+///
+/// ```rust
+/// let (mut a, mut b) = (1, 1);
+/// let result = loop {
+///     if b > 10 {
+///         break b;
+///     }
+///     let c = a + b;
+///     a = b;
+///     b = c;
+/// };
+/// // first number in Fibonacci sequence over 10:
+/// assert_eq!(result, 13);
+/// println!("{}", result);
+/// ```
+///
+/// For more details consult the [Reference on "break expression"] and the [Reference on "break and
+/// loop values"].
+///
+/// [Reference on "break expression"]: ../reference/expressions/loop-expr.html#break-expressions
+/// [Reference on "break and loop values"]:
+/// ../reference/expressions/loop-expr.html#break-and-loop-values
+///
 mod break_keyword { }
 
 #[doc(keyword = "const")]
@@ -63,7 +126,7 @@ mod break_keyword { }
 /// look like this:
 ///
 /// ```rust
-/// const WORDS: &str = "hello rust!";
+/// const WORDS: &'static str = "hello rust!";
 /// ```
 ///
 /// Thanks to static lifetime elision, you usually don't have to explicitly use 'static:
@@ -96,9 +159,40 @@ mod const_keyword { }
 //
 /// Skip to the next iteration of a loop.
 ///
-/// The documentation for this keyword is [not yet complete]. Pull requests welcome!
+/// When `continue` is encountered, the current iteration is terminated, returning control to the
+/// loop head, typically continuing with the next iteration.
 ///
-/// [not yet complete]: https://github.com/rust-lang/rust/issues/34601
+///```rust
+/// // Printing odd numbers by skipping even ones
+/// for number in 1..=10 {
+///     if number % 2 == 0 {
+///         continue;
+///     }
+///     println!("{}", number);
+/// }
+///```
+///
+/// Like `break`, `continue` is normally associated with the innermost enclosing loop, but labels
+/// may be used to specify the affected loop.
+///
+///```rust
+/// // Print Odd numbers under 30 with unit <= 5
+/// 'tens: for ten in 0..3 {
+///     'units: for unit in 0..=9 {
+///         if unit % 2 == 0 {
+///             continue;
+///         }
+///         if unit > 5 {
+///             continue 'tens;
+///         }
+///         println!("{}", ten * 10 + unit);
+///     }
+/// }
+///```
+///
+/// See [continue expressions] from the reference for more details.
+///
+/// [continue expressions]: ../reference/expressions/loop-expr.html#continue-expressions
 mod continue_keyword { }
 
 #[doc(keyword = "crate")]
@@ -119,7 +213,7 @@ mod continue_keyword { }
 /// The `as` keyword can be used to change what the crate is referred to as in your project. If a
 /// crate name includes a dash, it is implicitly imported with the dashes replaced by underscores.
 ///
-/// `crate` is also used as in conjunction with `pub` to signify that the item it's attached to
+/// `crate` can also be used as in conjunction with `pub` to signify that the item it's attached to
 /// is public only to other members of the same crate it's in.
 ///
 /// ```rust
@@ -130,6 +224,10 @@ mod continue_keyword { }
 ///     pub(crate) semi_secret_thing: bool,
 /// }
 /// ```
+///
+/// `crate` is also used to represent the absolute path of a module, where `crate` refers to the
+/// root of the current crate. For instance, `crate::foo::bar` refers to the name `bar` inside the
+/// module `foo`, from anywhere else in the same crate.
 ///
 /// [Reference]: ../reference/items/extern-crates.html
 mod crate_keyword { }
@@ -608,6 +706,62 @@ mod in_keyword { }
 /// [Reference]: ../reference/statements.html#let-statements
 mod let_keyword { }
 
+#[doc(keyword = "while")]
+//
+/// Loop while a condition is upheld.
+///
+/// A `while` expression is used for predicate loops. The `while` expression runs the conditional
+/// expression before running the loop body, then runs the loop body if the conditional
+/// expression evaluates to `true`, or exits the loop otherwise.
+///
+/// ```rust
+/// let mut counter = 0;
+///
+/// while counter < 10 {
+///     println!("{}", counter);
+///     counter += 1;
+/// }
+/// ```
+///
+/// Like the [`for`] expression, we can use `break` and `continue`. A `while` expression
+/// cannot break with a value and always evaluates to `()` unlike [`loop`].
+///
+/// ```rust
+/// let mut i = 1;
+///
+/// while i < 100 {
+///     i *= 2;
+///     if i == 64 {
+///         break; // Exit when `i` is 64.
+///     }
+/// }
+/// ```
+///
+/// As `if` expressions have their pattern matching variant in `if let`, so too do `while`
+/// expressions with `while let`. The `while let` expression matches the pattern against the
+/// expression, then runs the loop body if pattern matching succeeds, or exits the loop otherwise.
+/// We can use `break` and `continue` in `while let` expressions just like in `while`.
+///
+/// ```rust
+/// let mut counter = Some(0);
+///
+/// while let Some(i) = counter {
+///     if i == 10 {
+///         counter = None;
+///     } else {
+///         println!("{}", i);
+///         counter = Some (i + 1);
+///     }
+/// }
+/// ```
+///
+/// For more information on `while` and loops in general, see the [reference].
+///
+/// [`for`]: keyword.for.html
+/// [`loop`]: keyword.loop.html
+/// [reference]: ../reference/expressions/loop-expr.html#predicate-loops
+mod while_keyword { }
+
 #[doc(keyword = "loop")]
 //
 /// Loop indefinitely.
@@ -621,14 +775,15 @@ mod let_keyword { }
 ///     # break;
 /// }
 ///
-/// let mut i = 0;
+/// let mut i = 1;
 /// loop {
 ///     println!("i is {}", i);
-///     if i > 10 {
+///     if i > 100 {
 ///         break;
 ///     }
-///     i += 1;
+///     i *= 2;
 /// }
+/// assert_eq!(i, 128);
 /// ```
 ///
 /// Unlike the other kinds of loops in Rust (`while`, `while let`, and `for`), loops can be used as
@@ -922,18 +1077,8 @@ mod use_keyword { }
 /// [not yet complete]: https://github.com/rust-lang/rust/issues/34601
 mod where_keyword { }
 
-#[doc(keyword = "while")]
-//
-/// Loop while a condition is upheld.
-///
-/// The documentation for this keyword is [not yet complete]. Pull requests welcome!
-///
-/// [not yet complete]: https://github.com/rust-lang/rust/issues/34601
-mod while_keyword { }
-
 // 2018 Edition keywords
 
-#[unstable(feature = "async_await", issue = "50547")]
 #[doc(keyword = "async")]
 //
 /// Return a [`Future`] instead of blocking the current thread.
@@ -944,7 +1089,6 @@ mod while_keyword { }
 /// [not yet complete]: https://github.com/rust-lang/rust/issues/34601
 mod async_keyword { }
 
-#[unstable(feature = "async_await", issue = "50547")]
 #[doc(keyword = "await")]
 //
 /// Suspend execution until the result of a [`Future`] is ready.

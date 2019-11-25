@@ -10,7 +10,6 @@
 #![panic_runtime]
 
 #![allow(unused_features)]
-#![deny(rust_2018_idioms)]
 
 #![feature(core_intrinsics)]
 #![feature(libc)]
@@ -49,14 +48,14 @@ pub unsafe extern fn __rust_start_panic(_payload: usize) -> u32 {
         libc::abort();
     }
 
-    #[cfg(any(target_os = "redox",
-              windows,
+    #[cfg(any(windows,
               all(target_arch = "wasm32", not(target_os = "emscripten"))))]
     unsafe fn abort() -> ! {
         core::intrinsics::abort();
     }
 
-    #[cfg(all(target_vendor="fortanix", target_env="sgx"))]
+    #[cfg(any(target_os = "hermit",
+              all(target_vendor="fortanix", target_env="sgx")))]
     unsafe fn abort() -> ! {
         // call std::sys::abort_internal
         extern "C" { pub fn __rust_abort() -> !; }

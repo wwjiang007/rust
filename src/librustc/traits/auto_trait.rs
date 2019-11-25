@@ -1,17 +1,17 @@
-//! Support code for rustdoc and external tools . You really don't
-//! want to be using this unless you need to.
+//! Support code for rustdoc and external tools.
+//! You really don't want to be using this unless you need to.
 
 use super::*;
 
-use std::collections::hash_map::Entry;
-use std::collections::VecDeque;
-
 use crate::infer::region_constraints::{Constraint, RegionConstraintData};
 use crate::infer::InferCtxt;
-use rustc_data_structures::fx::{FxHashMap, FxHashSet};
-
 use crate::ty::fold::TypeFolder;
 use crate::ty::{Region, RegionVid};
+
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
+
+use std::collections::hash_map::Entry;
+use std::collections::VecDeque;
 
 // FIXME(twk): this is obviously not nice to duplicate like that
 #[derive(Eq, PartialEq, Hash, Copy, Clone, Debug)]
@@ -47,12 +47,12 @@ pub struct AutoTraitInfo<'cx> {
     pub vid_to_region: FxHashMap<ty::RegionVid, ty::Region<'cx>>,
 }
 
-pub struct AutoTraitFinder<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+pub struct AutoTraitFinder<'tcx> {
+    tcx: TyCtxt<'tcx>,
 }
 
-impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
-    pub fn new(tcx: TyCtxt<'a, 'tcx, 'tcx>) -> Self {
+impl<'tcx> AutoTraitFinder<'tcx> {
+    pub fn new(tcx: TyCtxt<'tcx>) -> Self {
         AutoTraitFinder { tcx }
     }
 
@@ -79,7 +79,7 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
         ty: Ty<'tcx>,
         orig_env: ty::ParamEnv<'tcx>,
         trait_did: DefId,
-        auto_trait_callback: impl for<'i> Fn(&InferCtxt<'_, 'tcx, 'i>, AutoTraitInfo<'i>) -> A,
+        auto_trait_callback: impl Fn(&InferCtxt<'_, 'tcx>, AutoTraitInfo<'tcx>) -> A,
     ) -> AutoTraitResult<A> {
         let tcx = self.tcx;
 
@@ -232,54 +232,56 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
-    // The core logic responsible for computing the bounds for our synthesized impl.
-    //
-    // To calculate the bounds, we call SelectionContext.select in a loop. Like FulfillmentContext,
-    // we recursively select the nested obligations of predicates we encounter. However, whenever we
-    // encounter an UnimplementedError involving a type parameter, we add it to our ParamEnv. Since
-    // our goal is to determine when a particular type implements an auto trait, Unimplemented
-    // errors tell us what conditions need to be met.
-    //
-    // This method ends up working somewhat similarly to FulfillmentContext, but with a few key
-    // differences. FulfillmentContext works under the assumption that it's dealing with concrete
-    // user code. According, it considers all possible ways that a Predicate could be met - which
-    // isn't always what we want for a synthesized impl. For example, given the predicate 'T:
-    // Iterator', FulfillmentContext can end up reporting an Unimplemented error for T:
-    // IntoIterator - since there's an implementation of Iteratpr where T: IntoIterator,
-    // FulfillmentContext will drive SelectionContext to consider that impl before giving up. If we
-    // were to rely on FulfillmentContext's decision, we might end up synthesizing an impl like
-    // this:
-    // 'impl<T> Send for Foo<T> where T: IntoIterator'
-    //
-    // While it might be technically true that Foo implements Send where T: IntoIterator,
-    // the bound is overly restrictive - it's really only necessary that T: Iterator.
-    //
-    // For this reason, evaluate_predicates handles predicates with type variables specially. When
-    // we encounter an Unimplemented error for a bound such as 'T: Iterator', we immediately add it
-    // to our ParamEnv, and add it to our stack for recursive evaluation. When we later select it,
-    // we'll pick up any nested bounds, without ever inferring that 'T: IntoIterator' needs to
-    // hold.
-    //
-    // One additional consideration is supertrait bounds. Normally, a ParamEnv is only ever
-    // constructed once for a given type. As part of the construction process, the ParamEnv will
-    // have any supertrait bounds normalized - e.g., if we have a type 'struct Foo<T: Copy>', the
-    // ParamEnv will contain 'T: Copy' and 'T: Clone', since 'Copy: Clone'. When we construct our
-    // own ParamEnv, we need to do this ourselves, through traits::elaborate_predicates, or else
-    // SelectionContext will choke on the missing predicates. However, this should never show up in
-    // the final synthesized generics: we don't want our generated docs page to contain something
-    // like 'T: Copy + Clone', as that's redundant. Therefore, we keep track of a separate
-    // 'user_env', which only holds the predicates that will actually be displayed to the user.
-    fn evaluate_predicates<'b, 'gcx, 'c>(
+impl AutoTraitFinder<'tcx> {
+    /// The core logic responsible for computing the bounds for our synthesized impl.
+    ///
+    /// To calculate the bounds, we call `SelectionContext.select` in a loop. Like
+    /// `FulfillmentContext`, we recursively select the nested obligations of predicates we
+    /// encounter. However, whenever we encounter an `UnimplementedError` involving a type
+    /// parameter, we add it to our `ParamEnv`. Since our goal is to determine when a particular
+    /// type implements an auto trait, Unimplemented errors tell us what conditions need to be met.
+    ///
+    /// This method ends up working somewhat similarly to `FulfillmentContext`, but with a few key
+    /// differences. `FulfillmentContext` works under the assumption that it's dealing with concrete
+    /// user code. According, it considers all possible ways that a `Predicate` could be met, which
+    /// isn't always what we want for a synthesized impl. For example, given the predicate `T:
+    /// Iterator`, `FulfillmentContext` can end up reporting an Unimplemented error for `T:
+    /// IntoIterator` -- since there's an implementation of `Iterator` where `T: IntoIterator`,
+    /// `FulfillmentContext` will drive `SelectionContext` to consider that impl before giving up.
+    /// If we were to rely on `FulfillmentContext`s decision, we might end up synthesizing an impl
+    /// like this:
+    ///
+    ///     impl<T> Send for Foo<T> where T: IntoIterator
+    ///
+    /// While it might be technically true that Foo implements Send where `T: IntoIterator`,
+    /// the bound is overly restrictive - it's really only necessary that `T: Iterator`.
+    ///
+    /// For this reason, `evaluate_predicates` handles predicates with type variables specially.
+    /// When we encounter an `Unimplemented` error for a bound such as `T: Iterator`, we immediately
+    /// add it to our `ParamEnv`, and add it to our stack for recursive evaluation. When we later
+    /// select it, we'll pick up any nested bounds, without ever inferring that `T: IntoIterator`
+    /// needs to hold.
+    ///
+    /// One additional consideration is supertrait bounds. Normally, a `ParamEnv` is only ever
+    /// constructed once for a given type. As part of the construction process, the `ParamEnv` will
+    /// have any supertrait bounds normalized -- e.g., if we have a type `struct Foo<T: Copy>`, the
+    /// `ParamEnv` will contain `T: Copy` and `T: Clone`, since `Copy: Clone`. When we construct our
+    /// own `ParamEnv`, we need to do this ourselves, through `traits::elaborate_predicates`, or
+    /// else `SelectionContext` will choke on the missing predicates. However, this should never
+    /// show up in the final synthesized generics: we don't want our generated docs page to contain
+    /// something like `T: Copy + Clone`, as that's redundant. Therefore, we keep track of a
+    /// separate `user_env`, which only holds the predicates that will actually be displayed to the
+    /// user.
+    fn evaluate_predicates(
         &self,
-        infcx: &InferCtxt<'b, 'tcx, 'c>,
+        infcx: &InferCtxt<'_, 'tcx>,
         trait_did: DefId,
-        ty: Ty<'c>,
-        param_env: ty::ParamEnv<'c>,
-        user_env: ty::ParamEnv<'c>,
-        fresh_preds: &mut FxHashSet<ty::Predicate<'c>>,
+        ty: Ty<'tcx>,
+        param_env: ty::ParamEnv<'tcx>,
+        user_env: ty::ParamEnv<'tcx>,
+        fresh_preds: &mut FxHashSet<ty::Predicate<'tcx>>,
         only_projections: bool,
-    ) -> Option<(ty::ParamEnv<'c>, ty::ParamEnv<'c>)> {
+    ) -> Option<(ty::ParamEnv<'tcx>, ty::ParamEnv<'tcx>)> {
         let tcx = infcx.tcx;
 
         let mut select = SelectionContext::with_negative(&infcx, true);
@@ -307,23 +309,23 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
                 continue;
             }
 
-            // Call infcx.resolve_type_vars_if_possible to see if we can
+            // Call `infcx.resolve_vars_if_possible` to see if we can
             // get rid of any inference variables.
-            let obligation = infcx.resolve_type_vars_if_possible(
+            let obligation = infcx.resolve_vars_if_possible(
                 &Obligation::new(dummy_cause.clone(), new_env, pred)
             );
             let result = select.select(&obligation);
 
             match &result {
                 &Ok(Some(ref vtable)) => {
-                    // If we see an explicit negative impl (e.g., 'impl !Send for MyStruct'),
+                    // If we see an explicit negative impl (e.g., `impl !Send for MyStruct`),
                     // we immediately bail out, since it's impossible for us to continue.
                     match vtable {
                         Vtable::VtableImpl(VtableImplData { impl_def_id, .. }) => {
-                            // Blame tidy for the weird bracket placement
-                            if infcx.tcx.impl_polarity(*impl_def_id) == hir::ImplPolarity::Negative
+                            // Blame 'tidy' for the weird bracket placement.
+                            if infcx.tcx.impl_polarity(*impl_def_id) == ty::ImplPolarity::Negative
                             {
-                                debug!("evaluate_nested_obligations: Found explicit negative impl\
+                                debug!("evaluate_nested_obligations: found explicit negative impl\
                                         {:?}, bailing out", impl_def_id);
                                 return None;
                             }
@@ -356,7 +358,7 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
                         predicates.push_back(pred);
                     } else {
                         debug!(
-                            "evaluate_nested_obligations: Unimplemented found, bailing: \
+                            "evaluate_nested_obligations: `Unimplemented` found, bailing: \
                              {:?} {:?} {:?}",
                             ty,
                             pred,
@@ -392,29 +394,29 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
         return Some((new_env, final_user_env));
     }
 
-    // This method is designed to work around the following issue:
-    // When we compute auto trait bounds, we repeatedly call SelectionContext.select,
-    // progressively building a ParamEnv based on the results we get.
-    // However, our usage of SelectionContext differs from its normal use within the compiler,
-    // in that we capture and re-reprocess predicates from Unimplemented errors.
-    //
-    // This can lead to a corner case when dealing with region parameters.
-    // During our selection loop in evaluate_predicates, we might end up with
-    // two trait predicates that differ only in their region parameters:
-    // one containing a HRTB lifetime parameter, and one containing a 'normal'
-    // lifetime parameter. For example:
-    //
-    // T as MyTrait<'a>
-    // T as MyTrait<'static>
-    //
-    // If we put both of these predicates in our computed ParamEnv, we'll
-    // confuse SelectionContext, since it will (correctly) view both as being applicable.
-    //
-    // To solve this, we pick the 'more strict' lifetime bound - i.e., the HRTB
-    // Our end goal is to generate a user-visible description of the conditions
-    // under which a type implements an auto trait. A trait predicate involving
-    // a HRTB means that the type needs to work with any choice of lifetime,
-    // not just one specific lifetime (e.g., 'static).
+    /// This method is designed to work around the following issue:
+    /// When we compute auto trait bounds, we repeatedly call `SelectionContext.select`,
+    /// progressively building a `ParamEnv` based on the results we get.
+    /// However, our usage of `SelectionContext` differs from its normal use within the compiler,
+    /// in that we capture and re-reprocess predicates from `Unimplemented` errors.
+    ///
+    /// This can lead to a corner case when dealing with region parameters.
+    /// During our selection loop in `evaluate_predicates`, we might end up with
+    /// two trait predicates that differ only in their region parameters:
+    /// one containing a HRTB lifetime parameter, and one containing a 'normal'
+    /// lifetime parameter. For example:
+    ///
+    ///     T as MyTrait<'a>
+    ///     T as MyTrait<'static>
+    ///
+    /// If we put both of these predicates in our computed `ParamEnv`, we'll
+    /// confuse `SelectionContext`, since it will (correctly) view both as being applicable.
+    ///
+    /// To solve this, we pick the 'more strict' lifetime bound -- i.e., the HRTB
+    /// Our end goal is to generate a user-visible description of the conditions
+    /// under which a type implements an auto trait. A trait predicate involving
+    /// a HRTB means that the type needs to work with any choice of lifetime,
+    /// not just one specific lifetime (e.g., `'static`).
     fn add_user_pred<'c>(
         &self,
         user_computed_preds: &mut FxHashSet<ty::Predicate<'c>>,
@@ -430,7 +432,7 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
 
                         if !new_substs.types().eq(old_substs.types()) {
                             // We can't compare lifetimes if the types are different,
-                            // so skip checking old_pred
+                            // so skip checking `old_pred`.
                             return true;
                         }
 
@@ -438,8 +440,8 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
                             new_substs.regions().zip(old_substs.regions())
                         {
                             match (new_region, old_region) {
-                                // If both predicates have an 'ReLateBound' (a HRTB) in the
-                                // same spot, we do nothing
+                                // If both predicates have an `ReLateBound` (a HRTB) in the
+                                // same spot, we do nothing.
                                 (
                                     ty::RegionKind::ReLateBound(_, _),
                                     ty::RegionKind::ReLateBound(_, _),
@@ -463,13 +465,13 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
                                     // varaible).
                                     //
                                     // In both cases, we want to remove the old predicate,
-                                    // from user_computed_preds, and replace it with the new
+                                    // from `user_computed_preds`, and replace it with the new
                                     // one. Having both the old and the new
-                                    // predicate in a ParamEnv would confuse SelectionContext
+                                    // predicate in a `ParamEnv` would confuse `SelectionContext`.
                                     //
                                     // We're currently in the predicate passed to 'retain',
-                                    // so we return 'false' to remove the old predicate from
-                                    // user_computed_preds
+                                    // so we return `false` to remove the old predicate from
+                                    // `user_computed_preds`.
                                     return false;
                                 }
                                 (_, ty::RegionKind::ReLateBound(_, _)) |
@@ -486,8 +488,8 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
                                     // predicate has some other type of region.
                                     //
                                     // We want to leave the old
-                                    // predicate in user_computed_preds, and skip adding
-                                    // new_pred to user_computed_params.
+                                    // predicate in `user_computed_preds`, and skip adding
+                                    // new_pred to `user_computed_params`.
                                     should_add_new = false
                                 },
                                 _ => {}
@@ -505,8 +507,8 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
         }
     }
 
-    // This is very similar to handle_lifetimes. However, instead of matching ty::Region's
-    // to each other, we match ty::RegionVid's to ty::Region's
+    /// This is very similar to `handle_lifetimes`. However, instead of matching `ty::Region`s
+    /// to each other, we match `ty::RegionVid`s to `ty::Region`s.
     fn map_vid_to_region<'cx>(
         &self,
         regions: &RegionConstraintData<'cx>,
@@ -573,7 +575,7 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
                             finished_map.insert(v1, r1);
                         }
                         (&RegionTarget::Region(_), &RegionTarget::RegionVid(_)) => {
-                            // Do nothing - we don't care about regions that are smaller than vids
+                            // Do nothing; we don't care about regions that are smaller than vids.
                         }
                         (&RegionTarget::RegionVid(_), &RegionTarget::RegionVid(_)) => {
                             if let Entry::Occupied(v) = vid_map.entry(*smaller) {
@@ -601,7 +603,7 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
     }
 
     pub fn is_of_param(&self, ty: Ty<'_>) -> bool {
-        return match ty.sty {
+        return match ty.kind {
             ty::Param(_) => true,
             ty::Projection(p) => self.is_of_param(p.self_ty()),
             _ => false,
@@ -609,7 +611,7 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
     }
 
     fn is_self_referential_projection(&self, p: ty::PolyProjectionPredicate<'_>) -> bool {
-        match p.ty().skip_binder().sty {
+        match p.ty().skip_binder().kind {
             ty::Projection(proj) if proj == p.skip_binder().projection_ty => {
                 true
             },
@@ -617,20 +619,14 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
         }
     }
 
-    fn evaluate_nested_obligations<
-        'b,
-        'c,
-        'd,
-        'cx,
-        T: Iterator<Item = Obligation<'cx, ty::Predicate<'cx>>>,
-    >(
+    fn evaluate_nested_obligations(
         &self,
         ty: Ty<'_>,
-        nested: T,
-        computed_preds: &'b mut FxHashSet<ty::Predicate<'cx>>,
-        fresh_preds: &'b mut FxHashSet<ty::Predicate<'cx>>,
-        predicates: &'b mut VecDeque<ty::PolyTraitPredicate<'cx>>,
-        select: &mut SelectionContext<'c, 'd, 'cx>,
+        nested: impl Iterator<Item = Obligation<'tcx, ty::Predicate<'tcx>>>,
+        computed_preds: &mut FxHashSet<ty::Predicate<'tcx>>,
+        fresh_preds: &mut FxHashSet<ty::Predicate<'tcx>>,
+        predicates: &mut VecDeque<ty::PolyTraitPredicate<'tcx>>,
+        select: &mut SelectionContext<'_, 'tcx>,
         only_projections: bool,
     ) -> bool {
         let dummy_cause = ObligationCause::misc(DUMMY_SP, hir::DUMMY_HIR_ID);
@@ -642,7 +638,7 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
                 fresh_preds.insert(self.clean_pred(select.infcx(), predicate));
 
             // Resolve any inference variables that we can, to help selection succeed
-            predicate = select.infcx().resolve_type_vars_if_possible(&predicate);
+            predicate = select.infcx().resolve_vars_if_possible(&predicate);
 
             // We only add a predicate as a user-displayable bound if
             // it involves a generic parameter, and doesn't contain
@@ -700,22 +696,64 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
                             }
                     }
 
-                    // We can only call poly_project_and_unify_type when our predicate's
-                    // Ty contains an inference variable - otherwise, there won't be anything to
-                    // unify
-                    if p.ty().skip_binder().has_infer_types() {
-                        debug!("Projecting and unifying projection predicate {:?}",
-                               predicate);
-                        match poly_project_and_unify_type(select, &obligation.with(p)) {
-                            Err(e) => {
-                                debug!(
-                                    "evaluate_nested_obligations: Unable to unify predicate \
-                                     '{:?}' '{:?}', bailing out",
-                                    ty, e
-                                );
-                                return false;
-                            }
-                            Ok(Some(v)) => {
+                    // There are three possible cases when we project a predicate:
+                    //
+                    // 1. We encounter an error. This means that it's impossible for
+                    // our current type to implement the auto trait - there's bound
+                    // that we could add to our ParamEnv that would 'fix' this kind
+                    // of error, as it's not caused by an unimplemented type.
+                    //
+                    // 2. We succesfully project the predicate (Ok(Some(_))), generating
+                    //  some subobligations. We then process these subobligations
+                    //  like any other generated sub-obligations.
+                    //
+                    // 3. We receieve an 'ambiguous' result (Ok(None))
+                    // If we were actually trying to compile a crate,
+                    // we would need to re-process this obligation later.
+                    // However, all we care about is finding out what bounds
+                    // are needed for our type to implement a particular auto trait.
+                    // We've already added this obligation to our computed ParamEnv
+                    // above (if it was necessary). Therefore, we don't need
+                    // to do any further processing of the obligation.
+                    //
+                    // Note that we *must* try to project *all* projection predicates
+                    // we encounter, even ones without inference variable.
+                    // This ensures that we detect any projection errors,
+                    // which indicate that our type can *never* implement the given
+                    // auto trait. In that case, we will generate an explicit negative
+                    // impl (e.g. 'impl !Send for MyType'). However, we don't
+                    // try to process any of the generated subobligations -
+                    // they contain no new information, since we already know
+                    // that our type implements the projected-through trait,
+                    // and can lead to weird region issues.
+                    //
+                    // Normally, we'll generate a negative impl as a result of encountering
+                    // a type with an explicit negative impl of an auto trait
+                    // (for example, raw pointers have !Send and !Sync impls)
+                    // However, through some **interesting** manipulations of the type
+                    // system, it's actually possible to write a type that never
+                    // implements an auto trait due to a projection error, not a normal
+                    // negative impl error. To properly handle this case, we need
+                    // to ensure that we catch any potential projection errors,
+                    // and turn them into an explicit negative impl for our type.
+                    debug!("Projecting and unifying projection predicate {:?}",
+                           predicate);
+
+                    match poly_project_and_unify_type(select, &obligation.with(p)) {
+                        Err(e) => {
+                            debug!(
+                                "evaluate_nested_obligations: Unable to unify predicate \
+                                 '{:?}' '{:?}', bailing out",
+                                ty, e
+                            );
+                            return false;
+                        }
+                        Ok(Some(v)) => {
+                            // We only care about sub-obligations
+                            // when we started out trying to unify
+                            // some inference variables. See the comment above
+                            // for more infomration
+                            if p.ty().skip_binder().has_infer_types() {
                                 if !self.evaluate_nested_obligations(
                                     ty,
                                     v.clone().iter().cloned(),
@@ -728,7 +766,16 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
                                     return false;
                                 }
                             }
-                            Ok(None) => {
+                        }
+                        Ok(None) => {
+                            // It's ok not to make progress when hvave no inference variables -
+                            // in that case, we were only performing unifcation to check if an
+                            // error occured (which would indicate that it's impossible for our
+                            // type to implement the auto trait).
+                            // However, we should always make progress (either by generating
+                            // subobligations or getting an error) when we started off with
+                            // inference variables
+                            if p.ty().skip_binder().has_infer_types() {
                                 panic!("Unexpected result when selecting {:?} {:?}", ty, obligation)
                             }
                         }
@@ -771,23 +818,23 @@ impl<'a, 'tcx> AutoTraitFinder<'a, 'tcx> {
         return true;
     }
 
-    pub fn clean_pred<'c, 'd, 'cx>(
+    pub fn clean_pred(
         &self,
-        infcx: &InferCtxt<'c, 'd, 'cx>,
-        p: ty::Predicate<'cx>,
-    ) -> ty::Predicate<'cx> {
+        infcx: &InferCtxt<'_, 'tcx>,
+        p: ty::Predicate<'tcx>,
+    ) -> ty::Predicate<'tcx> {
         infcx.freshen(p)
     }
 }
 
 // Replaces all ReVars in a type with ty::Region's, using the provided map
-pub struct RegionReplacer<'a, 'gcx: 'a + 'tcx, 'tcx: 'a> {
+pub struct RegionReplacer<'a, 'tcx> {
     vid_to_region: &'a FxHashMap<ty::RegionVid, ty::Region<'tcx>>,
-    tcx: TyCtxt<'a, 'gcx, 'tcx>,
+    tcx: TyCtxt<'tcx>,
 }
 
-impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for RegionReplacer<'a, 'gcx, 'tcx> {
-    fn tcx<'b>(&'b self) -> TyCtxt<'b, 'gcx, 'tcx> {
+impl<'a, 'tcx> TypeFolder<'tcx> for RegionReplacer<'a, 'tcx> {
+    fn tcx<'b>(&'b self) -> TyCtxt<'tcx> {
         self.tcx
     }
 

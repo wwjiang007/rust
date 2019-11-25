@@ -1,4 +1,4 @@
-// compile-pass
+// build-pass
 #![feature(core_intrinsics)]
 #![allow(warnings)]
 

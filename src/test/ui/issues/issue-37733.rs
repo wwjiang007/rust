@@ -1,4 +1,4 @@
-// compile-pass
+// build-pass
 #![allow(dead_code)]
 type A = for<> fn();
 

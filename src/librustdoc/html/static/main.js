@@ -3,7 +3,7 @@
 
 // Local js definitions:
 /* global addClass, getCurrentValue, hasClass */
-/* global isHidden onEach, removeClass, updateLocalStorage */
+/* global onEach, removeClass, updateLocalStorage */
 
 if (!String.prototype.startsWith) {
     String.prototype.startsWith = function(searchString, position) {
@@ -39,6 +39,14 @@ if (!DOMTokenList.prototype.remove) {
     };
 }
 
+function getSearchInput() {
+    return document.getElementsByClassName("search-input")[0];
+}
+
+function getSearchElement() {
+    return document.getElementById("search");
+}
+
 (function() {
     "use strict";
 
@@ -71,7 +79,8 @@ if (!DOMTokenList.prototype.remove) {
                      "derive",
                      "traitalias"];
 
-    var search_input = document.getElementsByClassName("search-input")[0];
+    var disableShortcuts = getCurrentValue("rustdoc-disable-shortcuts") === "true";
+    var search_input = getSearchInput();
 
     // On the search screen, so you remain on the last tab you opened.
     //
@@ -105,9 +114,9 @@ if (!DOMTokenList.prototype.remove) {
                 sidebar.appendChild(div);
             }
         }
-        var themePicker = document.getElementsByClassName("theme-picker");
-        if (themePicker && themePicker.length > 0) {
-            themePicker[0].style.display = "none";
+        var themePickers = document.getElementsByClassName("theme-picker");
+        if (themePickers && themePickers.length > 0) {
+            themePickers[0].style.display = "none";
         }
     }
 
@@ -123,19 +132,15 @@ if (!DOMTokenList.prototype.remove) {
             filler.remove();
         }
         document.getElementsByTagName("body")[0].style.marginTop = "";
-        var themePicker = document.getElementsByClassName("theme-picker");
-        if (themePicker && themePicker.length > 0) {
-            themePicker[0].style.display = null;
+        var themePickers = document.getElementsByClassName("theme-picker");
+        if (themePickers && themePickers.length > 0) {
+            themePickers[0].style.display = null;
         }
     }
 
     // used for special search precedence
     var TY_PRIMITIVE = itemTypes.indexOf("primitive");
     var TY_KEYWORD = itemTypes.indexOf("keyword");
-
-    onEachLazy(document.getElementsByClassName("js-only"), function(e) {
-        removeClass(e, "js-only");
-    });
 
     function getQueryStringParams() {
         var params = {};
@@ -152,48 +157,111 @@ if (!DOMTokenList.prototype.remove) {
         return window.history && typeof window.history.pushState === "function";
     }
 
-    var main = document.getElementById("main");
+    function isHidden(elem) {
+        return elem.offsetHeight === 0;
+    }
 
-    function highlightSourceLines(ev) {
-        // If we're in mobile mode, we should add the sidebar in any case.
-        hideSidebar();
-        var elem;
-        var search = document.getElementById("search");
-        var i, from, to, match = window.location.hash.match(/^#?(\d+)(?:-(\d+))?$/);
-        if (match) {
-            from = parseInt(match[1], 10);
-            to = Math.min(50000, parseInt(match[2] || match[1], 10));
-            from = Math.min(from, to);
-            elem = document.getElementById(from);
-            if (!elem) {
-                return;
-            }
-            if (ev === null) {
-                var x = document.getElementById(from);
-                if (x) {
-                    x.scrollIntoView();
-                }
-            }
-            onEachLazy(document.getElementsByClassName("line-numbers"), function(e) {
-                onEachLazy(e.getElementsByTagName("span"), function(i_e) {
-                    removeClass(i_e, "line-highlighted");
-                });
-            });
-            for (i = from; i <= to; ++i) {
-                addClass(document.getElementById(i), "line-highlighted");
-            }
-        } else if (ev !== null && search && !hasClass(search, "hidden") && ev.newURL) {
+    var main = document.getElementById("main");
+    var savedHash = "";
+
+    function handleHashes(ev) {
+        var search = getSearchElement();
+        if (ev !== null && search && !hasClass(search, "hidden") && ev.newURL) {
+            // This block occurs when clicking on an element in the navbar while
+            // in a search.
             addClass(search, "hidden");
             removeClass(main, "hidden");
             var hash = ev.newURL.slice(ev.newURL.indexOf("#") + 1);
             if (browserSupportsHistoryApi()) {
                 history.replaceState(hash, "", "?search=#" + hash);
             }
-            elem = document.getElementById(hash);
+            var elem = document.getElementById(hash);
             if (elem) {
                 elem.scrollIntoView();
             }
         }
+        // This part is used in case an element is not visible.
+        if (savedHash !== window.location.hash) {
+            savedHash = window.location.hash;
+            if (savedHash.length === 0) {
+                return;
+            }
+            var elem = document.getElementById(savedHash.slice(1)); // we remove the '#'
+            if (!elem || !isHidden(elem)) {
+                return;
+            }
+            var parent = elem.parentNode;
+            if (parent && hasClass(parent, "impl-items")) {
+                // In case this is a trait implementation item, we first need to toggle
+                // the "Show hidden undocumented items".
+                onEachLazy(parent.getElementsByClassName("collapsed"), function(e) {
+                    if (e.parentNode === parent) {
+                        // Only click on the toggle we're looking for.
+                        e.click();
+                        return true;
+                    }
+                });
+                if (isHidden(elem)) {
+                    // The whole parent is collapsed. We need to click on its toggle as well!
+                    if (hasClass(parent.lastElementChild, "collapse-toggle")) {
+                        parent.lastElementChild.click();
+                    }
+                }
+            }
+        }
+    }
+
+    function highlightSourceLines(match, ev) {
+        if (typeof match === "undefined") {
+            // If we're in mobile mode, we should hide the sidebar in any case.
+            hideSidebar();
+            match = window.location.hash.match(/^#?(\d+)(?:-(\d+))?$/);
+        }
+        if (!match) {
+            return;
+        }
+        var from = parseInt(match[1], 10);
+        var to = from;
+        if (typeof match[2] !== "undefined") {
+            to = parseInt(match[2], 10);
+        }
+        if (to < from) {
+            var tmp = to;
+            to = from;
+            from = tmp;
+        }
+        var elem = document.getElementById(from);
+        if (!elem) {
+            return;
+        }
+        if (!ev) {
+            var x = document.getElementById(from);
+            if (x) {
+                x.scrollIntoView();
+            }
+        }
+        onEachLazy(document.getElementsByClassName("line-numbers"), function(e) {
+            onEachLazy(e.getElementsByTagName("span"), function(i_e) {
+                removeClass(i_e, "line-highlighted");
+            });
+        });
+        for (var i = from; i <= to; ++i) {
+            elem = document.getElementById(i);
+            if (!elem) {
+                break;
+            }
+            addClass(elem, "line-highlighted");
+        }
+    }
+
+    function onHashChange(ev) {
+        // If we're in mobile mode, we should hide the sidebar in any case.
+        hideSidebar();
+        var match = window.location.hash.match(/^#?(\d+)(?:-(\d+))?$/);
+        if (match) {
+            return highlightSourceLines(match, ev);
+        }
+        handleHashes(ev);
     }
 
     function expandSection(id) {
@@ -213,9 +281,6 @@ if (!DOMTokenList.prototype.remove) {
             }
         }
     }
-
-    highlightSourceLines(null);
-    window.onhashchange = highlightSourceLines;
 
     // Gets the human-readable string for the virtual-key code of the
     // given KeyboardEvent, ev.
@@ -239,7 +304,12 @@ if (!DOMTokenList.prototype.remove) {
         return String.fromCharCode(c);
     }
 
+    function getHelpElement() {
+        return document.getElementById("help");
+    }
+
     function displayHelp(display, ev, help) {
+        var help = help ? help : getHelpElement();
         if (display === true) {
             if (hasClass(help, "hidden")) {
                 ev.preventDefault();
@@ -253,9 +323,10 @@ if (!DOMTokenList.prototype.remove) {
         }
     }
 
-    function handleEscape(ev, help) {
+    function handleEscape(ev) {
+        var help = getHelpElement();
+        var search = getSearchElement();
         hideModal();
-        var search = document.getElementById("search");
         if (hasClass(help, "hidden") === false) {
             displayHelp(false, ev, help);
         } else if (hasClass(search, "hidden") === false) {
@@ -269,26 +340,25 @@ if (!DOMTokenList.prototype.remove) {
 
     function handleShortcut(ev) {
         // Don't interfere with browser shortcuts
-        if (ev.ctrlKey || ev.altKey || ev.metaKey) {
+        if (ev.ctrlKey || ev.altKey || ev.metaKey || disableShortcuts === true) {
             return;
         }
 
-        var help = document.getElementById("help");
         if (document.activeElement.tagName === "INPUT") {
             switch (getVirtualKey(ev)) {
             case "Escape":
-                handleEscape(ev, help);
+                handleEscape(ev);
                 break;
             }
         } else {
             switch (getVirtualKey(ev)) {
             case "Escape":
-                handleEscape(ev, help);
+                handleEscape(ev);
                 break;
 
             case "s":
             case "S":
-                displayHelp(false, ev, help);
+                displayHelp(false, ev);
                 hideModal();
                 ev.preventDefault();
                 focusSearchBar();
@@ -303,7 +373,7 @@ if (!DOMTokenList.prototype.remove) {
             case "?":
                 if (ev.shiftKey) {
                     hideModal();
-                    displayHelp(true, ev, help);
+                    displayHelp(true, ev);
                 }
                 break;
             }
@@ -322,41 +392,58 @@ if (!DOMTokenList.prototype.remove) {
 
     document.onkeypress = handleShortcut;
     document.onkeydown = handleShortcut;
+
+    var handleSourceHighlight = (function() {
+        var prev_line_id = 0;
+
+        var set_fragment = function(name) {
+            var x = window.scrollX,
+                y = window.scrollY;
+            if (browserSupportsHistoryApi()) {
+                history.replaceState(null, null, "#" + name);
+                highlightSourceLines();
+            } else {
+                location.replace("#" + name);
+            }
+            // Prevent jumps when selecting one or many lines
+            window.scrollTo(x, y);
+        };
+
+        return function(ev) {
+            var cur_line_id = parseInt(ev.target.id, 10);
+            ev.preventDefault();
+
+            if (ev.shiftKey && prev_line_id) {
+                // Swap selection if needed
+                if (prev_line_id > cur_line_id) {
+                    var tmp = prev_line_id;
+                    prev_line_id = cur_line_id;
+                    cur_line_id = tmp;
+                }
+
+                set_fragment(prev_line_id + "-" + cur_line_id);
+            } else {
+                prev_line_id = cur_line_id;
+
+                set_fragment(cur_line_id);
+            }
+        }
+    })();
+
     document.onclick = function(ev) {
         if (hasClass(ev.target, "collapse-toggle")) {
             collapseDocs(ev.target, "toggle");
         } else if (hasClass(ev.target.parentNode, "collapse-toggle")) {
             collapseDocs(ev.target.parentNode, "toggle");
         } else if (ev.target.tagName === "SPAN" && hasClass(ev.target.parentNode, "line-numbers")) {
-            var prev_id = 0;
-
-            var set_fragment = function(name) {
-                if (browserSupportsHistoryApi()) {
-                    history.replaceState(null, null, "#" + name);
-                    window.hashchange();
-                } else {
-                    location.replace("#" + name);
-                }
-            };
-
-            var cur_id = parseInt(ev.target.id, 10);
-
-            if (ev.shiftKey && prev_id) {
-                if (prev_id > cur_id) {
-                    var tmp = prev_id;
-                    prev_id = cur_id;
-                    cur_id = tmp;
-                }
-
-                set_fragment(prev_id + "-" + cur_id);
-            } else {
-                prev_id = cur_id;
-
-                set_fragment(cur_id);
+            handleSourceHighlight(ev);
+        } else if (hasClass(getHelpElement(), "hidden") === false) {
+            var help = getHelpElement();
+            var is_inside_help_popup = ev.target !== help && help.contains(ev.target);
+            if (is_inside_help_popup === false) {
+                addClass(help, "hidden");
+                removeClass(document.body, "blur");
             }
-        } else if (hasClass(document.getElementById("help"), "hidden") === false) {
-            addClass(document.getElementById("help"), "hidden");
-            removeClass(document.body, "blur");
         } else {
             // Making a collapsed element visible on onhashchange seems
             // too late
@@ -521,6 +608,11 @@ if (!DOMTokenList.prototype.remove) {
                 results.sort(function(aaa, bbb) {
                     var a, b;
 
+                    // sort by exact match with regard to the last word (mismatch goes later)
+                    a = (aaa.word !== val);
+                    b = (bbb.word !== val);
+                    if (a !== b) { return a - b; }
+
                     // Sort by non levenshtein results and then levenshtein results by the distance
                     // (less changes required to match means higher rankings)
                     a = (aaa.lev);
@@ -530,11 +622,6 @@ if (!DOMTokenList.prototype.remove) {
                     // sort by crate (non-current crate goes later)
                     a = (aaa.item.crate !== window.currentCrate);
                     b = (bbb.item.crate !== window.currentCrate);
-                    if (a !== b) { return a - b; }
-
-                    // sort by exact match (mismatch goes later)
-                    a = (aaa.word !== valLower);
-                    b = (bbb.word !== valLower);
                     if (a !== b) { return a - b; }
 
                     // sort by item name length (longer goes later)
@@ -988,21 +1075,20 @@ if (!DOMTokenList.prototype.remove) {
                 val = paths[paths.length - 1];
                 var contains = paths.slice(0, paths.length > 1 ? paths.length - 1 : 1);
 
+                var lev;
+                var lev_distance;
                 for (j = 0; j < nSearchWords; ++j) {
-                    var lev;
-                    var lev_distance;
                     ty = searchIndex[j];
                     if (!ty || (filterCrates !== undefined && ty.crate !== filterCrates)) {
                         continue;
                     }
-                    var lev_distance;
                     var lev_add = 0;
                     if (paths.length > 1) {
                         lev = checkPath(contains, paths[paths.length - 1], ty);
                         if (lev > MAX_LEV_DISTANCE) {
                             continue;
                         } else if (lev > 0) {
-                            lev_add = 1;
+                            lev_add = lev / 10;
                         }
                     }
 
@@ -1073,10 +1159,6 @@ if (!DOMTokenList.prototype.remove) {
                     if (index !== -1 || lev <= MAX_LEV_DISTANCE) {
                         if (index !== -1 && paths.length < 2) {
                             lev = 0;
-                        } else if (searchWords[j] === val) {
-                            // Small trick to fix when you're looking for a one letter type
-                            // and there are other short named types.
-                            lev = -1;
                         }
                         if (results[fullId] === undefined) {
                             results[fullId] = {
@@ -1182,7 +1264,7 @@ if (!DOMTokenList.prototype.remove) {
                 }
                 dst = dst[0];
                 if (window.location.pathname === dst.pathname) {
-                    addClass(document.getElementById("search"), "hidden");
+                    addClass(getSearchElement(), "hidden");
                     removeClass(main, "hidden");
                     document.location.href = dst.href;
                 }
@@ -1259,9 +1341,7 @@ if (!DOMTokenList.prototype.remove) {
                 } else if (e.which === 16) { // shift
                     // Does nothing, it's just to avoid losing "focus" on the highlighted element.
                 } else if (e.which === 27) { // escape
-                    removeClass(actives[currentTab][0], "highlighted");
-                    search_input.value = "";
-                    defocusSearchBar();
+                    handleEscape(e);
                 } else if (actives[currentTab].length > 0) {
                     removeClass(actives[currentTab][0], "highlighted");
                 }
@@ -1412,7 +1492,7 @@ if (!DOMTokenList.prototype.remove) {
                 ret_others[0] + ret_in_args[0] + ret_returned[0] + "</div>";
 
             addClass(main, "hidden");
-            var search = document.getElementById("search");
+            var search = getSearchElement();
             removeClass(search, "hidden");
             search.innerHTML = output;
             var tds = search.getElementsByTagName("td");
@@ -1546,7 +1626,7 @@ if (!DOMTokenList.prototype.remove) {
             }
 
             var filterCrates = getFilterCrates();
-            showResults(execSearch(query, index, filterCrates), filterCrates);
+            showResults(execSearch(query, index, filterCrates));
         }
 
         function buildIndex(rawSearchIndex) {
@@ -1622,7 +1702,7 @@ if (!DOMTokenList.prototype.remove) {
                     if (hasClass(main, "content")) {
                         removeClass(main, "hidden");
                     }
-                    var search_c = document.getElementById("search");
+                    var search_c = getSearchElement();
                     if (hasClass(search_c, "content")) {
                         addClass(search_c, "hidden");
                     }
@@ -1647,9 +1727,10 @@ if (!DOMTokenList.prototype.remove) {
             };
             search_input.onpaste = search_input.onchange;
 
-            var selectCrate = document.getElementById('crate-search');
+            var selectCrate = document.getElementById("crate-search");
             if (selectCrate) {
                 selectCrate.onchange = function() {
+                    updateLocalStorage("rustdoc-saved-filter-crate", selectCrate.value);
                     search(undefined, true);
                 };
             }
@@ -1668,7 +1749,7 @@ if (!DOMTokenList.prototype.remove) {
                         if (hasClass(main, "content")) {
                             removeClass(main, "hidden");
                         }
-                        var search_c = document.getElementById("search");
+                        var search_c = getSearchElement();
                         if (hasClass(search_c, "content")) {
                             addClass(search_c, "hidden");
                         }
@@ -2067,7 +2148,7 @@ if (!DOMTokenList.prototype.remove) {
     function autoCollapse(pageId, collapse) {
         if (collapse) {
             toggleAllDocs(pageId, true);
-        } else if (getCurrentValue("rustdoc-trait-implementations") !== "false") {
+        } else if (getCurrentValue("rustdoc-auto-hide-trait-implementations") !== "false") {
             var impl_list = document.getElementById("implementations-list");
 
             if (impl_list !== null) {
@@ -2105,7 +2186,7 @@ if (!DOMTokenList.prototype.remove) {
     }
 
     var toggle = createSimpleToggle(false);
-    var hideMethodDocs = getCurrentValue("rustdoc-method-docs") === "true";
+    var hideMethodDocs = getCurrentValue("rustdoc-auto-hide-method-docs") === "true";
     var pageId = getPageId();
 
     var func = function(e) {
@@ -2235,7 +2316,31 @@ if (!DOMTokenList.prototype.remove) {
         return wrapper;
     }
 
-    var showItemDeclarations = getCurrentValue("rustdoc-item-declarations") === "false";
+    var currentType = document.getElementsByClassName("type-decl")[0];
+    var className = null;
+    if (currentType) {
+        currentType = currentType.getElementsByClassName("rust")[0];
+        if (currentType) {
+            currentType.classList.forEach(function(item) {
+                if (item !== "main") {
+                    className = item;
+                    return true;
+                }
+            });
+        }
+    }
+    var showItemDeclarations = getCurrentValue("rustdoc-auto-hide-" + className);
+    if (showItemDeclarations === null) {
+        if (className === "enum" || className === "macro") {
+            showItemDeclarations = "false";
+        } else if (className === "struct" || className === "union" || className === "trait") {
+            showItemDeclarations = "true";
+        } else {
+            // In case we found an unknown type, we just use the "parent" value.
+            showItemDeclarations = getCurrentValue("rustdoc-auto-hide-declarations");
+        }
+    }
+    showItemDeclarations = showItemDeclarations === "false";
     function buildToggleWrapper(e) {
         if (hasClass(e, "autohide")) {
             var wrap = e.previousElementSibling;
@@ -2318,14 +2423,18 @@ if (!DOMTokenList.prototype.remove) {
 
     // To avoid checking on "rustdoc-item-attributes" value on every loop...
     var itemAttributesFunc = function() {};
-    if (getCurrentValue("rustdoc-item-attributes") !== "false") {
+    if (getCurrentValue("rustdoc-auto-hide-attributes") !== "false") {
         itemAttributesFunc = function(x) {
             collapseDocs(x.previousSibling.childNodes[0], "toggle");
         };
     }
     var attributesToggle = createToggleWrapper(createSimpleToggle(false));
     onEachLazy(main.getElementsByClassName("attributes"), function(i_e) {
-        i_e.parentNode.insertBefore(attributesToggle.cloneNode(true), i_e);
+        var attr_tog = attributesToggle.cloneNode(true);
+        if (hasClass(i_e, "top-attr") === true) {
+            addClass(attr_tog, "top-attr");
+        }
+        i_e.parentNode.insertBefore(attr_tog, i_e);
         itemAttributesFunc(i_e);
     });
 
@@ -2415,7 +2524,7 @@ if (!DOMTokenList.prototype.remove) {
     function putBackSearch(search_input) {
         if (search_input.value !== "") {
             addClass(main, "hidden");
-            removeClass(document.getElementById("search"), "hidden");
+            removeClass(getSearchElement(), "hidden");
             if (browserSupportsHistoryApi()) {
                 history.replaceState(search_input.value,
                                      "",
@@ -2433,7 +2542,7 @@ if (!DOMTokenList.prototype.remove) {
     var params = getQueryStringParams();
     if (params && params.search) {
         addClass(main, "hidden");
-        var search = document.getElementById("search");
+        var search = getSearchElement();
         removeClass(search, "hidden");
         search.innerHTML = "<h3 style=\"text-align: center;\">Loading search results...</h3>";
     }
@@ -2481,7 +2590,7 @@ if (!DOMTokenList.prototype.remove) {
     }
 
     function addSearchOptions(crates) {
-        var elem = document.getElementById('crate-search');
+        var elem = document.getElementById("crate-search");
 
         if (!elem) {
             return;
@@ -2505,23 +2614,87 @@ if (!DOMTokenList.prototype.remove) {
             }
             return 0;
         });
+        var savedCrate = getCurrentValue("rustdoc-saved-filter-crate");
         for (var i = 0; i < crates_text.length; ++i) {
             var option = document.createElement("option");
             option.value = crates_text[i];
             option.innerText = crates_text[i];
             elem.appendChild(option);
+            // Set the crate filter from saved storage, if the current page has the saved crate
+            // filter.
+            //
+            // If not, ignore the crate filter -- we want to support filtering for crates on sites
+            // like doc.rust-lang.org where the crates may differ from page to page while on the
+            // same domain.
+            if (crates_text[i] === savedCrate) {
+                elem.value = savedCrate;
+            }
         }
+
+        if (search_input) {
+            search_input.removeAttribute('disabled');
+        };
     }
 
     window.addSearchOptions = addSearchOptions;
+
+    function buildHelperPopup() {
+        var popup = document.createElement("aside");
+        addClass(popup, "hidden");
+        popup.id = "help";
+
+        var container = document.createElement("div");
+        var shortcuts = [
+            ["?", "Show this help dialog"],
+            ["S", "Focus the search field"],
+            ["↑", "Move up in search results"],
+            ["↓", "Move down in search results"],
+            ["↹", "Switch tab"],
+            ["&#9166;", "Go to active search result"],
+            ["+", "Expand all sections"],
+            ["-", "Collapse all sections"],
+        ].map(x => "<dt><kbd>" + x[0] + "</kbd></dt><dd>" + x[1] + "</dd>").join("");
+        var div_shortcuts = document.createElement("div");
+        addClass(div_shortcuts, "shortcuts");
+        div_shortcuts.innerHTML = "<h2>Keyboard Shortcuts</h2><dl>" + shortcuts + "</dl></div>";
+
+        var infos = [
+            "Prefix searches with a type followed by a colon (e.g., <code>fn:</code>) to \
+             restrict the search to a given type.",
+            "Accepted types are: <code>fn</code>, <code>mod</code>, <code>struct</code>, \
+             <code>enum</code>, <code>trait</code>, <code>type</code>, <code>macro</code>, \
+             and <code>const</code>.",
+            "Search functions by type signature (e.g., <code>vec -> usize</code> or \
+             <code>* -> vec</code>)",
+            "Search multiple things at once by splitting your query with comma (e.g., \
+             <code>str,u8</code> or <code>String,struct:Vec,test</code>)",
+            "You can look for items with an exact name by putting double quotes around \
+             your request: <code>\"string\"</code>",
+            "Look for items inside another one by searching for a path: <code>vec::Vec</code>",
+        ].map(x => "<p>" + x + "</p>").join("");
+        var div_infos = document.createElement("div");
+        addClass(div_infos, "infos");
+        div_infos.innerHTML = "<h2>Search Tricks</h2>" + infos;
+
+        container.appendChild(div_shortcuts);
+        container.appendChild(div_infos);
+
+        popup.appendChild(container);
+        insertAfter(popup, getSearchElement());
+    }
+
+    onHashChange();
+    window.onhashchange = onHashChange;
+
+    buildHelperPopup();
 }());
 
 // Sets the focus on the search bar at the top of the page
 function focusSearchBar() {
-    document.getElementsByClassName("search-input")[0].focus();
+    getSearchInput().focus();
 }
 
 // Removes the focus from the search bar
 function defocusSearchBar() {
-    document.getElementsByClassName("search-input")[0].blur();
+    getSearchInput().blur();
 }

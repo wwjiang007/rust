@@ -1,4 +1,4 @@
-// compile-pass
+// run-pass
 #![allow(stable_features)]
 
 #![feature(cfg_target_feature)]

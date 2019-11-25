@@ -1,19 +1,23 @@
 //! See docs in `build/expr/mod.rs`.
 
-use rustc_data_structures::fx::FxHashMap;
-use rustc_data_structures::indexed_vec::Idx;
+use rustc_index::vec::Idx;
 
 use crate::build::expr::category::{Category, RvalueFunc};
 use crate::build::{BlockAnd, BlockAndExtension, Builder};
 use crate::hair::*;
 use rustc::middle::region;
-use rustc::mir::interpret::InterpError;
+use rustc::mir::interpret::PanicInfo;
 use rustc::mir::*;
-use rustc::ty::{self, CanonicalUserTypeAnnotation, Ty, UpvarSubsts};
+use rustc::ty::{self, Ty, UpvarSubsts};
 use syntax_pos::Span;
 
-impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
-    /// See comment on `as_local_operand`
+impl<'a, 'tcx> Builder<'a, 'tcx> {
+    /// Returns an rvalue suitable for use until the end of the current
+    /// scope expression.
+    ///
+    /// The operand returned from this function will *not be valid* after
+    /// an ExprKind::Scope is passed, so please do *not* return it from
+    /// functions to avoid bad miscompiles.
     pub fn as_local_rvalue<M>(&mut self, block: BasicBlock, expr: M) -> BlockAnd<Rvalue<'tcx>>
     where
         M: Mirror<'tcx, Output = Expr<'tcx>>,
@@ -23,7 +27,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
     }
 
     /// Compile `expr`, yielding an rvalue.
-    pub fn as_rvalue<M>(
+    fn as_rvalue<M>(
         &mut self,
         block: BasicBlock,
         scope: Option<region::Scope>,
@@ -58,23 +62,13 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 value,
             } => {
                 let region_scope = (region_scope, source_info);
-                this.in_scope(region_scope, lint_level, block, |this| {
+                this.in_scope(region_scope, lint_level, |this| {
                     this.as_rvalue(block, scope, value)
                 })
             }
             ExprKind::Repeat { value, count } => {
                 let value_operand = unpack!(block = this.as_operand(block, scope, value));
                 block.and(Rvalue::Repeat(value_operand, count))
-            }
-            ExprKind::Borrow {
-                borrow_kind,
-                arg,
-            } => {
-                let arg_place = match borrow_kind {
-                    BorrowKind::Shared => unpack!(block = this.as_read_only_place(block, arg)),
-                    _ => unpack!(block = this.as_place(block, arg)),
-                };
-                block.and(Rvalue::Ref(this.hir.tcx().lifetimes.re_erased, borrow_kind, arg_place))
             }
             ExprKind::Binary { op, lhs, rhs } => {
                 let lhs = unpack!(block = this.as_operand(block, scope, lhs));
@@ -101,7 +95,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                         block,
                         Operand::Move(is_min),
                         false,
-                        InterpError::OverflowNeg,
+                        PanicInfo::OverflowNeg,
                         expr_span,
                     );
                 }
@@ -127,24 +121,23 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                     this.schedule_drop_storage_and_value(
                         expr_span,
                         scope,
-                        &Place::Base(PlaceBase::Local(result)),
-                        value.ty,
+                        result,
                     );
                 }
 
                 // malloc some memory of suitable type (thus far, uninitialized):
                 let box_ = Rvalue::NullaryOp(NullOp::Box, value.ty);
                 this.cfg
-                    .push_assign(block, source_info, &Place::Base(PlaceBase::Local(result)), box_);
+                    .push_assign(block, source_info, &Place::from(result), box_);
 
                 // initialize the box contents:
                 unpack!(
                     block = this.into(
-                        &Place::Base(PlaceBase::Local(result)).deref(),
+                        &this.hir.tcx().mk_place_deref(Place::from(result)),
                         block, value
                     )
                 );
-                block.and(Rvalue::Use(Operand::Move(Place::Base(PlaceBase::Local(result)))))
+                block.and(Rvalue::Use(Operand::Move(Place::from(result))))
             }
             ExprKind::Cast { source } => {
                 let source = unpack!(block = this.as_operand(block, scope, source));
@@ -257,72 +250,6 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 };
                 block.and(Rvalue::Aggregate(result, operands))
             }
-            ExprKind::Adt {
-                adt_def,
-                variant_index,
-                substs,
-                user_ty,
-                fields,
-                base,
-            } => {
-                // see (*) above
-                let is_union = adt_def.is_union();
-                let active_field_index = if is_union {
-                    Some(fields[0].name.index())
-                } else {
-                    None
-                };
-
-                // first process the set of fields that were provided
-                // (evaluating them in order given by user)
-                let fields_map: FxHashMap<_, _> = fields
-                    .into_iter()
-                    .map(|f| {
-                        (
-                            f.name,
-                            unpack!(block = this.as_operand(block, scope, f.expr)),
-                        )
-                    }).collect();
-
-                let field_names = this.hir.all_fields(adt_def, variant_index);
-
-                let fields = if let Some(FruInfo { base, field_types }) = base {
-                    let base = unpack!(block = this.as_place(block, base));
-
-                    // MIR does not natively support FRU, so for each
-                    // base-supplied field, generate an operand that
-                    // reads it from the base.
-                    field_names
-                        .into_iter()
-                        .zip(field_types.into_iter())
-                        .map(|(n, ty)| match fields_map.get(&n) {
-                            Some(v) => v.clone(),
-                            None => this.consume_by_copy_or_move(base.clone().field(n, ty)),
-                        }).collect()
-                } else {
-                    field_names
-                        .iter()
-                        .filter_map(|n| fields_map.get(n).cloned())
-                        .collect()
-                };
-
-                let inferred_ty = expr.ty;
-                let user_ty = user_ty.map(|ty| {
-                    this.canonical_user_type_annotations.push(CanonicalUserTypeAnnotation {
-                        span: source_info.span,
-                        user_ty: ty,
-                        inferred_ty,
-                    })
-                });
-                let adt = box AggregateKind::Adt(
-                    adt_def,
-                    variant_index,
-                    substs,
-                    user_ty,
-                    active_field_index,
-                );
-                block.and(Rvalue::Aggregate(adt, fields))
-            }
             ExprKind::Assign { .. } | ExprKind::AssignOp { .. } => {
                 block = unpack!(this.stmt_expr(block, expr, None));
                 block.and(this.unit_rvalue())
@@ -343,10 +270,13 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 resume.and(this.unit_rvalue())
             }
             ExprKind::Literal { .. }
+            | ExprKind::StaticRef { .. }
             | ExprKind::Block { .. }
             | ExprKind::Match { .. }
             | ExprKind::NeverToAny { .. }
             | ExprKind::Use { .. }
+            | ExprKind::Borrow { .. }
+            | ExprKind::Adt { .. }
             | ExprKind::Loop { .. }
             | ExprKind::LogicalOp { .. }
             | ExprKind::Call { .. }
@@ -359,7 +289,6 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             | ExprKind::Continue { .. }
             | ExprKind::Return { .. }
             | ExprKind::InlineAsm { .. }
-            | ExprKind::StaticRef { .. }
             | ExprKind::PlaceTypeAscription { .. }
             | ExprKind::ValueTypeAscription { .. } => {
                 // these do not have corresponding `Rvalue` variants,
@@ -398,10 +327,11 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             let val_fld = Field::new(0);
             let of_fld = Field::new(1);
 
-            let val = result_value.clone().field(val_fld, ty);
-            let of = result_value.field(of_fld, bool_ty);
+            let tcx = self.hir.tcx();
+            let val = tcx.mk_place_field(result_value.clone(), val_fld, ty);
+            let of = tcx.mk_place_field(result_value, of_fld, bool_ty);
 
-            let err = InterpError::Overflow(op);
+            let err = PanicInfo::Overflow(op);
 
             block = self.assert(block, Operand::Move(of), false, err, span);
 
@@ -411,11 +341,12 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                 // Checking division and remainder is more complex, since we 1. always check
                 // and 2. there are two possible failure cases, divide-by-zero and overflow.
 
-                let (zero_err, overflow_err) = if op == BinOp::Div {
-                    (InterpError::DivisionByZero, InterpError::Overflow(op))
+                let zero_err = if op == BinOp::Div {
+                    PanicInfo::DivisionByZero
                 } else {
-                    (InterpError::RemainderByZero, InterpError::Overflow(op))
+                    PanicInfo::RemainderByZero
                 };
+                let overflow_err = PanicInfo::Overflow(op);
 
                 // Check for / 0
                 let is_zero = self.temp(bool_ty, span);
@@ -496,45 +427,43 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
 
         let arg_place = unpack!(block = this.as_place(block, arg));
 
-        let mutability = match arg_place {
-            Place::Base(PlaceBase::Local(local)) => this.local_decls[local].mutability,
-            Place::Projection(box Projection {
-                base: Place::Base(PlaceBase::Local(local)),
-                elem: ProjectionElem::Deref,
-            }) => {
+        let mutability = match arg_place.as_ref() {
+            PlaceRef {
+                base: &PlaceBase::Local(local),
+                projection: &[],
+            } => this.local_decls[local].mutability,
+            PlaceRef {
+                base: &PlaceBase::Local(local),
+                projection: &[ProjectionElem::Deref],
+            } => {
                 debug_assert!(
-                    if let Some(ClearCrossCrate::Set(BindingForm::RefForGuard)) =
-                        this.local_decls[local].is_user_variable
-                    {
-                        true
-                    } else {
-                        false
-                    },
+                    this.local_decls[local].is_ref_for_guard(),
                     "Unexpected capture place",
                 );
                 this.local_decls[local].mutability
             }
-            Place::Projection(box Projection {
+            PlaceRef {
                 ref base,
-                elem: ProjectionElem::Field(upvar_index, _),
-            })
-            | Place::Projection(box Projection {
-                base:
-                    Place::Projection(box Projection {
-                        ref base,
-                        elem: ProjectionElem::Field(upvar_index, _),
-                    }),
-                elem: ProjectionElem::Deref,
-            }) => {
+                projection: &[ref proj_base @ .., ProjectionElem::Field(upvar_index, _)],
+            }
+            | PlaceRef {
+                ref base,
+                projection: &[
+                    ref proj_base @ ..,
+                    ProjectionElem::Field(upvar_index, _),
+                    ProjectionElem::Deref
+                ],
+            } => {
+                let place = PlaceRef {
+                    base,
+                    projection: proj_base,
+                };
+
                 // Not projected from the implicit `self` in a closure.
                 debug_assert!(
-                    match *base {
-                        Place::Base(PlaceBase::Local(local)) => local == Local::new(1),
-                        Place::Projection(box Projection {
-                            ref base,
-                            elem: ProjectionElem::Deref,
-                        }) => *base == Place::Base(PlaceBase::Local(Local::new(1))),
-                        _ => false,
+                    match place.local_or_deref_local() {
+                        Some(local) => local == Local::new(1),
+                        None => false,
                     },
                     "Unexpected capture place"
                 );
@@ -558,7 +487,7 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
         this.cfg.push_assign(
             block,
             source_info,
-            &Place::Base(PlaceBase::Local(temp)),
+            &Place::from(temp),
             Rvalue::Ref(this.hir.tcx().lifetimes.re_erased, borrow_kind, arg_place),
         );
 
@@ -569,32 +498,31 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
             this.schedule_drop_storage_and_value(
                 upvar_span,
                 temp_lifetime,
-                &Place::Base(PlaceBase::Local(temp)),
-                upvar_ty,
+                temp,
             );
         }
 
-        block.and(Operand::Move(Place::Base(PlaceBase::Local(temp))))
+        block.and(Operand::Move(Place::from(temp)))
     }
 
     // Helper to get a `-1` value of the appropriate type
     fn neg_1_literal(&mut self, span: Span, ty: Ty<'tcx>) -> Operand<'tcx> {
-        let param_ty = ty::ParamEnv::empty().and(self.hir.tcx().lift_to_global(&ty).unwrap());
+        let param_ty = ty::ParamEnv::empty().and(ty);
         let bits = self.hir.tcx().layout_of(param_ty).unwrap().size.bits();
         let n = (!0u128) >> (128 - bits);
         let literal = ty::Const::from_bits(self.hir.tcx(), n, param_ty);
 
-        self.literal_operand(span, ty, literal)
+        self.literal_operand(span, literal)
     }
 
     // Helper to get the minimum value of the appropriate type
     fn minval_literal(&mut self, span: Span, ty: Ty<'tcx>) -> Operand<'tcx> {
         assert!(ty.is_signed());
-        let param_ty = ty::ParamEnv::empty().and(self.hir.tcx().lift_to_global(&ty).unwrap());
+        let param_ty = ty::ParamEnv::empty().and(ty);
         let bits = self.hir.tcx().layout_of(param_ty).unwrap().size.bits();
         let n = 1 << (bits - 1);
         let literal = ty::Const::from_bits(self.hir.tcx(), n, param_ty);
 
-        self.literal_operand(span, ty, literal)
+        self.literal_operand(span, literal)
     }
 }

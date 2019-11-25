@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 #![deny(dead_code)]
 
 #[used]

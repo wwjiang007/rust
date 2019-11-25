@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 #![allow(dead_code)]
 #![allow(unreachable_code)]
 // Regression test for issue #39984.

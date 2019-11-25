@@ -422,7 +422,7 @@ impl fmt::Debug for ChildStderr {
 /// // Execute `ls` in the current directory of the program.
 /// list_dir.status().expect("process failed to execute");
 ///
-/// println!("");
+/// println!();
 ///
 /// // Change `ls` to execute in the root directory.
 /// list_dir.current_dir("/");
@@ -935,12 +935,12 @@ impl Stdio {
     ///     .expect("Failed to spawn child process");
     ///
     /// {
-    ///     let mut stdin = child.stdin.as_mut().expect("Failed to open stdin");
+    ///     let stdin = child.stdin.as_mut().expect("Failed to open stdin");
     ///     stdin.write_all("Hello, world!".as_bytes()).expect("Failed to write to stdin");
     /// }
     ///
     /// let output = child.wait_with_output().expect("Failed to read stdout");
-    /// assert_eq!(String::from_utf8_lossy(&output.stdout), "!dlrow ,olleH\n");
+    /// assert_eq!(String::from_utf8_lossy(&output.stdout), "!dlrow ,olleH");
     /// ```
     #[stable(feature = "process", since = "1.0.0")]
     pub fn piped() -> Stdio { Stdio(imp::Stdio::MakePipe) }
@@ -1153,10 +1153,13 @@ impl From<fs::File> for Stdio {
 ///
 /// This `struct` is used to represent the exit status of a child process.
 /// Child processes are created via the [`Command`] struct and their exit
-/// status is exposed through the [`status`] method.
+/// status is exposed through the [`status`] method, or the [`wait`] method
+/// of a [`Child`] process.
 ///
 /// [`Command`]: struct.Command.html
+/// [`Child`]: struct.Child.html
 /// [`status`]: struct.Command.html#method.status
+/// [`wait`]: struct.Child.html#method.wait
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 #[stable(feature = "process", since = "1.0.0")]
 pub struct ExitStatus(imp::ExitStatus);
@@ -1485,12 +1488,12 @@ impl Child {
 /// }
 ///
 /// fn main() {
-///     ::std::process::exit(match run_app() {
-///        Ok(_) => 0,
-///        Err(err) => {
-///            eprintln!("error: {:?}", err);
-///            1
-///        }
+///     std::process::exit(match run_app() {
+///         Ok(_) => 0,
+///         Err(err) => {
+///             eprintln!("error: {:?}", err);
+///             1
+///         }
 ///     });
 /// }
 /// ```
@@ -1592,7 +1595,7 @@ pub fn id() -> u32 {
 
 /// A trait for implementing arbitrary return types in the `main` function.
 ///
-/// The c-main function only supports to return integers as return type.
+/// The C-main function only supports to return integers as return type.
 /// So, every type implementing the `Termination` trait has to be converted
 /// to an integer.
 ///
@@ -1658,7 +1661,7 @@ mod tests {
     // FIXME(#10380) these tests should not all be ignored on android.
 
     #[test]
-    #[cfg_attr(target_os = "android", ignore)]
+    #[cfg_attr(any(target_os = "vxworks", target_os = "android"), ignore)]
     fn smoke() {
         let p = if cfg!(target_os = "windows") {
             Command::new("cmd").args(&["/C", "exit 0"]).spawn()
@@ -1680,7 +1683,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "android", ignore)]
+    #[cfg_attr(any(target_os = "vxworks", target_os = "android"), ignore)]
     fn exit_reported_right() {
         let p = if cfg!(target_os = "windows") {
             Command::new("cmd").args(&["/C", "exit 1"]).spawn()
@@ -1695,7 +1698,7 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    #[cfg_attr(target_os = "android", ignore)]
+    #[cfg_attr(any(target_os = "vxworks", target_os = "android"), ignore)]
     fn signal_reported_right() {
         use crate::os::unix::process::ExitStatusExt;
 
@@ -1723,7 +1726,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "android", ignore)]
+    #[cfg_attr(any(target_os = "vxworks", target_os = "android"), ignore)]
     fn stdout_works() {
         if cfg!(target_os = "windows") {
             let mut cmd = Command::new("cmd");
@@ -1737,7 +1740,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(any(windows, target_os = "android"), ignore)]
+    #[cfg_attr(any(windows, target_os = "android", target_os = "vxworks"), ignore)]
     fn set_current_dir_works() {
         let mut cmd = Command::new("/bin/sh");
         cmd.arg("-c").arg("pwd")
@@ -1747,7 +1750,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(any(windows, target_os = "android"), ignore)]
+    #[cfg_attr(any(windows, target_os = "android", target_os = "vxworks"), ignore)]
     fn stdin_works() {
         let mut p = Command::new("/bin/sh")
                             .arg("-c").arg("read line; echo $line")
@@ -1762,35 +1765,8 @@ mod tests {
         assert_eq!(out, "foobar\n");
     }
 
-
     #[test]
-    #[cfg_attr(target_os = "android", ignore)]
-    #[cfg(unix)]
-    fn uid_works() {
-        use crate::os::unix::prelude::*;
-
-        let mut p = Command::new("/bin/sh")
-                            .arg("-c").arg("true")
-                            .uid(unsafe { libc::getuid() })
-                            .gid(unsafe { libc::getgid() })
-                            .spawn().unwrap();
-        assert!(p.wait().unwrap().success());
-    }
-
-    #[test]
-    #[cfg_attr(target_os = "android", ignore)]
-    #[cfg(unix)]
-    fn uid_to_root_fails() {
-        use crate::os::unix::prelude::*;
-
-        // if we're already root, this isn't a valid test. Most of the bots run
-        // as non-root though (android is an exception).
-        if unsafe { libc::getuid() == 0 } { return }
-        assert!(Command::new("/bin/ls").uid(0).gid(0).spawn().is_err());
-    }
-
-    #[test]
-    #[cfg_attr(target_os = "android", ignore)]
+    #[cfg_attr(any(target_os = "vxworks", target_os = "android"), ignore)]
     fn test_process_status() {
         let mut status = if cfg!(target_os = "windows") {
             Command::new("cmd").args(&["/C", "exit 1"]).status().unwrap()
@@ -1816,7 +1792,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "android", ignore)]
+    #[cfg_attr(any(target_os = "vxworks", target_os = "android"), ignore)]
     fn test_process_output_output() {
         let Output {status, stdout, stderr}
              = if cfg!(target_os = "windows") {
@@ -1832,7 +1808,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "android", ignore)]
+    #[cfg_attr(any(target_os = "vxworks", target_os = "android"), ignore)]
     fn test_process_output_error() {
         let Output {status, stdout, stderr}
              = if cfg!(target_os = "windows") {
@@ -1847,7 +1823,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "android", ignore)]
+    #[cfg_attr(any(target_os = "vxworks", target_os = "android"), ignore)]
     fn test_finish_once() {
         let mut prog = if cfg!(target_os = "windows") {
             Command::new("cmd").args(&["/C", "exit 1"]).spawn().unwrap()
@@ -1858,7 +1834,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "android", ignore)]
+    #[cfg_attr(any(target_os = "vxworks", target_os = "android"), ignore)]
     fn test_finish_twice() {
         let mut prog = if cfg!(target_os = "windows") {
             Command::new("cmd").args(&["/C", "exit 1"]).spawn().unwrap()
@@ -1870,7 +1846,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(target_os = "android", ignore)]
+    #[cfg_attr(any(target_os = "vxworks", target_os = "android"), ignore)]
     fn test_wait_with_output_once() {
         let prog = if cfg!(target_os = "windows") {
             Command::new("cmd").args(&["/C", "echo hello"]).stdout(Stdio::piped()).spawn().unwrap()
@@ -1905,6 +1881,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "vxworks", ignore)]
     fn test_override_env() {
         use crate::env;
 
@@ -1925,6 +1902,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "vxworks", ignore)]
     fn test_add_to_env() {
         let result = env_cmd().env("RUN_TEST_NEW_ENV", "123").output().unwrap();
         let output = String::from_utf8_lossy(&result.stdout).to_string();
@@ -1934,6 +1912,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "vxworks", ignore)]
     fn test_capture_env_at_spawn() {
         use crate::env;
 
@@ -1989,6 +1968,7 @@ mod tests {
 
     // Regression tests for #30862.
     #[test]
+    #[cfg_attr(target_os = "vxworks", ignore)]
     fn test_interior_nul_in_env_key_is_error() {
         match env_cmd().env("has-some-\0\0s-inside", "value").spawn() {
             Err(e) => assert_eq!(e.kind(), ErrorKind::InvalidInput),
@@ -1997,6 +1977,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(target_os = "vxworks", ignore)]
     fn test_interior_nul_in_env_value_is_error() {
         match env_cmd().env("key", "has-some-\0\0s-inside").spawn() {
             Err(e) => assert_eq!(e.kind(), ErrorKind::InvalidInput),

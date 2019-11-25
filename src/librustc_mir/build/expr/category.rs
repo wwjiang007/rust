@@ -31,7 +31,7 @@ pub enum RvalueFunc {
 /// Determines the category for a given expression. Note that scope
 /// and paren expressions have no category.
 impl Category {
-    pub fn of<'tcx>(ek: &ExprKind<'tcx>) -> Option<Category> {
+    pub fn of(ek: &ExprKind<'_>) -> Option<Category> {
         match *ek {
             ExprKind::Scope { .. } => None,
 
@@ -40,7 +40,6 @@ impl Category {
             | ExprKind::Index { .. }
             | ExprKind::SelfRef
             | ExprKind::VarRef { .. }
-            | ExprKind::StaticRef { .. }
             | ExprKind::PlaceTypeAscription { .. }
             | ExprKind::ValueTypeAscription { .. } => Some(Category::Place),
 
@@ -48,11 +47,12 @@ impl Category {
             | ExprKind::Match { .. }
             | ExprKind::NeverToAny { .. }
             | ExprKind::Use { .. }
+            | ExprKind::Adt { .. }
+            | ExprKind::Borrow { .. }
             | ExprKind::Call { .. } => Some(Category::Rvalue(RvalueFunc::Into)),
 
             ExprKind::Array { .. }
             | ExprKind::Tuple { .. }
-            | ExprKind::Adt { .. }
             | ExprKind::Closure { .. }
             | ExprKind::Unary { .. }
             | ExprKind::Binary { .. }
@@ -60,13 +60,13 @@ impl Category {
             | ExprKind::Cast { .. }
             | ExprKind::Pointer { .. }
             | ExprKind::Repeat { .. }
-            | ExprKind::Borrow { .. }
             | ExprKind::Assign { .. }
             | ExprKind::AssignOp { .. }
             | ExprKind::Yield { .. }
             | ExprKind::InlineAsm { .. } => Some(Category::Rvalue(RvalueFunc::AsRvalue)),
 
-            ExprKind::Literal { .. } => Some(Category::Constant),
+            ExprKind::Literal { .. }
+            | ExprKind::StaticRef { .. } => Some(Category::Constant),
 
             ExprKind::Loop { .. }
             | ExprKind::Block { .. }

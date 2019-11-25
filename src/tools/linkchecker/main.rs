@@ -14,7 +14,7 @@
 //! A few whitelisted exceptions are allowed as there's known bugs in rustdoc,
 //! but this should catch the majority of "broken link" cases.
 
-#![deny(rust_2018_idioms)]
+#![deny(warnings)]
 
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
@@ -126,7 +126,6 @@ fn check(cache: &mut Cache,
     // FIXME(#32129)
     if file.ends_with("std/string/struct.String.html") ||
        file.ends_with("interpret/struct.ImmTy.html") ||
-       file.ends_with("symbol/struct.InternedString.html") ||
        file.ends_with("ast/struct.ThinVec.html") ||
        file.ends_with("util/struct.ThinVec.html") ||
        file.ends_with("layout/struct.TyLayout.html") ||

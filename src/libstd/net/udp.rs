@@ -185,7 +185,6 @@ impl UdpSocket {
     /// # Examples
     ///
     /// ```no_run
-    /// #![feature(udp_peer_addr)]
     /// use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
     ///
     /// let socket = UdpSocket::bind("127.0.0.1:34254").expect("couldn't bind to address");
@@ -199,14 +198,13 @@ impl UdpSocket {
     /// [`NotConnected`]: ../../std/io/enum.ErrorKind.html#variant.NotConnected
     ///
     /// ```no_run
-    /// #![feature(udp_peer_addr)]
     /// use std::net::UdpSocket;
     ///
     /// let socket = UdpSocket::bind("127.0.0.1:34254").expect("couldn't bind to address");
     /// assert_eq!(socket.peer_addr().unwrap_err().kind(),
-    ///            ::std::io::ErrorKind::NotConnected);
+    ///            std::io::ErrorKind::NotConnected);
     /// ```
-    #[unstable(feature = "udp_peer_addr", issue = "59127")]
+    #[stable(feature = "udp_peer_addr", since = "1.40.0")]
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         self.0.peer_addr()
     }
@@ -422,7 +420,7 @@ impl UdpSocket {
     /// Sets the value of the `IP_MULTICAST_LOOP` option for this socket.
     ///
     /// If enabled, multicast packets will be looped back to the local socket.
-    /// Note that this may not have any affect on IPv6 sockets.
+    /// Note that this may not have any effect on IPv6 sockets.
     ///
     /// # Examples
     ///
@@ -464,7 +462,7 @@ impl UdpSocket {
     /// this socket. The default value is 1 which means that multicast packets
     /// don't leave the local network unless explicitly requested.
     ///
-    /// Note that this may not have any affect on IPv6 sockets.
+    /// Note that this may not have any effect on IPv6 sockets.
     ///
     /// # Examples
     ///
@@ -1026,7 +1024,8 @@ mod tests {
 
     // FIXME: re-enabled openbsd/netbsd tests once their socket timeout code
     //        no longer has rounding errors.
-    #[cfg_attr(any(target_os = "netbsd", target_os = "openbsd"), ignore)]
+    // VxWorks ignores SO_SNDTIMEO.
+    #[cfg_attr(any(target_os = "netbsd", target_os = "openbsd", target_os = "vxworks"), ignore)]
     #[test]
     fn timeouts() {
         let addr = next_test_ip4();

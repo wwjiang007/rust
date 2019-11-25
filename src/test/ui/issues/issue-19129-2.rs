@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 #![allow(unused_variables)]
 // pretty-expanded FIXME #23616
 

@@ -1,9 +1,9 @@
-// compile-pass
+// check-pass
 trait Test {}
 
 macro_rules! test {
 ( $($name:ident)+) => (
-    impl<$($name: Test),*> Test for ($($name,)*) {
+    impl<$($name: Test),+> Test for ($($name,)+) {
     }
 )
 }

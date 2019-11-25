@@ -1,6 +1,7 @@
 // compile-flags: -W bad-style
-// compile-pass
+// check-pass
 
 fn main() {
     let _InappropriateCamelCasing = true;
+    //~^ WARNING should have a snake case name
 }

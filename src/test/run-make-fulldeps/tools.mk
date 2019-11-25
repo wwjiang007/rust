@@ -12,10 +12,10 @@ RUSTC := $(BARE_RUSTC) --out-dir $(TMPDIR) -L $(TMPDIR) $(RUSTFLAGS)
 RUSTDOC := $(BARE_RUSTDOC) -L $(TARGET_RPATH_DIR)
 ifdef RUSTC_LINKER
 RUSTC := $(RUSTC) -Clinker=$(RUSTC_LINKER)
-RUSTDOC := $(RUSTDOC) --linker $(RUSTC_LINKER) -Z unstable-options
+RUSTDOC := $(RUSTDOC) -Clinker=$(RUSTC_LINKER)
 endif
 #CC := $(CC) -L $(TMPDIR)
-HTMLDOCCK := $(PYTHON) $(S)/src/etc/htmldocck.py
+HTMLDOCCK := '$(PYTHON)' '$(S)/src/etc/htmldocck.py'
 CGREP := "$(S)/src/etc/cat-and-grep.sh"
 
 # This is the name of the binary we will generate and run; use this
@@ -60,7 +60,7 @@ endif
 
 ifdef IS_MSVC
 COMPILE_OBJ = $(CC) -c -Fo:`cygpath -w $(1)` $(2)
-COMPILE_OBJ_CXX = $(CXX) -c -Fo:`cygpath -w $(1)` $(2)
+COMPILE_OBJ_CXX = $(CXX) -EHs -c -Fo:`cygpath -w $(1)` $(2)
 NATIVE_STATICLIB_FILE = $(1).lib
 NATIVE_STATICLIB = $(TMPDIR)/$(call NATIVE_STATICLIB_FILE,$(1))
 OUT_EXE=-Fe:`cygpath -w $(TMPDIR)/$(call BIN,$(1))` \
@@ -80,10 +80,29 @@ ifdef IS_MSVC
 	EXTRACFLAGS := ws2_32.lib userenv.lib advapi32.lib
 else
 	EXTRACFLAGS := -lws2_32 -luserenv
+	EXTRACXXFLAGS := -lstdc++
+	# So this is a bit hacky: we can't use the DLL version of libstdc++ because
+	# it pulls in the DLL version of libgcc, which means that we end up with 2
+	# instances of the DW2 unwinding implementation. This is a problem on
+	# i686-pc-windows-gnu because each module (DLL/EXE) needs to register its
+	# unwind information with the unwinding implementation, and libstdc++'s
+	# __cxa_throw won't see the unwinding info we registered with our statically
+	# linked libgcc.
+	#
+	# Now, simply statically linking libstdc++ would fix this problem, except
+	# that it is compiled with the expectation that pthreads is dynamically
+	# linked as a DLL and will fail to link with a statically linked libpthread.
+	#
+	# So we end up with the following hack: we link use static-nobundle to only
+	# link the parts of libstdc++ that we actually use, which doesn't include
+	# the dependency on the pthreads DLL.
+	EXTRARSCXXFLAGS := -l static-nobundle=stdc++
 endif
 else
 ifeq ($(UNAME),Darwin)
 	EXTRACFLAGS := -lresolv
+	EXTRACXXFLAGS := -lc++
+	EXTRARSCXXFLAGS := -lc++
 else
 ifeq ($(UNAME),FreeBSD)
 	EXTRACFLAGS := -lm -lpthread -lgcc_s
@@ -97,6 +116,7 @@ ifeq ($(UNAME),OpenBSD)
 else
 	EXTRACFLAGS := -lm -lrt -ldl -lpthread
 	EXTRACXXFLAGS := -lstdc++
+	EXTRARSCXXFLAGS := -lstdc++
 endif
 endif
 endif

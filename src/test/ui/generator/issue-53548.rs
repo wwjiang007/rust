@@ -15,7 +15,7 @@
 // also analogous to what we would do for higher-ranked regions
 // appearing within the trait in other positions).
 //
-// compile-pass
+// check-pass
 
 #![feature(generators)]
 

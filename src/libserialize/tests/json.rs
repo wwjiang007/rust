@@ -1,4 +1,5 @@
-#[allow(unused_extern_crates)]
+#![allow(rustc::internal)]
+
 extern crate serialize as rustc_serialize;
 
 use rustc_serialize::{Encodable, Decodable};

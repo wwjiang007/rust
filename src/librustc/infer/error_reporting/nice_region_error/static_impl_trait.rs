@@ -6,7 +6,7 @@ use crate::ty::{BoundRegion, FreeRegion, RegionKind};
 use crate::util::common::ErrorReported;
 use errors::Applicability;
 
-impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
     /// Print the error message for lifetime errors when the return type is a static impl Trait.
     pub(super) fn try_report_static_impl_trait(&self) -> Option<ErrorReported> {
         if let Some(ref error) = self.error {
@@ -20,8 +20,9 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
                 ) = error.clone()
             {
                 let anon_reg_sup = self.tcx().is_suitable_region(sup_r)?;
+                let return_ty = self.tcx().return_type_impl_trait(anon_reg_sup.def_id);
                 if sub_r == &RegionKind::ReStatic &&
-                    self.tcx().return_type_impl_trait(anon_reg_sup.def_id).is_some()
+                    return_ty.is_some()
                 {
                     let sp = var_origin.span();
                     let return_sp = sub_origin.span();
@@ -52,17 +53,23 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
                         }) => name.to_string(),
                         _ => "'_".to_owned(),
                     };
-                    if let Ok(snippet) = self.tcx().sess.source_map().span_to_snippet(return_sp) {
-                        err.span_suggestion(
-                            return_sp,
-                            &format!(
-                                "you can add a constraint to the return type to make it last \
+                    let fn_return_span = return_ty.unwrap().1;
+                    if let Ok(snippet) =
+                        self.tcx().sess.source_map().span_to_snippet(fn_return_span) {
+                        // only apply this suggestion onto functions with
+                        // explicit non-desugar'able return.
+                        if fn_return_span.desugaring_kind().is_none() {
+                            err.span_suggestion(
+                                fn_return_span,
+                                &format!(
+                                    "you can add a constraint to the return type to make it last \
                                  less than `'static` and match {}",
-                                lifetime,
-                            ),
-                            format!("{} + {}", snippet, lifetime_name),
-                            Applicability::Unspecified,
-                        );
+                                 lifetime,
+                                ),
+                                format!("{} + {}", snippet, lifetime_name),
+                                Applicability::Unspecified,
+                            );
+                        }
                     }
                     err.emit();
                     return Some(ErrorReported);

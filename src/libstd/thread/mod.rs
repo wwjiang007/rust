@@ -443,6 +443,7 @@ impl Builder {
     /// [`Builder::spawn`]: ../../std/thread/struct.Builder.html#method.spawn
     /// [`io::Result`]: ../../std/io/type.Result.html
     /// [`JoinHandle`]: ../../std/thread/struct.JoinHandle.html
+    /// [`JoinHandle::join`]: ../../std/thread/struct.JoinHandle.html#method.join
     #[unstable(feature = "thread_spawn_unchecked", issue = "55132")]
     pub unsafe fn spawn_unchecked<'a, F, T>(self, f: F) -> io::Result<JoinHandle<T>> where
         F: FnOnce() -> T, F: Send + 'a, T: Send + 'a
@@ -464,12 +465,9 @@ impl Builder {
             }
 
             thread_info::set(imp::guard::current(), their_thread);
-            #[cfg(feature = "backtrace")]
             let try_result = panic::catch_unwind(panic::AssertUnwindSafe(|| {
                 crate::sys_common::backtrace::__rust_begin_short_backtrace(f)
             }));
-            #[cfg(not(feature = "backtrace"))]
-            let try_result = panic::catch_unwind(panic::AssertUnwindSafe(f));
             *their_packet.get() = Some(try_result);
         };
 
@@ -1273,6 +1271,18 @@ impl fmt::Debug for Thread {
 ///
 /// Indicates the manner in which a thread exited.
 ///
+/// The value contained in the `Result::Err` variant
+/// is the value the thread panicked with;
+/// that is, the argument the `panic!` macro was called with.
+/// Unlike with normal errors, this value doesn't implement
+/// the [`Error`](crate::error::Error) trait.
+///
+/// Thus, a sensible way to handle a thread panic is to either:
+/// 1. `unwrap` the `Result<T>`, propagating the panic
+/// 2. or in case the thread is intended to be a subsystem boundary
+/// that is supposed to isolate system-level failures,
+/// match on the `Err` variant and handle the panic in an appropriate way.
+///
 /// A thread that completes without panicking is considered to exit successfully.
 ///
 /// # Examples
@@ -1741,6 +1751,6 @@ mod tests {
         assert!(thread::current().id() != spawned_id);
     }
 
-    // NOTE: the corresponding test for stderr is in run-pass/thread-stderr, due
+    // NOTE: the corresponding test for stderr is in ui/thread-stderr, due
     // to the test harness apparently interfering with stderr configuration.
 }

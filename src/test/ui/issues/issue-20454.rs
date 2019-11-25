@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 #![allow(unused_must_use)]
 use std::thread;
 

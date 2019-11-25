@@ -1,4 +1,4 @@
-// compile-pass
+// build-pass
 #[derive(Debug)]
 pub struct Config {
     pub name: String,

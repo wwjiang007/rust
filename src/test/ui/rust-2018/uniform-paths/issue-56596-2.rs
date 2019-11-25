@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 // edition:2018
 // compile-flags: --extern issue_56596_2
 // aux-build:issue-56596-2.rs

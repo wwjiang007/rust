@@ -111,11 +111,9 @@ impl From<char> for u32 {
     /// ```
     /// use std::mem;
     ///
-    /// fn main() {
-    ///     let c = 'c';
-    ///     let u = u32::from(c);
-    ///     assert!(4 == mem::size_of_val(&u))
-    /// }
+    /// let c = 'c';
+    /// let u = u32::from(c);
+    /// assert!(4 == mem::size_of_val(&u))
     /// ```
     #[inline]
     fn from(c: char) -> Self {
@@ -123,7 +121,7 @@ impl From<char> for u32 {
     }
 }
 
-/// Maps a byte in 0x00...0xFF to a `char` whose code point has the same value, in U+0000 to U+00FF.
+/// Maps a byte in 0x00..=0xFF to a `char` whose code point has the same value, in U+0000..=U+00FF.
 ///
 /// Unicode is designed such that this effectively decodes bytes
 /// with the character encoding that IANA calls ISO-8859-1.
@@ -150,11 +148,9 @@ impl From<u8> for char {
     /// ```
     /// use std::mem;
     ///
-    /// fn main() {
-    ///     let u = 32 as u8;
-    ///     let c = char::from(u);
-    ///     assert!(4 == mem::size_of_val(&c))
-    /// }
+    /// let u = 32 as u8;
+    /// let c = char::from(u);
+    /// assert!(4 == mem::size_of_val(&c))
     /// ```
     #[inline]
     fn from(i: u8) -> Self {
@@ -228,6 +224,7 @@ impl TryFrom<u32> for char {
         if (i > MAX as u32) || (i >= 0xD800 && i <= 0xDFFF) {
             Err(CharTryFromError(()))
         } else {
+            // SAFETY: checked that it's a legal unicode value
             Ok(unsafe { from_u32_unchecked(i) })
         }
     }

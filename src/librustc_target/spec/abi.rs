@@ -1,6 +1,12 @@
 use std::fmt;
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable, Clone, Copy, Debug)]
+use rustc_macros::HashStable_Generic;
+
+#[cfg(test)]
+mod tests;
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, RustcEncodable, RustcDecodable,
+         Clone, Copy, Debug, HashStable_Generic)]
 pub enum Abi {
     // N.B., this ordering MUST match the AbiDatas array below.
     // (This is ensured by the test indices_are_correct().)
@@ -18,6 +24,7 @@ pub enum Abi {
     Msp430Interrupt,
     X86Interrupt,
     AmdGpuKernel,
+    EfiApi,
 
     // Multiplatform / generic ABIs
     Rust,
@@ -55,6 +62,7 @@ const AbiDatas: &[AbiData] = &[
     AbiData {abi: Abi::Msp430Interrupt, name: "msp430-interrupt", generic: false },
     AbiData {abi: Abi::X86Interrupt, name: "x86-interrupt", generic: false },
     AbiData {abi: Abi::AmdGpuKernel, name: "amdgpu-kernel", generic: false },
+    AbiData {abi: Abi::EfiApi, name: "efiapi", generic: false },
 
     // Cross-platform ABIs
     AbiData {abi: Abi::Rust, name: "Rust", generic: true },
@@ -98,31 +106,5 @@ impl Abi {
 impl fmt::Display for Abi {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "\"{}\"", self.name())
-    }
-}
-
-#[allow(non_snake_case)]
-#[test]
-fn lookup_Rust() {
-    let abi = lookup("Rust");
-    assert!(abi.is_some() && abi.unwrap().data().name == "Rust");
-}
-
-#[test]
-fn lookup_cdecl() {
-    let abi = lookup("cdecl");
-    assert!(abi.is_some() && abi.unwrap().data().name == "cdecl");
-}
-
-#[test]
-fn lookup_baz() {
-    let abi = lookup("baz");
-    assert!(abi.is_none());
-}
-
-#[test]
-fn indices_are_correct() {
-    for (i, abi_data) in AbiDatas.iter().enumerate() {
-        assert_eq!(i, abi_data.abi.index());
     }
 }

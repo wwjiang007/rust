@@ -3,12 +3,10 @@
 // seems likely that they should eventually be merged into more
 // general routines.
 
-use crate::dep_graph::{DepKind, DepTrackingMapConfig};
-use std::marker::PhantomData;
 use crate::infer::InferCtxt;
 use crate::traits::{FulfillmentContext, Obligation, ObligationCause, SelectionContext,
              TraitEngine, Vtable};
-use crate::ty::{self, Ty, TyCtxt};
+use crate::ty::{self, TyCtxt};
 use crate::ty::subst::{Subst, SubstsRef};
 use crate::ty::fold::TypeFoldable;
 
@@ -18,11 +16,10 @@ use crate::ty::fold::TypeFoldable;
 /// that type check should guarantee to us that all nested
 /// obligations *could be* resolved if we wanted to.
 /// Assumes that this is run after the entire crate has been successfully type-checked.
-pub fn codegen_fulfill_obligation<'a, 'tcx>(ty: TyCtxt<'a, 'tcx, 'tcx>,
-                                          (param_env, trait_ref):
-                                          (ty::ParamEnv<'tcx>, ty::PolyTraitRef<'tcx>))
-                                          -> Vtable<'tcx, ()>
-{
+pub fn codegen_fulfill_obligation<'tcx>(
+    ty: TyCtxt<'tcx>,
+    (param_env, trait_ref): (ty::ParamEnv<'tcx>, ty::PolyTraitRef<'tcx>),
+) -> Vtable<'tcx, ()> {
     // Remove any references to regions; this helps improve caching.
     let trait_ref = ty.erase_regions(&trait_ref);
 
@@ -74,7 +71,7 @@ pub fn codegen_fulfill_obligation<'a, 'tcx>(ty: TyCtxt<'a, 'tcx, 'tcx>,
     })
 }
 
-impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
+impl<'tcx> TyCtxt<'tcx> {
     /// Monomorphizes a type from the AST by first applying the
     /// in-scope substitutions and then normalizing any associated
     /// types.
@@ -101,34 +98,9 @@ impl<'a, 'tcx> TyCtxt<'a, 'tcx, 'tcx> {
     }
 }
 
-// Implement DepTrackingMapConfig for `trait_cache`
-pub struct TraitSelectionCache<'tcx> {
-    data: PhantomData<&'tcx ()>
-}
-
-impl<'tcx> DepTrackingMapConfig for TraitSelectionCache<'tcx> {
-    type Key = (ty::ParamEnv<'tcx>, ty::PolyTraitRef<'tcx>);
-    type Value = Vtable<'tcx, ()>;
-    fn to_dep_kind() -> DepKind {
-        DepKind::TraitSelect
-    }
-}
-
 // # Global Cache
 
-pub struct ProjectionCache<'gcx> {
-    data: PhantomData<&'gcx ()>
-}
-
-impl<'gcx> DepTrackingMapConfig for ProjectionCache<'gcx> {
-    type Key = Ty<'gcx>;
-    type Value = Ty<'gcx>;
-    fn to_dep_kind() -> DepKind {
-        DepKind::TraitSelect
-    }
-}
-
-impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
     /// Finishes processes any obligations that remain in the
     /// fulfillment context, and then returns the result with all type
     /// variables removed and regions erased. Because this is intended
@@ -138,11 +110,13 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     /// type inference variables that appear in `result` to be
     /// unified, and hence we need to process those obligations to get
     /// the complete picture of the type.
-    fn drain_fulfillment_cx_or_panic<T>(&self,
-                                        fulfill_cx: &mut FulfillmentContext<'tcx>,
-                                        result: &T)
-                                        -> T::Lifted
-        where T: TypeFoldable<'tcx> + ty::Lift<'gcx>
+    fn drain_fulfillment_cx_or_panic<T>(
+        &self,
+        fulfill_cx: &mut FulfillmentContext<'tcx>,
+        result: &T,
+    ) -> T
+    where
+        T: TypeFoldable<'tcx>,
     {
         debug!("drain_fulfillment_cx_or_panic()");
 
@@ -153,11 +127,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
             bug!("Encountered errors `{:?}` resolving bounds after type-checking", errors);
         }
 
-        let result = self.resolve_type_vars_if_possible(result);
-        let result = self.tcx.erase_regions(&result);
-
-        self.tcx.lift_to_global(&result).unwrap_or_else(||
-            bug!("Uninferred types/regions in `{:?}`", result)
-        )
+        let result = self.resolve_vars_if_possible(result);
+        self.tcx.erase_regions(&result)
     }
 }

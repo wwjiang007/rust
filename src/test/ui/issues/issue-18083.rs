@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 #![allow(dead_code)]
 #![allow(unused_imports)]
 // These crossed imports should resolve fine, and not block on

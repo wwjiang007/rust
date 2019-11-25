@@ -2,11 +2,8 @@
 // `MyType: !MyTrait` along with other "fundamental" wrappers.
 
 // aux-build:coherence_copy_like_lib.rs
-// compile-pass
+// build-pass (FIXME(62277): could be check-pass?)
 // skip-codgen
-// revisions: old re
-
-#![cfg_attr(re, feature(re_rebalance_coherence))]
 #![allow(dead_code)]
 
 extern crate coherence_copy_like_lib as lib;

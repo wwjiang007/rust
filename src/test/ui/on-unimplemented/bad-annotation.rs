@@ -1,6 +1,6 @@
 // ignore-tidy-linelength
 
-#![feature(on_unimplemented)]
+#![feature(rustc_attrs)]
 
 #![allow(unused)]
 
@@ -15,7 +15,7 @@ trait MyFromIterator<A> {
 }
 
 #[rustc_on_unimplemented]
-//~^ ERROR attribute must be of the form
+//~^ ERROR malformed `rustc_on_unimplemented` attribute
 trait BadAnnotation1
 {}
 

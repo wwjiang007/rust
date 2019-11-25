@@ -1,9 +1,10 @@
-use rustc::ty::{Ty, TyCtxt};
+use core::slice::Iter;
 use rustc::mir::*;
+use rustc::ty::{Ty, TyCtxt};
 use rustc::util::nodemap::FxHashMap;
-use rustc_data_structures::indexed_vec::{Idx, IndexVec};
+use rustc_index::vec::{Enumerated, Idx, IndexVec};
 use smallvec::SmallVec;
-use syntax_pos::{Span};
+use syntax_pos::Span;
 
 use std::fmt;
 use std::ops::{Index, IndexMut};
@@ -12,19 +13,19 @@ use self::abs_domain::{AbstractElem, Lift};
 
 mod abs_domain;
 
-newtype_index! {
+rustc_index::newtype_index! {
     pub struct MovePathIndex {
         DEBUG_FORMAT = "mp{}"
     }
 }
 
-newtype_index! {
+rustc_index::newtype_index! {
     pub struct MoveOutIndex {
         DEBUG_FORMAT = "mo{}"
     }
 }
 
-newtype_index! {
+rustc_index::newtype_index! {
     pub struct InitIndex {
         DEBUG_FORMAT = "in{}"
     }
@@ -137,12 +138,17 @@ impl<T> IndexMut<Location> for LocationMap<T> {
     }
 }
 
-impl<T> LocationMap<T> where T: Default + Clone {
-    fn new(mir: &Mir<'_>) -> Self {
+impl<T> LocationMap<T>
+where
+    T: Default + Clone,
+{
+    fn new(body: &Body<'_>) -> Self {
         LocationMap {
-            map: mir.basic_blocks().iter().map(|block| {
-                vec![T::default(); block.statements.len()+1]
-            }).collect()
+            map: body
+                .basic_blocks()
+                .iter()
+                .map(|block| vec![T::default(); block.statements.len() + 1])
+                .collect(),
         }
     }
 }
@@ -178,7 +184,6 @@ pub struct Init {
     pub kind: InitKind,
 }
 
-
 /// Initializations can be from an argument or from a statement. Arguments
 /// do not have locations, in those cases the `Local` is kept..
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -205,10 +210,10 @@ impl fmt::Debug for Init {
 }
 
 impl Init {
-    crate fn span<'gcx>(&self, mir: &Mir<'gcx>) -> Span {
+    crate fn span<'tcx>(&self, body: &Body<'tcx>) -> Span {
         match self.location {
-            InitLocation::Argument(local) => mir.local_decls[local].source_info.span,
-            InitLocation::Statement(location) => mir.source_info(location).span,
+            InitLocation::Argument(local) => body.local_decls[local].source_info.span,
+            InitLocation::Statement(location) => body.source_info(location).span,
         }
     }
 }
@@ -224,7 +229,7 @@ pub struct MovePathLookup {
     /// subsequent search so that it is solely relative to that
     /// base-place). For the remaining lookup, we map the projection
     /// elem to the associated MovePathIndex.
-    projections: FxHashMap<(MovePathIndex, AbstractElem), MovePathIndex>
+    projections: FxHashMap<(MovePathIndex, AbstractElem), MovePathIndex>,
 }
 
 mod builder;
@@ -232,7 +237,7 @@ mod builder;
 #[derive(Copy, Clone, Debug)]
 pub enum LookupResult {
     Exact(MovePathIndex),
-    Parent(Option<MovePathIndex>)
+    Parent(Option<MovePathIndex>),
 }
 
 impl MovePathLookup {
@@ -240,26 +245,31 @@ impl MovePathLookup {
     // alternative will *not* create a MovePath on the fly for an
     // unknown place, but will rather return the nearest available
     // parent.
-    pub fn find(&self, place: &Place<'tcx>) -> LookupResult {
-        match *place {
-            Place::Base(PlaceBase::Local(local)) => LookupResult::Exact(self.locals[local]),
-            Place::Base(PlaceBase::Static(..)) => LookupResult::Parent(None),
-            Place::Projection(ref proj) => {
-                match self.find(&proj.base) {
-                    LookupResult::Exact(base_path) => {
-                        match self.projections.get(&(base_path, proj.elem.lift())) {
-                            Some(&subpath) => LookupResult::Exact(subpath),
-                            None => LookupResult::Parent(Some(base_path))
-                        }
-                    }
-                    inexact => inexact
-                }
+    pub fn find(&self, place: PlaceRef<'_, '_>) -> LookupResult {
+        let mut result = match place.base {
+            PlaceBase::Local(local) => self.locals[*local],
+            PlaceBase::Static(..) => return LookupResult::Parent(None),
+        };
+
+        for elem in place.projection.iter() {
+            if let Some(&subpath) = self.projections.get(&(result, elem.lift())) {
+                result = subpath;
+            } else {
+                return LookupResult::Parent(Some(result));
             }
         }
+
+        LookupResult::Exact(result)
     }
 
     pub fn find_local(&self, local: Local) -> MovePathIndex {
         self.locals[local]
+    }
+
+    /// An enumerated iterator of `local`s and their associated
+    /// `MovePathIndex`es.
+    pub fn iter_locals_enumerated(&self) -> Enumerated<Local, Iter<'_, MovePathIndex>> {
+        self.locals.iter_enumerated()
     }
 }
 
@@ -288,7 +298,7 @@ pub(crate) enum IllegalMoveOriginKind<'tcx> {
     InteriorOfTypeWithDestructor { container_ty: Ty<'tcx> },
 
     /// Illegal move due to attempt to move out of a slice or array.
-    InteriorOfSliceOrArray { ty: Ty<'tcx>, is_index: bool, },
+    InteriorOfSliceOrArray { ty: Ty<'tcx>, is_index: bool },
 }
 
 #[derive(Debug)]
@@ -304,10 +314,12 @@ impl<'tcx> MoveError<'tcx> {
     }
 }
 
-impl<'a, 'gcx, 'tcx> MoveData<'tcx> {
-    pub fn gather_moves(mir: &Mir<'tcx>, tcx: TyCtxt<'a, 'gcx, 'tcx>)
-                        -> Result<Self, (Self, Vec<(Place<'tcx>, MoveError<'tcx>)>)> {
-        builder::gather_moves(mir, tcx)
+impl<'tcx> MoveData<'tcx> {
+    pub fn gather_moves(
+        body: &Body<'tcx>,
+        tcx: TyCtxt<'tcx>,
+    ) -> Result<Self, (Self, Vec<(Place<'tcx>, MoveError<'tcx>)>)> {
+        builder::gather_moves(body, tcx)
     }
 
     /// For the move path `mpi`, returns the root local variable (if any) that starts the path.
@@ -315,8 +327,15 @@ impl<'a, 'gcx, 'tcx> MoveData<'tcx> {
     pub fn base_local(&self, mut mpi: MovePathIndex) -> Option<Local> {
         loop {
             let path = &self.move_paths[mpi];
-            if let Place::Base(PlaceBase::Local(l)) = path.place { return Some(l); }
-            if let Some(parent) = path.parent { mpi = parent; continue } else { return None }
+            if let Some(l) = path.place.as_local() {
+                return Some(l);
+            }
+            if let Some(parent) = path.parent {
+                mpi = parent;
+                continue;
+            } else {
+                return None;
+            }
         }
     }
 }

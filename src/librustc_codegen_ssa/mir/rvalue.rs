@@ -1,25 +1,24 @@
-use rustc::ty::{self, Ty, adjustment::{PointerCast}};
+use super::{FunctionCx, LocalRef};
+use super::operand::{OperandRef, OperandValue};
+use super::place::PlaceRef;
+
+use crate::base;
+use crate::MemFlags;
+use crate::common::{self, RealPredicate, IntPredicate};
+use crate::traits::*;
+
+use rustc::ty::{self, Ty, adjustment::{PointerCast}, Instance};
 use rustc::ty::cast::{CastTy, IntTy};
 use rustc::ty::layout::{self, LayoutOf, HasTyCtxt};
 use rustc::mir;
 use rustc::middle::lang_items::ExchangeMallocFnLangItem;
 use rustc_apfloat::{ieee, Float, Status, Round};
-use std::{u128, i128};
 use syntax::symbol::sym;
+use syntax::source_map::{DUMMY_SP, Span};
 
-use crate::base;
-use crate::MemFlags;
-use crate::callee;
-use crate::common::{self, RealPredicate, IntPredicate};
-use rustc_mir::monomorphize;
+use std::{u128, i128};
 
-use crate::traits::*;
-
-use super::{FunctionCx, LocalRef};
-use super::operand::{OperandRef, OperandValue};
-use super::place::PlaceRef;
-
-impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
+impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
     pub fn codegen_rvalue(
         &mut self,
         mut bx: Bx,
@@ -32,8 +31,8 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         match *rvalue {
            mir::Rvalue::Use(ref operand) => {
                let cg_operand = self.codegen_operand(&mut bx, operand);
-               // FIXME: consider not copying constants through stack. (fixable by codegenning
-               // constants into OperandValue::Ref, why don’t we do that yet if we don’t?)
+               // FIXME: consider not copying constants through stack. (Fixable by codegen'ing
+               // constants into `OperandValue::Ref`; why don’t we do that yet if we don’t?)
                cg_operand.val.store(&mut bx, dest);
                bx
            }
@@ -42,7 +41,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 // The destination necessarily contains a fat pointer, so if
                 // it's a scalar pair, it's a fat pointer or newtype thereof.
                 if bx.cx().is_backend_scalar_pair(dest.layout) {
-                    // into-coerce of a thin pointer to a fat pointer - just
+                    // Into-coerce of a thin pointer to a fat pointer -- just
                     // use the operand path.
                     let (mut bx, temp) = self.codegen_rvalue_operand(bx, rvalue);
                     temp.val.store(&mut bx, dest);
@@ -57,25 +56,25 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 match operand.val {
                     OperandValue::Pair(..) |
                     OperandValue::Immediate(_) => {
-                        // unsize from an immediate structure. We don't
+                        // Unsize from an immediate structure. We don't
                         // really need a temporary alloca here, but
                         // avoiding it would require us to have
-                        // `coerce_unsized_into` use extractvalue to
+                        // `coerce_unsized_into` use `extractvalue` to
                         // index into the struct, and this case isn't
                         // important enough for it.
                         debug!("codegen_rvalue: creating ugly alloca");
-                        let scratch = PlaceRef::alloca(&mut bx, operand.layout, "__unsize_temp");
+                        let scratch = PlaceRef::alloca(&mut bx, operand.layout);
                         scratch.storage_live(&mut bx);
                         operand.val.store(&mut bx, scratch);
                         base::coerce_unsized_into(&mut bx, scratch, dest);
                         scratch.storage_dead(&mut bx);
                     }
                     OperandValue::Ref(llref, None, align) => {
-                        let source = PlaceRef::new_sized(llref, operand.layout, align);
+                        let source = PlaceRef::new_sized_aligned(llref, operand.layout, align);
                         base::coerce_unsized_into(&mut bx, source, dest);
                     }
                     OperandValue::Ref(_, Some(_), _) => {
-                        bug!("unsized coercion on an unsized rvalue")
+                        bug!("unsized coercion on an unsized rvalue");
                     }
                 }
                 bx
@@ -95,7 +94,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     let size = bx.const_usize(dest.layout.size.bytes());
 
                     // Use llvm.memset.p0i8.* to initialize all zero arrays
-                    if bx.cx().is_const_integral(v) && bx.cx().const_to_uint(v) == 0 {
+                    if bx.cx().const_to_opt_uint(v) == Some(0) {
                         let fill = bx.cx().const_u8(0);
                         bx.memset(start, fill, size, dest.align, MemFlags::empty());
                         return bx;
@@ -137,7 +136,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             }
 
             _ => {
-                assert!(self.rvalue_creates_operand(rvalue));
+                assert!(self.rvalue_creates_operand(rvalue, DUMMY_SP));
                 let (mut bx, temp) = self.codegen_rvalue_operand(bx, rvalue);
                 temp.val.store(&mut bx, dest);
                 bx
@@ -161,7 +160,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 bx
             }
 
-            _ => bug!("unsized assignment other than Rvalue::Use"),
+            _ => bug!("unsized assignment other than `Rvalue::Use`"),
         }
     }
 
@@ -170,7 +169,11 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         mut bx: Bx,
         rvalue: &mir::Rvalue<'tcx>
     ) -> (Bx, OperandRef<'tcx, Bx::Value>) {
-        assert!(self.rvalue_creates_operand(rvalue), "cannot codegen {:?} to operand", rvalue);
+        assert!(
+            self.rvalue_creates_operand(rvalue, DUMMY_SP),
+            "cannot codegen {:?} to operand",
+            rvalue,
+        );
 
         match *rvalue {
             mir::Rvalue::Cast(ref kind, ref source, mir_cast_ty) => {
@@ -180,13 +183,21 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
                 let val = match *kind {
                     mir::CastKind::Pointer(PointerCast::ReifyFnPointer) => {
-                        match operand.layout.ty.sty {
+                        match operand.layout.ty.kind {
                             ty::FnDef(def_id, substs) => {
                                 if bx.cx().tcx().has_attr(def_id, sym::rustc_args_required_const) {
                                     bug!("reifying a fn ptr that requires const arguments");
                                 }
                                 OperandValue::Immediate(
-                                    callee::resolve_and_get_fn(bx.cx(), def_id, substs))
+                                    bx.get_fn_addr(
+                                        ty::Instance::resolve_for_fn_ptr(
+                                            bx.tcx(),
+                                            ty::ParamEnv::reveal_all(),
+                                            def_id,
+                                            substs
+                                        ).unwrap()
+                                    )
+                                )
                             }
                             _ => {
                                 bug!("{} cannot be reified to a fn ptr", operand.layout.ty)
@@ -194,11 +205,14 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         }
                     }
                     mir::CastKind::Pointer(PointerCast::ClosureFnPointer(_)) => {
-                        match operand.layout.ty.sty {
+                        match operand.layout.ty.kind {
                             ty::Closure(def_id, substs) => {
-                                let instance = monomorphize::resolve_closure(
-                                    bx.cx().tcx(), def_id, substs, ty::ClosureKind::FnOnce);
-                                OperandValue::Immediate(bx.cx().get_fn(instance))
+                                let instance = Instance::resolve_closure(
+                                    bx.cx().tcx(),
+                                    def_id,
+                                    substs,
+                                    ty::ClosureKind::FnOnce);
+                                OperandValue::Immediate(bx.cx().get_fn_addr(instance))
                             }
                             _ => {
                                 bug!("{} cannot be cast to a fn ptr", operand.layout.ty)
@@ -206,17 +220,16 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         }
                     }
                     mir::CastKind::Pointer(PointerCast::UnsafeFnPointer) => {
-                        // this is a no-op at the LLVM level
+                        // This is a no-op at the LLVM level.
                         operand.val
                     }
                     mir::CastKind::Pointer(PointerCast::Unsize) => {
                         assert!(bx.cx().is_backend_scalar_pair(cast));
                         match operand.val {
                             OperandValue::Pair(lldata, llextra) => {
-                                // unsize from a fat pointer - this is a
+                                // unsize from a fat pointer -- this is a
                                 // "trait-object-to-supertrait" coercion, for
-                                // example,
-                                //   &'a fmt::Debug+Send => &'a fmt::Debug,
+                                // example, `&'a fmt::Debug + Send => &'a fmt::Debug`.
 
                                 // HACK(eddyb) have to bitcast pointers
                                 // until LLVM removes pointee types.
@@ -231,13 +244,13 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                                 OperandValue::Pair(lldata, llextra)
                             }
                             OperandValue::Ref(..) => {
-                                bug!("by-ref operand {:?} in codegen_rvalue_operand",
+                                bug!("by-ref operand {:?} in `codegen_rvalue_operand`",
                                      operand);
                             }
                         }
                     }
-                    mir::CastKind::Pointer(PointerCast::MutToConstPointer)
-                    | mir::CastKind::Misc if bx.cx().is_backend_scalar_pair(operand.layout) => {
+                    mir::CastKind::Pointer(PointerCast::MutToConstPointer) |
+                    mir::CastKind::Misc if bx.cx().is_backend_scalar_pair(operand.layout) => {
                         if let OperandValue::Pair(data_ptr, meta) = operand.val {
                             if bx.cx().is_backend_scalar_pair(cast) {
                                 let data_cast = bx.pointercast(data_ptr,
@@ -251,11 +264,12 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                                 OperandValue::Immediate(llval)
                             }
                         } else {
-                            bug!("Unexpected non-Pair operand")
+                            bug!("unexpected non-pair operand");
                         }
                     }
-                    mir::CastKind::Pointer(PointerCast::MutToConstPointer)
-                    | mir::CastKind::Misc => {
+                    mir::CastKind::Pointer(PointerCast::MutToConstPointer) |
+                    mir::CastKind::Pointer(PointerCast::ArrayToPointer) |
+                    mir::CastKind::Misc => {
                         assert!(bx.cx().is_backend_immediate(cast));
                         let ll_t_out = bx.cx().immediate_backend_type(cast);
                         if operand.layout.abi.is_uninhabited() {
@@ -356,7 +370,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             }
 
             mir::Rvalue::Ref(_, bk, ref place) => {
-                let cg_place = self.codegen_place(&mut bx, place);
+                let cg_place = self.codegen_place(&mut bx, &place.as_ref());
 
                 let ty = cg_place.layout.ty;
 
@@ -430,7 +444,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             mir::Rvalue::UnaryOp(op, ref operand) => {
                 let operand = self.codegen_operand(&mut bx, operand);
                 let lloperand = operand.immediate();
-                let is_float = operand.layout.ty.is_fp();
+                let is_float = operand.layout.ty.is_floating_point();
                 let llval = match op {
                     mir::UnOp::Not => bx.not(lloperand),
                     mir::UnOp::Neg => if is_float {
@@ -447,7 +461,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
 
             mir::Rvalue::Discriminant(ref place) => {
                 let discr_ty = rvalue.ty(&*self.mir, bx.tcx());
-                let discr =  self.codegen_place(&mut bx, place)
+                let discr =  self.codegen_place(&mut bx, &place.as_ref())
                     .codegen_get_discr(&mut bx, discr_ty);
                 (bx, OperandRef {
                     val: OperandValue::Immediate(discr),
@@ -481,7 +495,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                     }
                 };
                 let instance = ty::Instance::mono(bx.tcx(), def_id);
-                let r = bx.cx().get_fn(instance);
+                let r = bx.cx().get_fn_addr(instance);
                 let call = bx.call(r, &[llsize, llalign], None);
                 let val = bx.pointercast(call, llty_ptr);
 
@@ -516,17 +530,17 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
     ) -> Bx::Value {
         // ZST are passed as operands and require special handling
         // because codegen_place() panics if Local is operand.
-        if let mir::Place::Base(mir::PlaceBase::Local(index)) = *place {
+        if let Some(index) = place.as_local() {
             if let LocalRef::Operand(Some(op)) = self.locals[index] {
-                if let ty::Array(_, n) = op.layout.ty.sty {
-                    let n = n.unwrap_usize(bx.cx().tcx());
+                if let ty::Array(_, n) = op.layout.ty.kind {
+                    let n = n.eval_usize(bx.cx().tcx(), ty::ParamEnv::reveal_all());
                     return bx.cx().const_usize(n);
                 }
             }
         }
         // use common size calculation for non zero-sized types
-        let cg_value = self.codegen_place(bx, place);
-        return cg_value.len(bx.cx());
+        let cg_value = self.codegen_place(bx, &place.as_ref());
+        cg_value.len(bx.cx())
     }
 
     pub fn codegen_scalar_binop(
@@ -537,9 +551,8 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         rhs: Bx::Value,
         input_ty: Ty<'tcx>,
     ) -> Bx::Value {
-        let is_float = input_ty.is_fp();
+        let is_float = input_ty.is_floating_point();
         let is_signed = input_ty.is_signed();
-        let is_unit = input_ty.is_unit();
         match op {
             mir::BinOp::Add => if is_float {
                 bx.fadd(lhs, rhs)
@@ -577,13 +590,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             mir::BinOp::Shl => common::build_unchecked_lshift(bx, lhs, rhs),
             mir::BinOp::Shr => common::build_unchecked_rshift(bx, input_ty, lhs, rhs),
             mir::BinOp::Ne | mir::BinOp::Lt | mir::BinOp::Gt |
-            mir::BinOp::Eq | mir::BinOp::Le | mir::BinOp::Ge => if is_unit {
-                bx.cx().const_bool(match op {
-                    mir::BinOp::Ne | mir::BinOp::Lt | mir::BinOp::Gt => false,
-                    mir::BinOp::Eq | mir::BinOp::Le | mir::BinOp::Ge => true,
-                    _ => unreachable!()
-                })
-            } else if is_float {
+            mir::BinOp::Eq | mir::BinOp::Le | mir::BinOp::Ge => if is_float {
                 bx.fcmp(
                     base::bin_op_to_fcmp_predicate(op.to_hir_binop()),
                     lhs, rhs
@@ -688,8 +695,8 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
     }
 }
 
-impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
-    pub fn rvalue_creates_operand(&self, rvalue: &mir::Rvalue<'tcx>) -> bool {
+impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
+    pub fn rvalue_creates_operand(&self, rvalue: &mir::Rvalue<'tcx>, span: Span) -> bool {
         match *rvalue {
             mir::Rvalue::Ref(..) |
             mir::Rvalue::Len(..) |
@@ -705,7 +712,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             mir::Rvalue::Aggregate(..) => {
                 let ty = rvalue.ty(self.mir, self.cx.tcx());
                 let ty = self.monomorphize(&ty);
-                self.cx.layout_of(ty).is_zst()
+                self.cx.spanned_layout_of(ty, span).is_zst()
             }
         }
 
@@ -713,7 +720,7 @@ impl<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
     }
 }
 
-fn cast_int_to_float<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
+fn cast_int_to_float<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &mut Bx,
     signed: bool,
     x: Bx::Value,
@@ -747,7 +754,7 @@ fn cast_int_to_float<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
     }
 }
 
-fn cast_float_to_int<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
+fn cast_float_to_int<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
     bx: &mut Bx,
     signed: bool,
     x: Bx::Value,

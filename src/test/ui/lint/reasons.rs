@@ -1,4 +1,4 @@
-// compile-pass
+// build-pass (FIXME(62277): could be check-pass?)
 
 #![feature(lint_reasons)]
 
@@ -28,6 +28,8 @@ impl fmt::Debug for CheaterDetectionMechanism {
 
 fn main() {
     let Social_exchange_psychology = CheaterDetectionMechanism {};
-    //~^ WARN should have a snake case name such as
+    //~^ WARN should have a snake case name
+    //~| NOTE #[warn(non_snake_case)]` implied by `#[warn(nonstandard_style)]
     //~| NOTE people shouldn't have to change their usual style habits
+    //~| HELP convert the identifier to snake case
 }

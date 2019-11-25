@@ -4,18 +4,21 @@
 
 use arena::DroplessArena;
 use rustc_data_structures::fx::FxHashMap;
-use rustc_data_structures::indexed_vec::Idx;
-use rustc_data_structures::newtype_index;
-use rustc_macros::symbols;
-use serialize::{Decodable, Decoder, Encodable, Encoder};
+use rustc_index::vec::Idx;
+use rustc_macros::{symbols, HashStable_Generic};
+use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
+use rustc_serialize::{UseSpecializedDecodable, UseSpecializedEncodable};
+use rustc_data_structures::stable_hasher::{HashStable, ToStableHashKey, StableHasher};
 
+use std::cmp::{PartialEq, PartialOrd, Ord};
 use std::fmt;
-use std::str;
-use std::cmp::{PartialEq, Ordering, PartialOrd, Ord};
 use std::hash::{Hash, Hasher};
+use std::str;
 
-use crate::hygiene::SyntaxContext;
 use crate::{Span, DUMMY_SP, GLOBALS};
+
+#[cfg(test)]
+mod tests;
 
 symbols! {
     // After modifying this list adjust `is_special`, `is_used_keyword`/`is_unused_keyword`,
@@ -80,11 +83,11 @@ symbols! {
         Yield:              "yield",
 
         // Edition-specific keywords that are used in stable Rust.
+        Async:              "async", // >= 2018 Edition only
+        Await:              "await", // >= 2018 Edition only
         Dyn:                "dyn", // >= 2018 Edition only
 
         // Edition-specific keywords that are used in unstable Rust or reserved for future use.
-        Async:              "async", // >= 2018 Edition only
-        Await:              "await", // >= 2018 Edition only
         Try:                "try", // >= 2018 Edition only
 
         // Special lifetime names
@@ -95,17 +98,21 @@ symbols! {
         Auto:               "auto",
         Catch:              "catch",
         Default:            "default",
-        Existential:        "existential",
+        Raw:                "raw",
         Union:              "union",
     }
 
     // Symbols that can be referred to with syntax_pos::sym::*. The symbol is
     // the stringified identifier unless otherwise specified (e.g.
     // `proc_dash_macro` represents "proc-macro").
+    //
+    // As well as the symbols listed, there are symbols for the the strings
+    // "0", "1", ..., "9", which are accessible via `sym::integer`.
     Symbols {
         aarch64_target_feature,
         abi,
         abi_amdgpu_kernel,
+        abi_efiapi,
         abi_msp430_interrupt,
         abi_ptx,
         abi_sysv64,
@@ -130,14 +137,22 @@ symbols! {
         allow_internal_unstable,
         allow_internal_unstable_backcompat_hack,
         always,
+        and,
         any,
+        arbitrary_enum_discriminant,
         arbitrary_self_types,
+        Arguments,
+        ArgumentV1,
         arm_target_feature,
         asm,
+        assert,
         associated_consts,
+        associated_type_bounds,
         associated_type_defaults,
         associated_types,
+        assume_init,
         async_await,
+        async_closure,
         attr,
         attributes,
         attr_literals,
@@ -145,9 +160,12 @@ symbols! {
         automatically_derived,
         avx512_target_feature,
         await_macro,
+        begin_panic,
+        bench,
         bin,
         bind_by_move_pattern_guards,
         block,
+        bool,
         borrowck_graphviz_postflow,
         borrowck_graphviz_preflow,
         box_patterns,
@@ -158,38 +176,52 @@ symbols! {
         cfg,
         cfg_attr,
         cfg_attr_multi,
+        cfg_doctest,
         cfg_target_feature,
         cfg_target_has_atomic,
         cfg_target_thread_local,
         cfg_target_vendor,
+        char,
+        clippy,
         clone,
+        Clone,
         clone_closures,
         clone_from,
         closure_to_fn_coercion,
+        cmp,
         cmpxchg16b_target_feature,
         cold,
+        column,
         compile_error,
         compiler_builtins,
+        concat,
         concat_idents,
         conservative_impl_trait,
         console,
         const_compare_raw_pointers,
+        const_constructor,
+        const_extern_fn,
         const_fn,
         const_fn_union,
         const_generics,
+        const_if_match,
         const_indexing,
+        const_in_array_repeat_expressions,
         const_let,
         const_panic,
         const_raw_ptr_deref,
         const_raw_ptr_to_usize_cast,
         const_transmute,
         contents,
+        context,
         convert,
+        Copy,
         copy_closures,
         core,
         core_intrinsics,
         crate_id,
         crate_in_paths,
+        crate_local,
         crate_name,
         crate_type,
         crate_visibility_modifier,
@@ -198,19 +230,30 @@ symbols! {
         custom_inner_attributes,
         custom_test_frameworks,
         c_variadic,
+        debug_trait,
+        declare_lint_pass,
         decl_macro,
+        Debug,
+        Decodable,
+        Default,
         default_lib_allocator,
         default_type_parameter_fallback,
         default_type_params,
+        delay_span_bug_from_inside_query,
         deny,
         deprecated,
+        deref,
+        deref_mut,
         derive,
+        diagnostic,
+        direct,
         doc,
         doc_alias,
         doc_cfg,
         doc_keyword,
         doc_masked,
         doc_spotlight,
+        doctest,
         document_private_items,
         dotdoteq_in_patterns,
         dotdot_in_tuple_patterns,
@@ -229,7 +272,13 @@ symbols! {
         eh_personality,
         eh_unwind_resume,
         enable,
+        Encodable,
+        env,
+        eq,
+        err,
         Err,
+        Eq,
+        Equal,
         except,
         exclusive_range_pattern,
         exhaustive_integer_patterns,
@@ -237,6 +286,7 @@ symbols! {
         existential_type,
         expected,
         export_name,
+        expr,
         extern_absolute_paths,
         external_doc,
         extern_crate_item_prelude,
@@ -245,27 +295,43 @@ symbols! {
         extern_prelude,
         extern_types,
         f16c_target_feature,
+        f32,
+        f64,
         feature,
         ffi_returns_twice,
+        field,
         field_init_shorthand,
         file,
+        fmt,
+        fmt_internals,
         fn_must_use,
         forbid,
+        format_args,
         format_args_nl,
         from,
         From,
+        from_desugaring,
         from_error,
         from_generator,
+        from_method,
         from_ok,
+        from_usize,
         fundamental,
         future,
         Future,
+        FxHashSet,
+        FxHashMap,
+        gen_future,
         generators,
         generic_associated_types,
         generic_param_attrs,
         global_allocator,
         global_asm,
         globs,
+        hash,
+        Hash,
+        HashSet,
+        HashMap,
         hexagon_target_feature,
         hidden,
         homogeneous_aggregate,
@@ -285,10 +351,15 @@ symbols! {
         if_while_or_patterns,
         ignore,
         impl_header_lifetime_elision,
+        impl_lint_pass,
         impl_trait_in_bindings,
         import_shadowing,
+        index,
+        index_mut,
         in_band_lifetimes,
         include,
+        include_bytes,
+        include_str,
         inclusive_range_syntax,
         infer_outlives_requirements,
         infer_static_outlives_requirements,
@@ -303,6 +374,8 @@ symbols! {
         issue,
         issue_5723_bootstrap,
         issue_tracker_base_url,
+        item,
+        item_context: "ItemContext",
         item_like_imports,
         iter,
         Iterator,
@@ -312,15 +385,22 @@ symbols! {
         label_break_value,
         lang,
         lang_items,
+        let_chains,
+        lhs,
         lib,
+        lifetime,
+        line,
         link,
         linkage,
         link_args,
         link_cfg,
         link_llvm_intrinsics,
         link_name,
+        link_ordinal,
         link_section,
+        LintPass,
         lint_reasons,
+        literal,
         local_inner_macros,
         log_syntax,
         loop_break_value,
@@ -342,6 +422,11 @@ symbols! {
         match_beginning_vert,
         match_default_bindings,
         may_dangle,
+        maybe_uninit_uninit,
+        maybe_uninit_zeroed,
+        mem_uninitialized,
+        mem_zeroed,
+        member_constraints,
         message,
         meta,
         min_const_fn,
@@ -349,7 +434,9 @@ symbols! {
         mips_target_feature,
         mmx_target_feature,
         module,
+        module_path,
         more_struct_aliases,
+        move_val_init,
         movbe_target_feature,
         must_use,
         naked,
@@ -360,7 +447,10 @@ symbols! {
         negate_unsigned,
         never,
         never_type,
+        never_type_fallback,
+        new,
         next,
+        __next,
         nll,
         no_builtins,
         no_core,
@@ -381,6 +471,7 @@ symbols! {
         no_std,
         not,
         note,
+        object_safe_for_dispatch,
         Ok,
         omit_gdb_pretty_printer_section,
         on,
@@ -392,20 +483,33 @@ symbols! {
         optin_builtin_traits,
         option,
         Option,
+        option_env,
         opt_out_copy,
+        or,
+        or_patterns,
+        Ord,
+        Ordering,
         Output,
         overlapping_marker_traits,
         packed,
+        panic,
         panic_handler,
         panic_impl,
         panic_implementation,
         panic_runtime,
+        parent_trait,
+        partial_cmp,
+        param_attrs,
+        PartialEq,
+        PartialOrd,
         passes,
+        pat,
         path,
         pattern_parentheses,
         Pending,
         pin,
         Pin,
+        pinned,
         platform_intrinsics,
         plugin,
         plugin_registrar,
@@ -420,10 +524,12 @@ symbols! {
         proc_dash_macro: "proc-macro",
         proc_macro,
         proc_macro_attribute,
+        proc_macro_def_site,
         proc_macro_derive,
         proc_macro_expr,
         proc_macro_gen,
         proc_macro_hygiene,
+        proc_macro_internals,
         proc_macro_mod,
         proc_macro_non_items,
         proc_macro_path_invoc,
@@ -439,12 +545,16 @@ symbols! {
         RangeInclusive,
         RangeTo,
         RangeToInclusive,
+        raw_dylib,
         raw_identifiers,
+        raw_ref_op,
         Ready,
         reason,
         recursion_limit,
         reexport_test_harness_main,
         reflect,
+        register_attr,
+        register_tool,
         relaxed_adts,
         repr,
         repr128,
@@ -457,25 +567,32 @@ symbols! {
         result,
         Result,
         Return,
+        rhs,
         rlib,
+        rt,
         rtm_target_feature,
         rust,
         rust_2015_preview,
         rust_2018_preview,
         rust_begin_unwind,
+        rustc,
+        RustcDecodable,
+        RustcEncodable,
+        rustc_allocator,
         rustc_allocator_nounwind,
         rustc_allow_const_fn_ptr,
         rustc_args_required_const,
         rustc_attrs,
+        rustc_builtin_macro,
         rustc_clean,
         rustc_const_unstable,
         rustc_conversion_suggestion,
-        rustc_copy_clone_marker,
         rustc_def_path,
         rustc_deprecated,
+        rustc_diagnostic_item,
         rustc_diagnostic_macros,
         rustc_dirty,
-        rustc_doc_only_macro,
+        rustc_dummy,
         rustc_dump_env_program_clauses,
         rustc_dump_program_clauses,
         rustc_dump_user_substs,
@@ -486,7 +603,9 @@ symbols! {
         rustc_layout,
         rustc_layout_scalar_valid_range_end,
         rustc_layout_scalar_valid_range_start,
+        rustc_macro_transparency,
         rustc_mir,
+        rustc_nonnull_optimization_guaranteed,
         rustc_object_lifetime_default,
         rustc_on_unimplemented,
         rustc_outlives,
@@ -497,6 +616,7 @@ symbols! {
         rustc_peek_definite_init,
         rustc_peek_maybe_init,
         rustc_peek_maybe_uninit,
+        rustc_peek_indirectly_mutable,
         rustc_private,
         rustc_proc_macro_decls,
         rustc_promotable,
@@ -505,20 +625,19 @@ symbols! {
         rustc_std_internal_symbol,
         rustc_symbol_name,
         rustc_synthetic,
+        rustc_reservation_impl,
         rustc_test_marker,
         rustc_then_this_would_need,
-        rustc_transparent_macro,
         rustc_variance,
-        rustdoc,
+        rustfmt,
         rust_eh_personality,
         rust_eh_unwind_resume,
         rust_oom,
-        __rust_unstable_column,
         rvalue_static_promotion,
         sanitizer_runtime,
+        _Self,
         self_in_typedefs,
         self_struct_ctor,
-        Send,
         should_panic,
         simd,
         simd_ffi,
@@ -526,6 +645,7 @@ symbols! {
         size,
         slice_patterns,
         slicing_syntax,
+        soft,
         Some,
         specialization,
         speed,
@@ -539,16 +659,21 @@ symbols! {
         static_nobundle,
         static_recursion,
         std,
+        std_inject,
         str,
+        stringify,
+        stmt,
         stmt_expr_attributes,
         stop_after_dataflow,
         struct_field_attributes,
         struct_inherit,
         structural_match,
         struct_variant,
+        sty,
         suggestion,
         target_feature,
         target_has_atomic,
+        target_has_atomic_load_store,
         target_thread_local,
         task,
         tbm_target_feature,
@@ -557,20 +682,31 @@ symbols! {
         test,
         test_2018_feature,
         test_accepted_feature,
+        test_case,
         test_removed_feature,
         test_runner,
+        then_with,
         thread_local,
         tool_attributes,
         tool_lints,
         trace_macros,
+        track_caller,
         trait_alias,
         transmute,
         transparent,
+        transparent_enums,
+        transparent_unions,
         trivial_bounds,
         Try,
         try_blocks,
+        try_trait,
+        tt,
         tuple_indexing,
+        Ty,
         ty,
+        type_alias_impl_trait,
+        TyCtxt,
+        TyKind,
         type_alias_enum_variants,
         type_ascription,
         type_length_limit,
@@ -587,8 +723,8 @@ symbols! {
         uniform_paths,
         universal_impl_trait,
         unmarked_api,
+        unreachable_code,
         unrestricted_attribute_tokens,
-        unsafe_destructor_blind_to_params,
         unsafe_no_drop_flag,
         unsized_locals,
         unsized_tuple_coercion,
@@ -596,16 +732,19 @@ symbols! {
         untagged_unions,
         unwind,
         unwind_attributes,
+        unwrap_or,
         used,
         use_extern_macros,
         use_nested_groups,
         usize,
         v1,
+        val,
+        vec,
+        Vec,
         vis,
         visible_private_types,
         volatile,
         warn,
-        warn_directory_ownership,
         wasm_import_module,
         wasm_target_feature,
         while_let,
@@ -615,7 +754,7 @@ symbols! {
     }
 }
 
-#[derive(Copy, Clone, Eq)]
+#[derive(Copy, Clone, Eq, HashStable_Generic)]
 pub struct Ident {
     pub name: Symbol,
     pub span: Span,
@@ -623,23 +762,30 @@ pub struct Ident {
 
 impl Ident {
     #[inline]
+    /// Constructs a new identifier from a symbol and a span.
     pub const fn new(name: Symbol, span: Span) -> Ident {
         Ident { name, span }
     }
 
+    /// Constructs a new identifier with a dummy span.
     #[inline]
-    pub const fn with_empty_ctxt(name: Symbol) -> Ident {
+    pub const fn with_dummy_span(name: Symbol) -> Ident {
         Ident::new(name, DUMMY_SP)
     }
 
-    /// Maps an interned string to an identifier with an empty syntax context.
-    pub fn from_interned_str(string: InternedString) -> Ident {
-        Ident::with_empty_ctxt(string.as_symbol())
+    #[inline]
+    pub fn invalid() -> Ident {
+        Ident::with_dummy_span(kw::Invalid)
     }
 
-    /// Maps a string to an identifier with an empty syntax context.
+    /// Maps a string to an identifier with a dummy span.
     pub fn from_str(string: &str) -> Ident {
-        Ident::with_empty_ctxt(Symbol::intern(string))
+        Ident::with_dummy_span(Symbol::intern(string))
+    }
+
+    /// Maps a string and a span to an identifier.
+    pub fn from_str_and_span(string: &str, span: Span) -> Ident {
+        Ident::new(Symbol::intern(string), span)
     }
 
     /// Replaces `lo` and `hi` with those from `span`, but keep hygiene context.
@@ -669,20 +815,10 @@ impl Ident {
         Ident::new(self.name, self.span.modern_and_legacy())
     }
 
-    pub fn gensym(self) -> Ident {
-        Ident::new(self.name.gensymed(), self.span)
-    }
-
-    pub fn gensym_if_underscore(self) -> Ident {
-        if self.name == keywords::Underscore.name() { self.gensym() } else { self }
-    }
-
-    pub fn as_str(self) -> LocalInternedString {
+    /// Convert the name to a `SymbolStr`. This is a slowish operation because
+    /// it requires locking the symbol interner.
+    pub fn as_str(self) -> SymbolStr {
         self.name.as_str()
-    }
-
-    pub fn as_interned_str(self) -> InternedString {
-        self.name.as_interned_str()
     }
 }
 
@@ -711,52 +847,43 @@ impl fmt::Display for Ident {
     }
 }
 
-impl Encodable for Ident {
-    fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
-        if self.span.ctxt().modern() == SyntaxContext::empty() {
-            s.emit_str(&self.as_str())
-        } else { // FIXME(jseyfried): intercrate hygiene
-            let mut string = "#".to_owned();
-            string.push_str(&self.as_str());
-            s.emit_str(&string)
-        }
-    }
-}
-
-impl Decodable for Ident {
-    fn decode<D: Decoder>(d: &mut D) -> Result<Ident, D::Error> {
-        let string = d.read_str()?;
-        Ok(if !string.starts_with('#') {
-            Ident::from_str(&string)
-        } else { // FIXME(jseyfried): intercrate hygiene
-            Ident::with_empty_ctxt(Symbol::gensym(&string[1..]))
+impl UseSpecializedEncodable for Ident {
+    fn default_encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
+        s.emit_struct("Ident", 2, |s| {
+            s.emit_struct_field("name", 0, |s| {
+                self.name.encode(s)
+            })?;
+            s.emit_struct_field("span", 1, |s| {
+                self.span.encode(s)
+            })
         })
     }
 }
 
-/// A symbol is an interned or gensymed string. A gensym is a symbol that is
-/// never equal to any other symbol. E.g.:
-/// ```
-/// assert_eq!(Symbol::intern("x"), Symbol::intern("x"))
-/// assert_ne!(Symbol::gensym("x"), Symbol::intern("x"))
-/// assert_ne!(Symbol::gensym("x"), Symbol::gensym("x"))
-/// ```
-/// Conceptually, a gensym can be thought of as a normal symbol with an
-/// invisible unique suffix. Gensyms are useful when creating new identifiers
-/// that must not match any existing identifiers, e.g. during macro expansion
-/// and syntax desugaring.
+impl UseSpecializedDecodable for Ident {
+    fn default_decode<D: Decoder>(d: &mut D) -> Result<Self, D::Error> {
+        d.read_struct("Ident", 2, |d| {
+            Ok(Ident {
+                name: d.read_struct_field("name", 0, Decodable::decode)?,
+                span: d.read_struct_field("span", 1, Decodable::decode)?,
+            })
+        })
+    }
+}
+
+/// An interned string.
 ///
-/// Internally, a Symbol is implemented as an index, and all operations
+/// Internally, a `Symbol` is implemented as an index, and all operations
 /// (including hashing, equality, and ordering) operate on that index. The use
-/// of `newtype_index!` means that `Option<Symbol>` only takes up 4 bytes,
-/// because `newtype_index!` reserves the last 256 values for tagging purposes.
+/// of `rustc_index::newtype_index!` means that `Option<Symbol>` only takes up 4 bytes,
+/// because `rustc_index::newtype_index!` reserves the last 256 values for tagging purposes.
 ///
-/// Note that `Symbol` cannot directly be a `newtype_index!` because it implements
-/// `fmt::Debug`, `Encodable`, and `Decodable` in special ways.
+/// Note that `Symbol` cannot directly be a `rustc_index::newtype_index!` because it
+/// implements `fmt::Debug`, `Encodable`, and `Decodable` in special ways.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Symbol(SymbolIndex);
 
-newtype_index! {
+rustc_index::newtype_index! {
     pub struct SymbolIndex { .. }
 }
 
@@ -770,31 +897,21 @@ impl Symbol {
         with_interner(|interner| interner.intern(string))
     }
 
-    /// Gensyms a new `usize`, using the current interner.
-    pub fn gensym(string: &str) -> Self {
-        with_interner(|interner| interner.gensym(string))
-    }
-
-    pub fn gensymed(self) -> Self {
-        with_interner(|interner| interner.gensymed(self))
-    }
-
-    // WARNING: this function is deprecated and will be removed in the future.
-    pub fn is_gensymed(self) -> bool {
-        with_interner(|interner| interner.is_gensymed(self))
-    }
-
-    pub fn as_str(self) -> LocalInternedString {
-        with_interner(|interner| unsafe {
-            LocalInternedString {
-                string: std::mem::transmute::<&str, &str>(interner.get(self))
-            }
+    /// Access the symbol's chars. This is a slowish operation because it
+    /// requires locking the symbol interner.
+    pub fn with<F: FnOnce(&str) -> R, R>(self, f: F) -> R {
+        with_interner(|interner| {
+            f(interner.get(self))
         })
     }
 
-    pub fn as_interned_str(self) -> InternedString {
-        with_interner(|interner| InternedString {
-            symbol: interner.interned(self)
+    /// Convert to a `SymbolStr`. This is a slowish operation because it
+    /// requires locking the symbol interner.
+    pub fn as_str(self) -> SymbolStr {
+        with_interner(|interner| unsafe {
+            SymbolStr {
+                string: std::mem::transmute::<&str, &str>(interner.get(self))
+            }
         })
     }
 
@@ -805,24 +922,19 @@ impl Symbol {
 
 impl fmt::Debug for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let is_gensymed = with_interner(|interner| interner.is_gensymed(*self));
-        if is_gensymed {
-            write!(f, "{}({:?})", self, self.0)
-        } else {
-            write!(f, "{}", self)
-        }
+        self.with(|str| fmt::Debug::fmt(&str, f))
     }
 }
 
 impl fmt::Display for Symbol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(&self.as_str(), f)
+        self.with(|str| fmt::Display::fmt(&str, f))
     }
 }
 
 impl Encodable for Symbol {
     fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
-        s.emit_str(&self.as_str())
+        self.with(|string| s.emit_str(string))
     }
 }
 
@@ -832,33 +944,37 @@ impl Decodable for Symbol {
     }
 }
 
+impl<CTX> HashStable<CTX> for Symbol {
+    #[inline]
+    fn hash_stable(&self, hcx: &mut CTX, hasher: &mut StableHasher) {
+        self.as_str().hash_stable(hcx, hasher);
+    }
+}
+
+impl<CTX> ToStableHashKey<CTX> for Symbol {
+    type KeyType = SymbolStr;
+
+    #[inline]
+    fn to_stable_hash_key(&self, _: &CTX) -> SymbolStr {
+        self.as_str()
+    }
+}
+
 // The `&'static str`s in this type actually point into the arena.
-//
-// Note that normal symbols are indexed upward from 0, and gensyms are indexed
-// downward from SymbolIndex::MAX_AS_U32.
 #[derive(Default)]
 pub struct Interner {
     arena: DroplessArena,
     names: FxHashMap<&'static str, Symbol>,
     strings: Vec<&'static str>,
-    gensyms: Vec<Symbol>,
 }
 
 impl Interner {
-    fn prefill(init: &[&str]) -> Self {
-        let mut this = Interner::default();
-        this.names.reserve(init.len());
-        this.strings.reserve(init.len());
-
-        // We can't allocate empty strings in the arena, so handle this here.
-        assert!(keywords::Invalid.name().as_u32() == 0 && init[0].is_empty());
-        this.names.insert("", keywords::Invalid.name());
-        this.strings.push("");
-
-        for string in &init[1..] {
-            this.intern(string);
+    fn prefill(init: &[&'static str]) -> Self {
+        Interner {
+            strings: init.into(),
+            names: init.iter().copied().zip((0..).map(Symbol::new)).collect(),
+            ..Default::default()
         }
-        this
     }
 
     pub fn intern(&mut self, string: &str) -> Symbol {
@@ -883,77 +999,70 @@ impl Interner {
         name
     }
 
-    fn interned(&self, symbol: Symbol) -> Symbol {
-        if (symbol.0.as_usize()) < self.strings.len() {
-            symbol
-        } else {
-            self.gensyms[(SymbolIndex::MAX_AS_U32 - symbol.0.as_u32()) as usize]
-        }
-    }
-
-    fn gensym(&mut self, string: &str) -> Symbol {
-        let symbol = self.intern(string);
-        self.gensymed(symbol)
-    }
-
-    fn gensymed(&mut self, symbol: Symbol) -> Symbol {
-        self.gensyms.push(symbol);
-        Symbol::new(SymbolIndex::MAX_AS_U32 - self.gensyms.len() as u32 + 1)
-    }
-
-    fn is_gensymed(&mut self, symbol: Symbol) -> bool {
-        symbol.0.as_usize() >= self.strings.len()
-    }
-
     // Get the symbol as a string. `Symbol::as_str()` should be used in
     // preference to this function.
     pub fn get(&self, symbol: Symbol) -> &str {
-        match self.strings.get(symbol.0.as_usize()) {
-            Some(string) => string,
-            None => {
-                let symbol = self.gensyms[(SymbolIndex::MAX_AS_U32 - symbol.0.as_u32()) as usize];
-                self.strings[symbol.0.as_usize()]
-            }
-        }
+        self.strings[symbol.0.as_usize()]
     }
 }
 
-pub mod keywords {
-    use super::{Symbol, Ident};
-
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    pub struct Keyword {
-        ident: Ident,
-    }
-
-    impl Keyword {
-        #[inline]
-        pub fn ident(self) -> Ident {
-            self.ident
-        }
-
-        #[inline]
-        pub fn name(self) -> Symbol {
-            self.ident.name
-        }
-    }
-
+// This module has a very short name because it's used a lot.
+pub mod kw {
+    use super::Symbol;
     keywords!();
 }
 
 // This module has a very short name because it's used a lot.
 pub mod sym {
+    use std::convert::TryInto;
     use super::Symbol;
+
     symbols!();
+
+    // Get the symbol for an integer. The first few non-negative integers each
+    // have a static symbol and therefore are fast.
+    pub fn integer<N: TryInto<usize> + Copy + ToString>(n: N) -> Symbol {
+        if let Result::Ok(idx) = n.try_into() {
+            if let Option::Some(&sym) = digits_array.get(idx) {
+                return sym;
+            }
+        }
+        Symbol::intern(&n.to_string())
+    }
 }
 
 impl Symbol {
     fn is_used_keyword_2018(self) -> bool {
-        self == keywords::Dyn.name()
+        self >= kw::Async && self <= kw::Dyn
     }
 
     fn is_unused_keyword_2018(self) -> bool {
-        self >= keywords::Async.name() && self <= keywords::Try.name()
+        self == kw::Try
+    }
+
+    /// Used for sanity checking rustdoc keyword sections.
+    pub fn is_doc_keyword(self) -> bool {
+        self <= kw::Union
+    }
+
+    /// A keyword or reserved identifier that can be used as a path segment.
+    pub fn is_path_segment_keyword(self) -> bool {
+        self == kw::Super ||
+        self == kw::SelfLower ||
+        self == kw::SelfUpper ||
+        self == kw::Crate ||
+        self == kw::PathRoot ||
+        self == kw::DollarCrate
+    }
+
+    /// Returns `true` if the symbol is `true` or `false`.
+    pub fn is_bool_lit(self) -> bool {
+        self == kw::True || self == kw::False
+    }
+
+    /// This symbol can be a raw identifier.
+    pub fn can_be_raw(self) -> bool {
+        self != kw::Invalid && self != kw::Underscore && !self.is_path_segment_keyword()
     }
 }
 
@@ -961,20 +1070,20 @@ impl Ident {
     // Returns `true` for reserved identifiers used internally for elided lifetimes,
     // unnamed method parameters, crate root module, error recovery etc.
     pub fn is_special(self) -> bool {
-        self.name <= keywords::Underscore.name()
+        self.name <= kw::Underscore
     }
 
     /// Returns `true` if the token is a keyword used in the language.
     pub fn is_used_keyword(self) -> bool {
         // Note: `span.edition()` is relatively expensive, don't call it unless necessary.
-        self.name >= keywords::As.name() && self.name <= keywords::While.name() ||
+        self.name >= kw::As && self.name <= kw::While ||
         self.name.is_used_keyword_2018() && self.span.rust_2018()
     }
 
     /// Returns `true` if the token is a keyword reserved for possible future use.
     pub fn is_unused_keyword(self) -> bool {
         // Note: `span.edition()` is relatively expensive, don't call it unless necessary.
-        self.name >= keywords::Abstract.name() && self.name <= keywords::Yield.name() ||
+        self.name >= kw::Abstract && self.name <= kw::Yield ||
         self.name.is_unused_keyword_2018() && self.span.rust_2018()
     }
 
@@ -985,296 +1094,82 @@ impl Ident {
 
     /// A keyword or reserved identifier that can be used as a path segment.
     pub fn is_path_segment_keyword(self) -> bool {
-        self.name == keywords::Super.name() ||
-        self.name == keywords::SelfLower.name() ||
-        self.name == keywords::SelfUpper.name() ||
-        self.name == keywords::Crate.name() ||
-        self.name == keywords::PathRoot.name() ||
-        self.name == keywords::DollarCrate.name()
-    }
-
-    /// This identifier can be a raw identifier.
-    pub fn can_be_raw(self) -> bool {
-        self.name != keywords::Invalid.name() && self.name != keywords::Underscore.name() &&
-        !self.is_path_segment_keyword()
+        self.name.is_path_segment_keyword()
     }
 
     /// We see this identifier in a normal identifier position, like variable name or a type.
     /// How was it written originally? Did it use the raw form? Let's try to guess.
     pub fn is_raw_guess(self) -> bool {
-        self.can_be_raw() && self.is_reserved()
+        self.name.can_be_raw() && self.is_reserved()
     }
 }
 
-// If an interner exists, return it. Otherwise, prepare a fresh one.
 #[inline]
 fn with_interner<T, F: FnOnce(&mut Interner) -> T>(f: F) -> T {
     GLOBALS.with(|globals| f(&mut *globals.symbol_interner.lock()))
 }
 
-/// An alternative to `Symbol` and `InternedString`, useful when the chars
-/// within the symbol need to be accessed. It is best used for temporary
-/// values.
+/// An alternative to `Symbol`, useful when the chars within the symbol need to
+/// be accessed. It deliberately has limited functionality and should only be
+/// used for temporary values.
 ///
 /// Because the interner outlives any thread which uses this type, we can
 /// safely treat `string` which points to interner data, as an immortal string,
 /// as long as this type never crosses between threads.
 //
-// FIXME: ensure that the interner outlives any thread which uses
-// `LocalInternedString`, by creating a new thread right after constructing the
-// interner.
-#[derive(Clone, Copy, Hash, PartialOrd, Eq, Ord)]
-pub struct LocalInternedString {
+// FIXME: ensure that the interner outlives any thread which uses `SymbolStr`,
+// by creating a new thread right after constructing the interner.
+#[derive(Clone, Eq, PartialOrd, Ord)]
+pub struct SymbolStr {
     string: &'static str,
 }
 
-impl LocalInternedString {
-    pub fn as_interned_str(self) -> InternedString {
-        InternedString {
-            symbol: Symbol::intern(self.string)
-        }
-    }
-
-    pub fn get(&self) -> &str {
-        // This returns a valid string since we ensure that `self` outlives the interner
-        // by creating the interner on a thread which outlives threads which can access it.
-        // This type cannot move to a thread which outlives the interner since it does
-        // not implement Send.
-        self.string
-    }
-}
-
-impl<U: ?Sized> std::convert::AsRef<U> for LocalInternedString
-where
-    str: std::convert::AsRef<U>
-{
-    fn as_ref(&self) -> &U {
-        self.string.as_ref()
-    }
-}
-
-impl<T: std::ops::Deref<Target = str>> std::cmp::PartialEq<T> for LocalInternedString {
+// This impl allows a `SymbolStr` to be directly equated with a `String` or
+// `&str`.
+impl<T: std::ops::Deref<Target = str>> std::cmp::PartialEq<T> for SymbolStr {
     fn eq(&self, other: &T) -> bool {
         self.string == other.deref()
     }
 }
 
-impl std::cmp::PartialEq<LocalInternedString> for str {
-    fn eq(&self, other: &LocalInternedString) -> bool {
-        self == other.string
-    }
-}
+impl !Send for SymbolStr {}
+impl !Sync for SymbolStr {}
 
-impl<'a> std::cmp::PartialEq<LocalInternedString> for &'a str {
-    fn eq(&self, other: &LocalInternedString) -> bool {
-        *self == other.string
-    }
-}
-
-impl std::cmp::PartialEq<LocalInternedString> for String {
-    fn eq(&self, other: &LocalInternedString) -> bool {
-        self == other.string
-    }
-}
-
-impl<'a> std::cmp::PartialEq<LocalInternedString> for &'a String {
-    fn eq(&self, other: &LocalInternedString) -> bool {
-        *self == other.string
-    }
-}
-
-impl !Send for LocalInternedString {}
-impl !Sync for LocalInternedString {}
-
-impl std::ops::Deref for LocalInternedString {
+/// This impl means that if `ss` is a `SymbolStr`:
+/// - `*ss` is a `str`;
+/// - `&*ss` is a `&str`;
+/// - `&ss as &str` is a `&str`, which means that `&ss` can be passed to a
+///   function expecting a `&str`.
+impl std::ops::Deref for SymbolStr {
     type Target = str;
+    #[inline]
     fn deref(&self) -> &str { self.string }
 }
 
-impl fmt::Debug for LocalInternedString {
+impl fmt::Debug for SymbolStr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Debug::fmt(self.string, f)
     }
 }
 
-impl fmt::Display for LocalInternedString {
+impl fmt::Display for SymbolStr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fmt::Display::fmt(self.string, f)
     }
 }
 
-impl Decodable for LocalInternedString {
-    fn decode<D: Decoder>(d: &mut D) -> Result<LocalInternedString, D::Error> {
-        Ok(Symbol::intern(&d.read_str()?).as_str())
+impl<CTX> HashStable<CTX> for SymbolStr {
+    #[inline]
+    fn hash_stable(&self, hcx: &mut CTX, hasher: &mut StableHasher) {
+        self.string.hash_stable(hcx, hasher)
     }
 }
 
-impl Encodable for LocalInternedString {
-    fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
-        s.emit_str(self.string)
-    }
-}
+impl<CTX> ToStableHashKey<CTX> for SymbolStr {
+    type KeyType = SymbolStr;
 
-/// An alternative to `Symbol` that is focused on string contents. It has two
-/// main differences to `Symbol`.
-///
-/// First, its implementations of `Hash`, `PartialOrd` and `Ord` work with the
-/// string chars rather than the symbol integer. This is useful when hash
-/// stability is required across compile sessions, or a guaranteed sort
-/// ordering is required.
-///
-/// Second, gensym-ness is irrelevant. E.g.:
-/// ```
-/// assert_ne!(Symbol::gensym("x"), Symbol::gensym("x"))
-/// assert_eq!(Symbol::gensym("x").as_interned_str(), Symbol::gensym("x").as_interned_str())
-/// ```
-#[derive(Clone, Copy, Eq)]
-pub struct InternedString {
-    symbol: Symbol,
-}
-
-impl InternedString {
-    pub fn with<F: FnOnce(&str) -> R, R>(self, f: F) -> R {
-        let str = with_interner(|interner| {
-            interner.get(self.symbol) as *const str
-        });
-        // This is safe because the interner keeps string alive until it is dropped.
-        // We can access it because we know the interner is still alive since we use a
-        // scoped thread local to access it, and it was alive at the beginning of this scope
-        unsafe { f(&*str) }
-    }
-
-    fn with2<F: FnOnce(&str, &str) -> R, R>(self, other: &InternedString, f: F) -> R {
-        let (self_str, other_str) = with_interner(|interner| {
-            (interner.get(self.symbol) as *const str,
-             interner.get(other.symbol) as *const str)
-        });
-        // This is safe for the same reason that `with` is safe.
-        unsafe { f(&*self_str, &*other_str) }
-    }
-
-    pub fn as_symbol(self) -> Symbol {
-        self.symbol
-    }
-
-    pub fn as_str(self) -> LocalInternedString {
-        self.symbol.as_str()
-    }
-}
-
-impl Hash for InternedString {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.with(|str| str.hash(state))
-    }
-}
-
-impl PartialOrd<InternedString> for InternedString {
-    fn partial_cmp(&self, other: &InternedString) -> Option<Ordering> {
-        if self.symbol == other.symbol {
-            return Some(Ordering::Equal);
-        }
-        self.with2(other, |self_str, other_str| self_str.partial_cmp(other_str))
-    }
-}
-
-impl Ord for InternedString {
-    fn cmp(&self, other: &InternedString) -> Ordering {
-        if self.symbol == other.symbol {
-            return Ordering::Equal;
-        }
-        self.with2(other, |self_str, other_str| self_str.cmp(other_str))
-    }
-}
-
-impl<T: std::ops::Deref<Target = str>> PartialEq<T> for InternedString {
-    fn eq(&self, other: &T) -> bool {
-        self.with(|string| string == other.deref())
-    }
-}
-
-impl PartialEq<InternedString> for InternedString {
-    fn eq(&self, other: &InternedString) -> bool {
-        self.symbol == other.symbol
-    }
-}
-
-impl PartialEq<InternedString> for str {
-    fn eq(&self, other: &InternedString) -> bool {
-        other.with(|string| self == string)
-    }
-}
-
-impl<'a> PartialEq<InternedString> for &'a str {
-    fn eq(&self, other: &InternedString) -> bool {
-        other.with(|string| *self == string)
-    }
-}
-
-impl PartialEq<InternedString> for String {
-    fn eq(&self, other: &InternedString) -> bool {
-        other.with(|string| self == string)
-    }
-}
-
-impl<'a> PartialEq<InternedString> for &'a String {
-    fn eq(&self, other: &InternedString) -> bool {
-        other.with(|string| *self == string)
-    }
-}
-
-impl fmt::Debug for InternedString {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.with(|str| fmt::Debug::fmt(&str, f))
-    }
-}
-
-impl fmt::Display for InternedString {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.with(|str| fmt::Display::fmt(&str, f))
-    }
-}
-
-impl Decodable for InternedString {
-    fn decode<D: Decoder>(d: &mut D) -> Result<InternedString, D::Error> {
-        Ok(Symbol::intern(&d.read_str()?).as_interned_str())
-    }
-}
-
-impl Encodable for InternedString {
-    fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
-        self.with(|string| s.emit_str(string))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::Globals;
-
-    #[test]
-    fn interner_tests() {
-        let mut i: Interner = Interner::default();
-        // first one is zero:
-        assert_eq!(i.intern("dog"), Symbol::new(0));
-        // re-use gets the same entry:
-        assert_eq!(i.intern("dog"), Symbol::new(0));
-        // different string gets a different #:
-        assert_eq!(i.intern("cat"), Symbol::new(1));
-        assert_eq!(i.intern("cat"), Symbol::new(1));
-        // dog is still at zero
-        assert_eq!(i.intern("dog"), Symbol::new(0));
-        assert_eq!(i.gensym("zebra"), Symbol::new(SymbolIndex::MAX_AS_U32));
-        // gensym of same string gets new number:
-        assert_eq!(i.gensym("zebra"), Symbol::new(SymbolIndex::MAX_AS_U32 - 1));
-        // gensym of *existing* string gets new number:
-        assert_eq!(i.gensym("dog"), Symbol::new(SymbolIndex::MAX_AS_U32 - 2));
-    }
-
-    #[test]
-    fn without_first_quote_test() {
-        GLOBALS.set(&Globals::new(), || {
-            let i = Ident::from_str("'break");
-            assert_eq!(i.without_first_quote().name, keywords::Break.name());
-        });
+    #[inline]
+    fn to_stable_hash_key(&self, _: &CTX) -> SymbolStr {
+        self.clone()
     }
 }

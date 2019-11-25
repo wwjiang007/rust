@@ -1,4 +1,4 @@
-// compile-pass
+// build-pass
 #![allow(dead_code)]
 #![allow(unused_imports)]
 #![allow(stable_features)]

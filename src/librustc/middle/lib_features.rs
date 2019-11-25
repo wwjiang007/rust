@@ -11,7 +11,8 @@ use syntax::ast::{Attribute, MetaItem, MetaItemKind};
 use syntax_pos::{Span, sym};
 use rustc_data_structures::fx::{FxHashSet, FxHashMap};
 use rustc_macros::HashStable;
-use errors::DiagnosticId;
+
+use rustc_error_codes::*;
 
 #[derive(HashStable)]
 pub struct LibFeatures {
@@ -37,13 +38,13 @@ impl LibFeatures {
     }
 }
 
-pub struct LibFeatureCollector<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+pub struct LibFeatureCollector<'tcx> {
+    tcx: TyCtxt<'tcx>,
     lib_features: LibFeatures,
 }
 
-impl<'a, 'tcx> LibFeatureCollector<'a, 'tcx> {
-    fn new(tcx: TyCtxt<'a, 'tcx, 'tcx>) -> LibFeatureCollector<'a, 'tcx> {
+impl LibFeatureCollector<'tcx> {
+    fn new(tcx: TyCtxt<'tcx>) -> LibFeatureCollector<'tcx> {
         LibFeatureCollector {
             tcx,
             lib_features: LibFeatures::new(),
@@ -59,7 +60,7 @@ impl<'a, 'tcx> LibFeatureCollector<'a, 'tcx> {
             attr.check_name(**stab_attr)
         }) {
             let meta_item = attr.meta();
-            if let Some(MetaItem { node: MetaItemKind::List(ref metas), .. }) = meta_item {
+            if let Some(MetaItem { kind: MetaItemKind::List(ref metas), .. }) = meta_item {
                 let mut feature = None;
                 let mut since = None;
                 for meta in metas {
@@ -98,15 +99,16 @@ impl<'a, 'tcx> LibFeatureCollector<'a, 'tcx> {
             (Some(since), _, false) => {
                 if let Some(prev_since) = self.lib_features.stable.get(&feature) {
                     if *prev_since != since {
-                        let msg = format!(
-                            "feature `{}` is declared stable since {}, \
-                             but was previously declared stable since {}",
-                            feature,
-                            since,
-                            prev_since,
+                        self.span_feature_error(
+                            span,
+                            &format!(
+                                "feature `{}` is declared stable since {}, \
+                                 but was previously declared stable since {}",
+                                feature,
+                                since,
+                                prev_since,
+                            ),
                         );
-                        self.tcx.sess.struct_span_err_with_code(span, &msg,
-                            DiagnosticId::Error("E0711".into())).emit();
                         return;
                     }
                 }
@@ -117,20 +119,30 @@ impl<'a, 'tcx> LibFeatureCollector<'a, 'tcx> {
                 self.lib_features.unstable.insert(feature);
             }
             (Some(_), _, true) | (None, true, _) => {
-                let msg = format!(
-                    "feature `{}` is declared {}, but was previously declared {}",
-                    feature,
-                    if since.is_some() { "stable" } else { "unstable" },
-                    if since.is_none() { "stable" } else { "unstable" },
+                self.span_feature_error(
+                    span,
+                    &format!(
+                        "feature `{}` is declared {}, but was previously declared {}",
+                        feature,
+                        if since.is_some() { "stable" } else { "unstable" },
+                        if since.is_none() { "stable" } else { "unstable" },
+                    ),
                 );
-                self.tcx.sess.struct_span_err_with_code(span, &msg,
-                    DiagnosticId::Error("E0711".into())).emit();
             }
         }
     }
+
+    fn span_feature_error(&self, span: Span, msg: &str) {
+        struct_span_err!(
+            self.tcx.sess,
+            span,
+            E0711,
+            "{}", &msg,
+        ).emit();
+    }
 }
 
-impl<'a, 'tcx> Visitor<'tcx> for LibFeatureCollector<'a, 'tcx> {
+impl Visitor<'tcx> for LibFeatureCollector<'tcx> {
     fn nested_visit_map<'this>(&'this mut self) -> NestedVisitorMap<'this, 'tcx> {
         NestedVisitorMap::All(&self.tcx.hir())
     }
@@ -142,8 +154,12 @@ impl<'a, 'tcx> Visitor<'tcx> for LibFeatureCollector<'a, 'tcx> {
     }
 }
 
-pub fn collect<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) -> LibFeatures {
+pub fn collect(tcx: TyCtxt<'_>) -> LibFeatures {
     let mut collector = LibFeatureCollector::new(tcx);
-    intravisit::walk_crate(&mut collector, tcx.hir().krate());
+    let krate = tcx.hir().krate();
+    for attr in &krate.non_exported_macro_attrs {
+        collector.visit_attribute(attr);
+    }
+    intravisit::walk_crate(&mut collector, krate);
     collector.lib_features
 }

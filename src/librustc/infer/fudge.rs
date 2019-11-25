@@ -1,6 +1,5 @@
 use crate::ty::{self, Ty, TyCtxt, TyVid, IntVid, FloatVid, RegionVid, ConstVid};
 use crate::ty::fold::{TypeFoldable, TypeFolder};
-use crate::mir::interpret::ConstValue;
 
 use super::InferCtxt;
 use super::{RegionVariableOrigin, ConstVariableOrigin};
@@ -22,7 +21,7 @@ fn const_vars_since_snapshot<'tcx>(
     }).collect())
 }
 
-impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
     /// This rather funky routine is used while processing expected
     /// types. What happens here is that we want to propagate a
     /// coercion through the return type of a fn to its
@@ -74,7 +73,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         let (mut fudger, value) = self.probe(|snapshot| {
             match f() {
                 Ok(value) => {
-                    let value = self.resolve_type_vars_if_possible(&value);
+                    let value = self.resolve_vars_if_possible(&value);
 
                     // At this point, `value` could in principle refer
                     // to inference variables that have been created during
@@ -133,8 +132,8 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
     }
 }
 
-pub struct InferenceFudger<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
-    infcx: &'a InferCtxt<'a, 'gcx, 'tcx>,
+pub struct InferenceFudger<'a, 'tcx> {
+    infcx: &'a InferCtxt<'a, 'tcx>,
     type_vars: (Range<TyVid>, Vec<TypeVariableOrigin>),
     int_vars: Range<IntVid>,
     float_vars: Range<FloatVid>,
@@ -142,13 +141,13 @@ pub struct InferenceFudger<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
     const_vars: (Range<ConstVid<'tcx>>, Vec<ConstVariableOrigin>),
 }
 
-impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for InferenceFudger<'a, 'gcx, 'tcx> {
-    fn tcx<'b>(&'b self) -> TyCtxt<'b, 'gcx, 'tcx> {
+impl<'a, 'tcx> TypeFolder<'tcx> for InferenceFudger<'a, 'tcx> {
+    fn tcx<'b>(&'b self) -> TyCtxt<'tcx> {
         self.infcx.tcx
     }
 
     fn fold_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
-        match ty.sty {
+        match ty.kind {
             ty::Infer(ty::InferTy::TyVar(vid)) => {
                 if self.type_vars.0.contains(&vid) {
                     // This variable was created during the fudging.
@@ -198,7 +197,7 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for InferenceFudger<'a, 'gcx, 'tcx> 
     }
 
     fn fold_const(&mut self, ct: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
-        if let ty::Const { val: ConstValue::Infer(ty::InferConst::Var(vid)), ty } = ct {
+        if let ty::Const { val: ty::ConstKind::Infer(ty::InferConst::Var(vid)), ty } = ct {
             if self.const_vars.0.contains(&vid) {
                 // This variable was created during the fudging.
                 // Recreate it with a fresh variable here.

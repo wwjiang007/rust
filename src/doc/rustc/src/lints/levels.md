@@ -35,7 +35,7 @@ talk about later in this section.
 ## warn
 
 The 'warn' lint level will produce a warning if you violate the lint. For example,
-this code runs afoul of the `unused_variable` lint:
+this code runs afoul of the `unused_variables` lint:
 
 ```rust
 pub fn foo() {
@@ -53,7 +53,7 @@ warning: unused variable: `x`
 2 |     let x = 5;
   |         ^
   |
-  = note: #[warn(unused_variables)] on by default
+  = note: `#[warn(unused_variables)]` on by default
   = note: to avoid this warning, consider using `_x` instead
 ```
 
@@ -76,7 +76,7 @@ error: bitshift exceeds the type's number of bits
 2 |     100u8 << 10;
   |     ^^^^^^^^^^^
   |
-  = note: #[deny(exceeding_bitshifts)] on by default
+  = note: `#[deny(exceeding_bitshifts)]` on by default
 ```
 
 What's the difference between an error from a lint and a regular old error?
@@ -236,7 +236,7 @@ warning: bitshift exceeds the type's number of bits
 2 |     100u8 << 10;
   |     ^^^^^^^^^^^
   |
-  = note: #[warn(exceeding_bitshifts)] on by default
+  = note: `#[warn(exceeding_bitshifts)]` on by default
 
 warning: this expression will panic at run-time
  --> lib.rs:2:5

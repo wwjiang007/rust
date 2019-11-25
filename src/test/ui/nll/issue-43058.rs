@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 
 use std::borrow::Cow;
 

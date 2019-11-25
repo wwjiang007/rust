@@ -11,7 +11,6 @@ use std::process;
 use std::cmp;
 
 use build_helper::t;
-use num_cpus;
 use toml;
 use serde::Deserialize;
 use crate::cache::{INTERNER, Interned};
@@ -52,7 +51,7 @@ pub struct Config {
     pub test_compare_mode: bool,
     pub llvm_libunwind: bool,
 
-    pub run_host_only: bool,
+    pub skip_only_host_steps: bool,
 
     pub on_fail: Option<String>,
     pub stage: Option<u32>,
@@ -76,7 +75,7 @@ pub struct Config {
     pub llvm_link_shared: bool,
     pub llvm_clang_cl: Option<String>,
     pub llvm_targets: Option<String>,
-    pub llvm_experimental_targets: String,
+    pub llvm_experimental_targets: Option<String>,
     pub llvm_link_jobs: Option<u32>,
     pub llvm_version_suffix: Option<String>,
     pub llvm_use_linker: Option<String>,
@@ -96,15 +95,14 @@ pub struct Config {
     pub rust_codegen_units: Option<u32>,
     pub rust_codegen_units_std: Option<u32>,
     pub rust_debug_assertions: bool,
-    pub rust_debuginfo: bool,
-    pub rust_debuginfo_lines: bool,
-    pub rust_debuginfo_only_std: bool,
-    pub rust_debuginfo_tools: bool,
+    pub rust_debuginfo_level_rustc: u32,
+    pub rust_debuginfo_level_std: u32,
+    pub rust_debuginfo_level_tools: u32,
+    pub rust_debuginfo_level_tests: u32,
     pub rust_rpath: bool,
     pub rustc_parallel: bool,
     pub rustc_default_linker: Option<String>,
     pub rust_optimize_tests: bool,
-    pub rust_debuginfo_tests: bool,
     pub rust_dist_src: bool,
     pub rust_codegen_backends: Vec<Interned<String>>,
     pub rust_codegen_backends_dir: String,
@@ -124,13 +122,11 @@ pub struct Config {
 
     // libstd features
     pub backtrace: bool, // support for RUST_BACKTRACE
-    pub wasm_syscall: bool,
 
     // misc
     pub low_priority: bool,
     pub channel: String,
     pub verbose_tests: bool,
-    pub test_miri: bool,
     pub save_toolstates: Option<PathBuf>,
     pub print_step_timings: bool,
     pub missing_tools: bool,
@@ -141,7 +137,7 @@ pub struct Config {
     pub sysconfdir: Option<PathBuf>,
     pub datadir: Option<PathBuf>,
     pub docdir: Option<PathBuf>,
-    pub bindir: Option<PathBuf>,
+    pub bindir: PathBuf,
     pub libdir: Option<PathBuf>,
     pub mandir: Option<PathBuf>,
     pub codegen_tests: bool,
@@ -204,16 +200,15 @@ struct Build {
     target: Vec<String>,
     cargo: Option<String>,
     rustc: Option<String>,
-    low_priority: Option<bool>,
-    compiler_docs: Option<bool>,
     docs: Option<bool>,
+    compiler_docs: Option<bool>,
     submodules: Option<bool>,
     fast_submodules: Option<bool>,
     gdb: Option<String>,
-    locked_deps: Option<bool>,
-    vendor: Option<bool>,
     nodejs: Option<String>,
     python: Option<String>,
+    locked_deps: Option<bool>,
+    vendor: Option<bool>,
     full_bootstrap: Option<bool>,
     extended: Option<bool>,
     tools: Option<HashSet<String>>,
@@ -221,6 +216,7 @@ struct Build {
     sanitizers: Option<bool>,
     profiler: Option<bool>,
     cargo_native_static: Option<bool>,
+    low_priority: Option<bool>,
     configure_args: Option<Vec<String>>,
     local_rebuild: Option<bool>,
     print_step_timings: Option<bool>,
@@ -232,11 +228,11 @@ struct Build {
 struct Install {
     prefix: Option<String>,
     sysconfdir: Option<String>,
-    datadir: Option<String>,
     docdir: Option<String>,
     bindir: Option<String>,
     libdir: Option<String>,
     mandir: Option<String>,
+    datadir: Option<String>,
 
     // standard paths, currently unused
     infodir: Option<String>,
@@ -247,14 +243,14 @@ struct Install {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct Llvm {
-    ccache: Option<StringOrBool>,
-    ninja: Option<bool>,
-    assertions: Option<bool>,
     optimize: Option<bool>,
     thin_lto: Option<bool>,
     release_debuginfo: Option<bool>,
+    assertions: Option<bool>,
+    ccache: Option<StringOrBool>,
     version_check: Option<bool>,
     static_libstdcpp: Option<bool>,
+    ninja: Option<bool>,
     targets: Option<String>,
     experimental_targets: Option<String>,
     link_jobs: Option<u32>,
@@ -297,35 +293,33 @@ impl Default for StringOrBool {
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct Rust {
     optimize: Option<bool>,
+    debug: Option<bool>,
     codegen_units: Option<u32>,
     codegen_units_std: Option<u32>,
     debug_assertions: Option<bool>,
-    debuginfo: Option<bool>,
-    debuginfo_lines: Option<bool>,
-    debuginfo_only_std: Option<bool>,
-    debuginfo_tools: Option<bool>,
-    parallel_compiler: Option<bool>,
+    debuginfo_level: Option<u32>,
+    debuginfo_level_rustc: Option<u32>,
+    debuginfo_level_std: Option<u32>,
+    debuginfo_level_tools: Option<u32>,
+    debuginfo_level_tests: Option<u32>,
     backtrace: Option<bool>,
+    incremental: Option<bool>,
+    parallel_compiler: Option<bool>,
     default_linker: Option<String>,
     channel: Option<String>,
     musl_root: Option<String>,
     rpath: Option<bool>,
+    verbose_tests: Option<bool>,
     optimize_tests: Option<bool>,
-    debuginfo_tests: Option<bool>,
     codegen_tests: Option<bool>,
     ignore_git: Option<bool>,
-    debug: Option<bool>,
     dist_src: Option<bool>,
-    verbose_tests: Option<bool>,
-    test_miri: Option<bool>,
-    incremental: Option<bool>,
     save_toolstates: Option<String>,
     codegen_backends: Option<Vec<String>>,
     codegen_backends_dir: Option<String>,
-    wasm_syscall: Option<bool>,
     lld: Option<bool>,
-    lldb: Option<bool>,
     llvm_tools: Option<bool>,
+    lldb: Option<bool>,
     deny_warnings: Option<bool>,
     backtrace_on_ice: Option<bool>,
     verify_llvm_ir: Option<bool>,
@@ -339,13 +333,13 @@ struct Rust {
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct TomlTarget {
-    llvm_config: Option<String>,
-    llvm_filecheck: Option<String>,
     cc: Option<String>,
     cxx: Option<String>,
     ar: Option<String>,
     ranlib: Option<String>,
     linker: Option<String>,
+    llvm_config: Option<String>,
+    llvm_filecheck: Option<String>,
     android_ndk: Option<String>,
     crt_static: Option<bool>,
     musl_root: Option<String>,
@@ -377,7 +371,6 @@ impl Config {
         config.codegen_tests = true;
         config.ignore_git = false;
         config.rust_dist_src = true;
-        config.test_miri = false;
         config.rust_codegen_backends = vec![INTERNER.intern_str("llvm")];
         config.rust_codegen_backends_dir = "codegen-backends".to_owned();
         config.deny_warnings = true;
@@ -402,12 +395,13 @@ impl Config {
         config.rustc_error_format = flags.rustc_error_format;
         config.on_fail = flags.on_fail;
         config.stage = flags.stage;
-        config.jobs = flags.jobs;
+        config.jobs = flags.jobs.map(threads_from_config);
         config.cmd = flags.cmd;
         config.incremental = flags.incremental;
         config.dry_run = flags.dry_run;
         config.keep_stage = flags.keep_stage;
-        if let Some(value) = flags.warnings {
+        config.bindir = "bin".into(); // default
+        if let Some(value) = flags.deny_warnings {
             config.deny_warnings = value;
         }
 
@@ -418,7 +412,9 @@ impl Config {
         }
 
         // If --target was specified but --host wasn't specified, don't run any host-only tests.
-        config.run_host_only = !(flags.host.is_empty() && !flags.target.is_empty());
+        let has_hosts = !flags.host.is_empty();
+        let has_targets = !flags.target.is_empty();
+        config.skip_only_host_steps = !has_hosts && has_targets;
 
         let toml = file.map(|file| {
             let contents = t!(fs::read_to_string(&file));
@@ -487,7 +483,7 @@ impl Config {
             config.sysconfdir = install.sysconfdir.clone().map(PathBuf::from);
             config.datadir = install.datadir.clone().map(PathBuf::from);
             config.docdir = install.docdir.clone().map(PathBuf::from);
-            config.bindir = install.bindir.clone().map(PathBuf::from);
+            set(&mut config.bindir, install.bindir.clone().map(PathBuf::from));
             config.libdir = install.libdir.clone().map(PathBuf::from);
             config.mandir = install.mandir.clone().map(PathBuf::from);
         }
@@ -495,12 +491,13 @@ impl Config {
         // Store off these values as options because if they're not provided
         // we'll infer default values for them later
         let mut llvm_assertions = None;
-        let mut debuginfo_lines = None;
-        let mut debuginfo_only_std = None;
-        let mut debuginfo_tools = None;
         let mut debug = None;
-        let mut debuginfo = None;
         let mut debug_assertions = None;
+        let mut debuginfo_level = None;
+        let mut debuginfo_level_rustc = None;
+        let mut debuginfo_level_std = None;
+        let mut debuginfo_level_tools = None;
+        let mut debuginfo_level_tests = None;
         let mut optimize = None;
         let mut ignore_git = None;
 
@@ -523,8 +520,7 @@ impl Config {
             set(&mut config.llvm_static_stdcpp, llvm.static_libstdcpp);
             set(&mut config.llvm_link_shared, llvm.link_shared);
             config.llvm_targets = llvm.targets.clone();
-            config.llvm_experimental_targets = llvm.experimental_targets.clone()
-                .unwrap_or_else(|| "WebAssembly;RISCV".to_string());
+            config.llvm_experimental_targets = llvm.experimental_targets.clone();
             config.llvm_link_jobs = llvm.link_jobs;
             config.llvm_version_suffix = llvm.version_suffix.clone();
             config.llvm_clang_cl = llvm.clang_cl.clone();
@@ -540,14 +536,14 @@ impl Config {
         if let Some(ref rust) = toml.rust {
             debug = rust.debug;
             debug_assertions = rust.debug_assertions;
-            debuginfo = rust.debuginfo;
-            debuginfo_lines = rust.debuginfo_lines;
-            debuginfo_only_std = rust.debuginfo_only_std;
-            debuginfo_tools = rust.debuginfo_tools;
+            debuginfo_level = rust.debuginfo_level;
+            debuginfo_level_rustc = rust.debuginfo_level_rustc;
+            debuginfo_level_std = rust.debuginfo_level_std;
+            debuginfo_level_tools = rust.debuginfo_level_tools;
+            debuginfo_level_tests = rust.debuginfo_level_tests;
             optimize = rust.optimize;
             ignore_git = rust.ignore_git;
             set(&mut config.rust_optimize_tests, rust.optimize_tests);
-            set(&mut config.rust_debuginfo_tests, rust.debuginfo_tests);
             set(&mut config.codegen_tests, rust.codegen_tests);
             set(&mut config.rust_rpath, rust.rpath);
             set(&mut config.jemalloc, rust.jemalloc);
@@ -557,12 +553,10 @@ impl Config {
             set(&mut config.channel, rust.channel.clone());
             set(&mut config.rust_dist_src, rust.dist_src);
             set(&mut config.verbose_tests, rust.verbose_tests);
-            set(&mut config.test_miri, rust.test_miri);
             // in the case "false" is set explicitly, do not overwrite the command line args
             if let Some(true) = rust.incremental {
                 config.incremental = true;
             }
-            set(&mut config.wasm_syscall, rust.wasm_syscall);
             set(&mut config.lld_enabled, rust.lld);
             set(&mut config.lldb_enabled, rust.lldb);
             set(&mut config.llvm_tools_enabled, rust.llvm_tools);
@@ -570,7 +564,7 @@ impl Config {
             config.rustc_default_linker = rust.default_linker.clone();
             config.musl_root = rust.musl_root.clone().map(PathBuf::from);
             config.save_toolstates = rust.save_toolstates.clone().map(PathBuf::from);
-            set(&mut config.deny_warnings, rust.deny_warnings.or(flags.warnings));
+            set(&mut config.deny_warnings, flags.deny_warnings.or(rust.deny_warnings));
             set(&mut config.backtrace_on_ice, rust.backtrace_on_ice);
             set(&mut config.rust_verify_llvm_ir, rust.verify_llvm_ir);
             set(&mut config.rust_remap_debuginfo, rust.remap_debuginfo);
@@ -583,13 +577,8 @@ impl Config {
 
             set(&mut config.rust_codegen_backends_dir, rust.codegen_backends_dir.clone());
 
-            match rust.codegen_units {
-                Some(0) => config.rust_codegen_units = Some(num_cpus::get() as u32),
-                Some(n) => config.rust_codegen_units = Some(n),
-                None => {}
-            }
-
-            config.rust_codegen_units_std = rust.codegen_units_std;
+            config.rust_codegen_units = rust.codegen_units.map(threads_from_config);
+            config.rust_codegen_units_std = rust.codegen_units_std.map(threads_from_config);
         }
 
         if let Some(ref t) = toml.target {
@@ -639,22 +628,37 @@ impl Config {
         let default = true;
         config.rust_optimize = optimize.unwrap_or(default);
 
-        let default = match &config.channel[..] {
-            "stable" | "beta" | "nightly" => true,
-            _ => false,
-        };
-        config.rust_debuginfo_lines = debuginfo_lines.unwrap_or(default);
-        config.rust_debuginfo_only_std = debuginfo_only_std.unwrap_or(default);
-        config.rust_debuginfo_tools = debuginfo_tools.unwrap_or(false);
-
         let default = debug == Some(true);
-        config.rust_debuginfo = debuginfo.unwrap_or(default);
         config.rust_debug_assertions = debug_assertions.unwrap_or(default);
+
+        let with_defaults = |debuginfo_level_specific: Option<u32>| {
+            debuginfo_level_specific
+                .or(debuginfo_level)
+                .unwrap_or(if debug == Some(true) { 2 } else { 0 })
+        };
+        config.rust_debuginfo_level_rustc = with_defaults(debuginfo_level_rustc);
+        config.rust_debuginfo_level_std = with_defaults(debuginfo_level_std);
+        config.rust_debuginfo_level_tools = with_defaults(debuginfo_level_tools);
+        config.rust_debuginfo_level_tests = debuginfo_level_tests.unwrap_or(0);
 
         let default = config.channel == "dev";
         config.ignore_git = ignore_git.unwrap_or(default);
 
         config
+    }
+
+    /// Try to find the relative path of `bindir`, otherwise return it in full.
+    pub fn bindir_relative(&self) -> &Path {
+        let bindir = &self.bindir;
+        if bindir.is_absolute() {
+            // Try to make it relative to the prefix.
+            if let Some(prefix) = &self.prefix {
+                if let Ok(stripped) = bindir.strip_prefix(prefix) {
+                    return stripped;
+                }
+            }
+        }
+        bindir
     }
 
     /// Try to find the relative path of `libdir`.
@@ -678,12 +682,18 @@ impl Config {
 
     pub fn llvm_enabled(&self) -> bool {
         self.rust_codegen_backends.contains(&INTERNER.intern_str("llvm"))
-        || self.rust_codegen_backends.contains(&INTERNER.intern_str("emscripten"))
     }
 }
 
 fn set<T>(field: &mut T, val: Option<T>) {
     if let Some(v) = val {
         *field = v;
+    }
+}
+
+fn threads_from_config(v: u32) -> u32 {
+    match v {
+        0 => num_cpus::get() as u32,
+        n => n,
     }
 }

@@ -1,4 +1,4 @@
-// compile-pass
+// build-pass
 #![allow(dead_code)]
 trait Foo {
     fn foo(&self);

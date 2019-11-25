@@ -1,4 +1,4 @@
-// compile-pass
+// run-pass
 #![allow(stable_features)]
 
 // ignore-cloudabi no processes

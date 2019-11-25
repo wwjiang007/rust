@@ -118,27 +118,22 @@
 //!
 //! let mut counter = Counter::new();
 //!
-//! let x = counter.next().unwrap();
-//! println!("{}", x);
-//!
-//! let x = counter.next().unwrap();
-//! println!("{}", x);
-//!
-//! let x = counter.next().unwrap();
-//! println!("{}", x);
-//!
-//! let x = counter.next().unwrap();
-//! println!("{}", x);
-//!
-//! let x = counter.next().unwrap();
-//! println!("{}", x);
+//! assert_eq!(counter.next(), Some(1));
+//! assert_eq!(counter.next(), Some(2));
+//! assert_eq!(counter.next(), Some(3));
+//! assert_eq!(counter.next(), Some(4));
+//! assert_eq!(counter.next(), Some(5));
+//! assert_eq!(counter.next(), None);
 //! ```
 //!
-//! This will print `1` through `5`, each on their own line.
-//!
-//! Calling `next()` this way gets repetitive. Rust has a construct which can
-//! call `next()` on your iterator, until it reaches `None`. Let's go over that
+//! Calling [`next`] this way gets repetitive. Rust has a construct which can
+//! call [`next`] on your iterator, until it reaches `None`. Let's go over that
 //! next.
+//!
+//! Also note that `Iterator` provides a default implementation of methods such as `nth` and `fold`
+//! which call `next` internally. However, it is also possible to write a custom implementation of
+//! methods like `nth` and `fold` if an iterator can compute them more efficiently without calling
+//! `next`.
 //!
 //! # for Loops and IntoIterator
 //!
@@ -248,20 +243,23 @@
 //! ```
 //!
 //! The idiomatic way to write a [`map`] for its side effects is to use a
-//! `for` loop instead:
+//! `for` loop or call the [`for_each`] method:
 //!
 //! ```
 //! let v = vec![1, 2, 3, 4, 5];
 //!
+//! v.iter().for_each(|x| println!("{}", x));
+//! // or
 //! for x in &v {
 //!     println!("{}", x);
 //! }
 //! ```
 //!
 //! [`map`]: trait.Iterator.html#method.map
+//! [`for_each`]: trait.Iterator.html#method.for_each
 //!
-//! The two most common ways to evaluate an iterator are to use a `for` loop
-//! like this, or using the [`collect`] method to produce a new collection.
+//! Another common way to evaluate an iterator is to use the [`collect`]
+//! method to produce a new collection.
 //!
 //! [`collect`]: trait.Iterator.html#method.collect
 //!
@@ -355,7 +353,7 @@ pub use self::adapters::Flatten;
 #[stable(feature = "iter_copied", since = "1.36.0")]
 pub use self::adapters::Copied;
 
-pub(crate) use self::adapters::TrustedRandomAccess;
+pub(crate) use self::adapters::{TrustedRandomAccess, process_results};
 
 mod range;
 mod sources;

@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 
 // rust-lang/rust#56327: Some occurrences of `dyn` within a macro are
 // not instances of identifiers, and thus should *not* be caught by the

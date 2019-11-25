@@ -6,12 +6,10 @@
 extern crate proc_macro;
 use proc_macro::*;
 
-#[proc_macro_attribute]
-pub fn my_attr(_: TokenStream, input: TokenStream) -> TokenStream {
-    input
-}
-
-#[proc_macro_derive(MyTrait, attributes(my_attr))]
-pub fn derive(input: TokenStream) -> TokenStream {
-    TokenStream::new()
+#[proc_macro_derive(GenHelperUse)]
+pub fn derive_a(_: TokenStream) -> TokenStream {
+    "
+    #[empty_helper]
+    struct Uwu;
+    ".parse().unwrap()
 }

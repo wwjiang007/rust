@@ -97,6 +97,14 @@ pub fn target() -> Result<Target, String> {
     options.crt_static_default = true;
     options.crt_static_respected = true;
 
+    // Allow `+crt-static` to create a "cdylib" output which is just a wasm file
+    // without a main function.
+    options.crt_static_allows_dylibs = true;
+
+    // WASI's `sys::args::init` function ignores its arguments; instead,
+    // `args::args()` makes the WASI API calls itself.
+    options.main_needs_argc_argv = false;
+
     Ok(Target {
         llvm_target: "wasm32-wasi".to_string(),
         target_endian: "little".to_string(),

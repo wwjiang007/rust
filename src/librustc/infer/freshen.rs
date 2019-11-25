@@ -31,7 +31,6 @@
 //! variable only once, and it does so as soon as it can, so it is reasonable to ask what the type
 //! inferencer knows "so far".
 
-use crate::mir::interpret::ConstValue;
 use crate::ty::{self, Ty, TyCtxt, TypeFoldable};
 use crate::ty::fold::TypeFolder;
 use crate::util::nodemap::FxHashMap;
@@ -41,17 +40,16 @@ use std::collections::hash_map::Entry;
 use super::InferCtxt;
 use super::unify_key::ToType;
 
-pub struct TypeFreshener<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
-    infcx: &'a InferCtxt<'a, 'gcx, 'tcx>,
+pub struct TypeFreshener<'a, 'tcx> {
+    infcx: &'a InferCtxt<'a, 'tcx>,
     ty_freshen_count: u32,
     const_freshen_count: u32,
     ty_freshen_map: FxHashMap<ty::InferTy, Ty<'tcx>>,
     const_freshen_map: FxHashMap<ty::InferConst<'tcx>, &'tcx ty::Const<'tcx>>,
 }
 
-impl<'a, 'gcx, 'tcx> TypeFreshener<'a, 'gcx, 'tcx> {
-    pub fn new(infcx: &'a InferCtxt<'a, 'gcx, 'tcx>)
-               -> TypeFreshener<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> TypeFreshener<'a, 'tcx> {
+    pub fn new(infcx: &'a InferCtxt<'a, 'tcx>) -> TypeFreshener<'a, 'tcx> {
         TypeFreshener {
             infcx,
             ty_freshen_count: 0,
@@ -113,8 +111,8 @@ impl<'a, 'gcx, 'tcx> TypeFreshener<'a, 'gcx, 'tcx> {
     }
 }
 
-impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for TypeFreshener<'a, 'gcx, 'tcx> {
-    fn tcx<'b>(&'b self) -> TyCtxt<'b, 'gcx, 'tcx> {
+impl<'a, 'tcx> TypeFolder<'tcx> for TypeFreshener<'a, 'tcx> {
+    fn tcx<'b>(&'b self) -> TyCtxt<'tcx> {
         self.infcx.tcx
     }
 
@@ -154,7 +152,7 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for TypeFreshener<'a, 'gcx, 'tcx> {
 
         let tcx = self.infcx.tcx;
 
-        match t.sty {
+        match t.kind {
             ty::Infer(ty::TyVar(v)) => {
                 let opt_ty = self.infcx.type_variables.borrow_mut().probe(v).known();
                 self.freshen_ty(
@@ -228,7 +226,7 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for TypeFreshener<'a, 'gcx, 'tcx> {
 
     fn fold_const(&mut self, ct: &'tcx ty::Const<'tcx>) -> &'tcx ty::Const<'tcx> {
         match ct.val {
-            ConstValue::Infer(ty::InferConst::Var(v)) => {
+            ty::ConstKind::Infer(ty::InferConst::Var(v)) => {
                 let opt_ct = self.infcx.const_unification_table
                     .borrow_mut()
                     .probe_value(v)
@@ -241,7 +239,7 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for TypeFreshener<'a, 'gcx, 'tcx> {
                     ct.ty,
                 );
             }
-            ConstValue::Infer(ty::InferConst::Fresh(i)) => {
+            ty::ConstKind::Infer(ty::InferConst::Fresh(i)) => {
                 if i >= self.const_freshen_count {
                     bug!(
                         "Encountered a freshend const with id {} \
@@ -253,16 +251,14 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for TypeFreshener<'a, 'gcx, 'tcx> {
                 return ct;
             }
 
-            ConstValue::Infer(ty::InferConst::Canonical(..)) |
-            ConstValue::Placeholder(_) => {
+            ty::ConstKind::Bound(..) |
+            ty::ConstKind::Placeholder(_) => {
                 bug!("unexpected const {:?}", ct)
             }
 
-            ConstValue::Param(_) |
-            ConstValue::Scalar(_) |
-            ConstValue::Slice(..) |
-            ConstValue::ByRef(..) |
-            ConstValue::Unevaluated(..) => {}
+            ty::ConstKind::Param(_) |
+            ty::ConstKind::Value(_) |
+            ty::ConstKind::Unevaluated(..) => {}
         }
 
         ct.super_fold_with(self)

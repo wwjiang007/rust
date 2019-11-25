@@ -1,15 +1,13 @@
 #![allow(warnings)]
 
-const x: bool = match Some(true) {
+const x: bool = match Some(true) { //~ ERROR `match` is not allowed in a `const`
     Some(value) => true,
-    //~^ ERROR: constant contains unimplemented expression type [E0019]
     _ => false
 };
 
 const y: bool = {
-    match Some(true) {
+    match Some(true) { //~ ERROR `match` is not allowed in a `const`
         Some(value) => true,
-        //~^ ERROR: constant contains unimplemented expression type [E0019]
         _ => false
     }
 };

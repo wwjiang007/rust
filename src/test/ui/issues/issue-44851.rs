@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 macro_rules! a {
     () => { "a" }
 }

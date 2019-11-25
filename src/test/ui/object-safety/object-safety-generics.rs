@@ -1,6 +1,10 @@
 // Check that we correctly prevent users from making trait objects
 // from traits with generic methods, unless `where Self : Sized` is
 // present.
+// revisions: curr object_safe_for_dispatch
+
+#![cfg_attr(object_safe_for_dispatch, feature(object_safe_for_dispatch))]
+
 
 trait Bar {
     fn bar<T>(&self, t: T);
@@ -11,22 +15,24 @@ trait Quux {
         where Self : Sized;
 }
 
-fn make_bar<T:Bar>(t: &T) -> &Bar {
-        //~^ ERROR E0038
+fn make_bar<T:Bar>(t: &T) -> &dyn Bar {
+    //[curr]~^ ERROR E0038
+    t
+    //[object_safe_for_dispatch]~^ ERROR E0038
+}
+
+fn make_bar_explicit<T:Bar>(t: &T) -> &dyn Bar {
+    //[curr]~^ ERROR E0038
+    t as &dyn Bar
+    //[object_safe_for_dispatch]~^ ERROR E0038
+}
+
+fn make_quux<T:Quux>(t: &T) -> &dyn Quux {
     t
 }
 
-fn make_bar_explicit<T:Bar>(t: &T) -> &Bar {
-    //~^ ERROR E0038
-    t as &Bar
-}
-
-fn make_quux<T:Quux>(t: &T) -> &Quux {
-    t
-}
-
-fn make_quux_explicit<T:Quux>(t: &T) -> &Quux {
-    t as &Quux
+fn make_quux_explicit<T:Quux>(t: &T) -> &dyn Quux {
+    t as &dyn Quux
 }
 
 fn main() {

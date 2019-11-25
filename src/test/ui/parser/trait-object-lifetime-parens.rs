@@ -1,4 +1,4 @@
-// compile-flags: -Z continue-parse-after-error
+#![allow(bare_trait_objects)]
 
 trait Trait {}
 
@@ -9,7 +9,6 @@ fn check<'a>() {
     let _: Box<('a) + Trait>;
     //~^ ERROR expected type, found `'a`
     //~| ERROR expected `:`, found `)`
-    //~| ERROR chained comparison operators require parentheses
 }
 
 fn main() {}

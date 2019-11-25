@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 
 // rust-lang/rust#32382: Borrow checker used to complain about
 // `foobar_3` in the `impl` below, presumably due to some interaction

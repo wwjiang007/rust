@@ -118,6 +118,7 @@ benches! {
     }
 
     fn case07_fake_simd_u32(bytes: &mut [u8]) {
+        // SAFETY: transmuting a sequence of `u8` to `u32` is always fine
         let (before, aligned, after) = unsafe {
             bytes.align_to_mut::<u32>()
         };
@@ -142,6 +143,7 @@ benches! {
     }
 
     fn case08_fake_simd_u64(bytes: &mut [u8]) {
+        // SAFETY: transmuting a sequence of `u8` to `u64` is always fine
         let (before, aligned, after) = unsafe {
             bytes.align_to_mut::<u64>()
         };
@@ -191,7 +193,7 @@ benches! {
     fn case11_mask_mult_bool_match_range(bytes: &mut [u8]) {
         fn is_ascii_lowercase(b: u8) -> bool {
             match b {
-                b'a'...b'z' => true,
+                b'a'..=b'z' => true,
                 _ => false
             }
         }
@@ -203,7 +205,7 @@ benches! {
     fn case12_mask_shifted_bool_match_range(bytes: &mut [u8]) {
         fn is_ascii_lowercase(b: u8) -> bool {
             match b {
-                b'a'...b'z' => true,
+                b'a'..=b'z' => true,
                 _ => false
             }
         }
@@ -215,7 +217,7 @@ benches! {
     fn case13_subtract_shifted_bool_match_range(bytes: &mut [u8]) {
         fn is_ascii_lowercase(b: u8) -> bool {
             match b {
-                b'a'...b'z' => true,
+                b'a'..=b'z' => true,
                 _ => false
             }
         }
@@ -227,7 +229,7 @@ benches! {
     fn case14_subtract_multiplied_bool_match_range(bytes: &mut [u8]) {
         fn is_ascii_lowercase(b: u8) -> bool {
             match b {
-                b'a'...b'z' => true,
+                b'a'..=b'z' => true,
                 _ => false
             }
         }

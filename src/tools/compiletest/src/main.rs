@@ -1,14 +1,14 @@
 #![crate_name = "compiletest"]
 #![feature(test)]
 #![feature(vec_remove_item)]
-#![deny(warnings, rust_2018_idioms)]
+#![deny(warnings)]
 
 extern crate test;
 
-use crate::common::CompareMode;
+use crate::common::{CompareMode, PassMode};
 use crate::common::{expected_output_path, output_base_dir, output_relative_path, UI_EXTENSIONS};
 use crate::common::{Config, TestPaths};
-use crate::common::{DebugInfoBoth, DebugInfoGdb, DebugInfoLldb, Mode, Pretty};
+use crate::common::{DebugInfoCdb, DebugInfoGdbLldb, DebugInfoGdb, DebugInfoLldb, Mode, Pretty};
 use getopts::Options;
 use std::env;
 use std::ffi::OsString;
@@ -25,6 +25,9 @@ use getopts;
 use log::*;
 
 use self::header::{EarlyProps, Ignore};
+
+#[cfg(test)]
+mod tests;
 
 pub mod common;
 pub mod errors;
@@ -125,8 +128,13 @@ pub fn parse_config(args: Vec<String>) -> Config {
             "",
             "mode",
             "which sort of compile tests to run",
-            "(compile-fail|run-fail|run-pass|\
-             run-pass-valgrind|pretty|debug-info|incremental|mir-opt)",
+            "(compile-fail|run-fail|run-pass-valgrind|pretty|debug-info|incremental|mir-opt)",
+        )
+        .optopt(
+            "",
+            "pass",
+            "force {check,build,run}-pass tests to this mode.",
+            "check | build | run"
         )
         .optflag("", "ignored", "run tests marked as ignored")
         .optflag("", "exact", "filters match exactly")
@@ -164,6 +172,12 @@ pub fn parse_config(args: Vec<String>) -> Config {
         .optopt("", "logfile", "file to log test execution to", "FILE")
         .optopt("", "target", "the target to build for", "TARGET")
         .optopt("", "host", "the host to build for", "HOST")
+        .optopt(
+            "",
+            "cdb",
+            "path to CDB to use for CDB debuginfo tests",
+            "PATH",
+        )
         .optopt(
             "",
             "gdb",
@@ -240,7 +254,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
     if args.len() == 1 || args[1] == "-h" || args[1] == "--help" {
         let message = format!("Usage: {} [OPTIONS] [TESTNAME...]", argv0);
         println!("{}", opts.usage(&message));
-        println!("");
+        println!();
         panic!()
     }
 
@@ -252,7 +266,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
     if matches.opt_present("h") || matches.opt_present("help") {
         let message = format!("Usage: {} [OPTIONS]  [TESTNAME...]", argv0);
         println!("{}", opts.usage(&message));
-        println!("");
+        println!();
         panic!()
     }
 
@@ -273,6 +287,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
 
     let target = opt_str2(matches.opt_str("target"));
     let android_cross_path = opt_path(matches, "android-cross-path");
+    let cdb = analyze_cdb(matches.opt_str("cdb"), &target);
     let (gdb, gdb_version, gdb_native_rust) = analyze_gdb(matches.opt_str("gdb"), &target,
                                                           &android_cross_path);
     let (lldb_version, lldb_native_rust) = extract_lldb_version(matches.opt_str("lldb-version"));
@@ -313,12 +328,17 @@ pub fn parse_config(args: Vec<String>) -> Config {
         run_ignored,
         filter: matches.free.first().cloned(),
         filter_exact: matches.opt_present("exact"),
+        force_pass_mode: matches.opt_str("pass").map(|mode|
+            mode.parse::<PassMode>()
+                .unwrap_or_else(|_| panic!("unknown `--pass` option `{}` given", mode))
+        ),
         logfile: matches.opt_str("logfile").map(|s| PathBuf::from(&s)),
         runtool: matches.opt_str("runtool"),
         host_rustcflags: matches.opt_str("host-rustcflags"),
         target_rustcflags: matches.opt_str("target-rustcflags"),
-        target: target,
+        target,
         host: opt_str2(matches.opt_str("host")),
+        cdb,
         gdb,
         gdb_version,
         gdb_native_rust,
@@ -326,7 +346,7 @@ pub fn parse_config(args: Vec<String>) -> Config {
         lldb_native_rust,
         llvm_version: matches.opt_str("llvm-version"),
         system_llvm: matches.opt_present("system-llvm"),
-        android_cross_path: android_cross_path,
+        android_cross_path,
         adb_path: opt_str2(matches.opt_str("adb-path")),
         adb_test_dir: opt_str2(matches.opt_str("adb-test-dir")),
         adb_device_status: opt_str2(matches.opt_str("target")).contains("android")
@@ -374,6 +394,10 @@ pub fn log_config(config: &Config) {
         ),
     );
     logv(c, format!("filter_exact: {}", config.filter_exact));
+    logv(c, format!(
+        "force_pass_mode: {}",
+        opt_str(&config.force_pass_mode.map(|m| format!("{}", m))),
+    ));
     logv(c, format!("runtool: {}", opt_str(&config.runtool)));
     logv(
         c,
@@ -421,7 +445,7 @@ pub fn opt_str2(maybestr: Option<String>) -> String {
 
 pub fn run_tests(config: &Config) {
     if config.target.contains("android") {
-        if config.mode == DebugInfoGdb || config.mode == DebugInfoBoth {
+        if config.mode == DebugInfoGdb || config.mode == DebugInfoGdbLldb {
             println!(
                 "{} debug-info test uses tcp 5039 port.\
                  please reserve it",
@@ -440,8 +464,8 @@ pub fn run_tests(config: &Config) {
 
     match config.mode {
         // Note that we don't need to emit the gdb warning when
-        // DebugInfoBoth, so it is ok to list that here.
-        DebugInfoBoth | DebugInfoLldb => {
+        // DebugInfoGdbLldb, so it is ok to list that here.
+        DebugInfoGdbLldb | DebugInfoLldb => {
             if let Some(lldb_version) = config.lldb_version.as_ref() {
                 if is_blacklisted_lldb_version(&lldb_version[..]) {
                     println!(
@@ -470,7 +494,8 @@ pub fn run_tests(config: &Config) {
                 return;
             }
         }
-        _ => { /* proceed */ }
+
+        DebugInfoCdb | _ => { /* proceed */ }
     }
 
     // FIXME(#33435) Avoid spurious failures in codegen-units/partitioning tests.
@@ -543,20 +568,57 @@ pub fn test_opts(config: &Config) -> test::TestOpts {
         skip: vec![],
         list: false,
         options: test::Options::new(),
+        time_options: None,
     }
 }
 
 pub fn make_tests(config: &Config) -> Vec<test::TestDescAndFn> {
     debug!("making tests from {:?}", config.src_base.display());
+    let inputs = common_inputs_stamp(config);
     let mut tests = Vec::new();
     collect_tests_from_dir(
         config,
         &config.src_base,
         &config.src_base,
         &PathBuf::new(),
+        &inputs,
         &mut tests,
-    ).unwrap();
+    ).expect(&format!("Could not read tests from {}", config.src_base.display()));
     tests
+}
+
+/// Returns a stamp constructed from input files common to all test cases.
+fn common_inputs_stamp(config: &Config) -> Stamp {
+    let rust_src_dir = config
+        .find_rust_src_root()
+        .expect("Could not find Rust source root");
+
+    let mut stamp = Stamp::from_path(&config.rustc_path);
+
+    // Relevant pretty printer files
+    let pretty_printer_files = [
+        "src/etc/debugger_pretty_printers_common.py",
+        "src/etc/gdb_load_rust_pretty_printers.py",
+        "src/etc/gdb_rust_pretty_printing.py",
+        "src/etc/lldb_batchmode.py",
+        "src/etc/lldb_rust_formatters.py",
+    ];
+    for file in &pretty_printer_files {
+        let path = rust_src_dir.join(file);
+        stamp.add_path(&path);
+    }
+
+    stamp.add_dir(&config.run_lib_path);
+
+    if let Some(ref rustdoc_path) = config.rustdoc_path {
+        stamp.add_path(&rustdoc_path);
+        stamp.add_path(&rust_src_dir.join("src/etc/htmldocck.py"));
+    }
+
+    // Compiletest itself.
+    stamp.add_dir(&rust_src_dir.join("src/tools/compiletest/"));
+
+    stamp
 }
 
 fn collect_tests_from_dir(
@@ -564,6 +626,7 @@ fn collect_tests_from_dir(
     base: &Path,
     dir: &Path,
     relative_dir_path: &Path,
+    inputs: &Stamp,
     tests: &mut Vec<test::TestDescAndFn>,
 ) -> io::Result<()> {
     // Ignore directories that contain a file named `compiletest-ignore-dir`.
@@ -576,7 +639,7 @@ fn collect_tests_from_dir(
             file: dir.to_path_buf(),
             relative_dir: relative_dir_path.parent().unwrap().to_path_buf(),
         };
-        tests.extend(make_test(config, &paths));
+        tests.extend(make_test(config, &paths, inputs));
         return Ok(());
     }
 
@@ -601,12 +664,14 @@ fn collect_tests_from_dir(
                 file: file_path,
                 relative_dir: relative_dir_path.to_path_buf(),
             };
-            tests.extend(make_test(config, &paths))
+            tests.extend(make_test(config, &paths, inputs))
         } else if file_path.is_dir() {
             let relative_file_path = relative_dir_path.join(file.file_name());
             if &file_name != "auxiliary" {
                 debug!("found directory: {:?}", file_path.display());
-                collect_tests_from_dir(config, base, &file_path, &relative_file_path, tests)?;
+                collect_tests_from_dir(
+                    config, base, &file_path, &relative_file_path,
+                    inputs, tests)?;
             }
         } else {
             debug!("found other file/directory: {:?}", file_path.display());
@@ -629,7 +694,7 @@ pub fn is_test(file_name: &OsString) -> bool {
     !invalid_prefixes.iter().any(|p| file_name.starts_with(p))
 }
 
-pub fn make_test(config: &Config, testpaths: &TestPaths) -> Vec<test::TestDescAndFn> {
+fn make_test(config: &Config, testpaths: &TestPaths, inputs: &Stamp) -> Vec<test::TestDescAndFn> {
     let early_props = if config.mode == Mode::RunMake {
         // Allow `ignore` directives to be in the Makefile.
         EarlyProps::from_file(config, &testpaths.file.join("Makefile"))
@@ -659,25 +724,28 @@ pub fn make_test(config: &Config, testpaths: &TestPaths) -> Vec<test::TestDescAn
     revisions
         .into_iter()
         .map(|revision| {
-            // Debugging emscripten code doesn't make sense today
             let ignore = early_props.ignore == Ignore::Ignore
-                || !up_to_date(
+                // Debugging emscripten code doesn't make sense today
+                || ((config.mode == DebugInfoGdbLldb || config.mode == DebugInfoCdb ||
+                     config.mode == DebugInfoGdb || config.mode == DebugInfoLldb)
+                    && config.target.contains("emscripten"))
+                || (config.mode == DebugInfoGdb && !early_props.ignore.can_run_gdb())
+                || (config.mode == DebugInfoLldb && !early_props.ignore.can_run_lldb())
+                // Ignore tests that already run and are up to date with respect to inputs.
+                || is_up_to_date(
                     config,
                     testpaths,
                     &early_props,
                     revision.map(|s| s.as_str()),
-                )
-                || ((config.mode == DebugInfoBoth ||
-                     config.mode == DebugInfoGdb || config.mode == DebugInfoLldb)
-                    && config.target.contains("emscripten"))
-                || (config.mode == DebugInfoGdb && !early_props.ignore.can_run_gdb())
-                || (config.mode == DebugInfoLldb && !early_props.ignore.can_run_lldb());
+                    inputs,
+                );
             test::TestDescAndFn {
                 desc: test::TestDesc {
                     name: make_test_name(config, testpaths, revision),
                     ignore,
                     should_panic,
                     allow_fail: false,
+                    test_type: test::TestType::Unknown,
                 },
                 testfn: make_test_closure(config, early_props.ignore, testpaths, revision),
             }
@@ -689,98 +757,75 @@ fn stamp(config: &Config, testpaths: &TestPaths, revision: Option<&str>) -> Path
     output_base_dir(config, testpaths, revision).join("stamp")
 }
 
-fn up_to_date(
+fn is_up_to_date(
     config: &Config,
     testpaths: &TestPaths,
     props: &EarlyProps,
     revision: Option<&str>,
+    inputs: &Stamp,
 ) -> bool {
     let stamp_name = stamp(config, testpaths, revision);
     // Check hash.
     let contents = match fs::read_to_string(&stamp_name) {
         Ok(f) => f,
         Err(ref e) if e.kind() == ErrorKind::InvalidData => panic!("Can't read stamp contents"),
-        Err(_) => return true,
+        Err(_) => return false,
     };
     let expected_hash = runtest::compute_stamp_hash(config);
     if contents != expected_hash {
-        return true;
+        return false;
     }
 
     // Check timestamps.
-    let rust_src_dir = config
-        .find_rust_src_root()
-        .expect("Could not find Rust source root");
-    let stamp = Stamp::from_path(&stamp_name);
-    let mut inputs = vec![Stamp::from_path(&testpaths.file), Stamp::from_path(&config.rustc_path)];
-    inputs.extend(
-        props
-            .aux
-            .iter()
-            .map(|aux| {
-                Stamp::from_path(&testpaths.file.parent().unwrap().join("auxiliary").join(aux))
-            }),
-    );
-    // Relevant pretty printer files
-    let pretty_printer_files = [
-        "src/etc/debugger_pretty_printers_common.py",
-        "src/etc/gdb_load_rust_pretty_printers.py",
-        "src/etc/gdb_rust_pretty_printing.py",
-        "src/etc/lldb_batchmode.py",
-        "src/etc/lldb_rust_formatters.py",
-    ];
-    inputs.extend(pretty_printer_files.iter().map(|pretty_printer_file| {
-        Stamp::from_path(&rust_src_dir.join(pretty_printer_file))
-    }));
-    inputs.extend(Stamp::from_dir(&config.run_lib_path));
-    if let Some(ref rustdoc_path) = config.rustdoc_path {
-        inputs.push(Stamp::from_path(&rustdoc_path));
-        inputs.push(Stamp::from_path(&rust_src_dir.join("src/etc/htmldocck.py")));
+    let mut inputs = inputs.clone();
+    inputs.add_path(&testpaths.file);
+
+    for aux in &props.aux {
+        let path = testpaths.file.parent()
+            .unwrap()
+            .join("auxiliary")
+            .join(aux);
+        inputs.add_path(&path);
     }
 
     // UI test files.
-    inputs.extend(UI_EXTENSIONS.iter().map(|extension| {
+    for extension in UI_EXTENSIONS {
         let path = &expected_output_path(testpaths, revision, &config.compare_mode, extension);
-        Stamp::from_path(path)
-    }));
+        inputs.add_path(path);
+    }
 
-    // Compiletest itself.
-    inputs.extend(Stamp::from_dir(&rust_src_dir.join("src/tools/compiletest/")));
-
-    inputs.iter().any(|input| input > &stamp)
+    inputs < Stamp::from_path(&stamp_name)
 }
 
-#[derive(Debug, PartialEq, PartialOrd, Ord, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Stamp {
     time: SystemTime,
-    file: PathBuf,
 }
 
 impl Stamp {
-    fn from_path(p: &Path) -> Self {
-        let time = fs::metadata(p)
-            .and_then(|metadata| metadata.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-
-        Stamp {
-            time,
-            file: p.into(),
-        }
+    fn from_path(path: &Path) -> Self {
+        let mut stamp = Stamp { time: SystemTime::UNIX_EPOCH };
+        stamp.add_path(path);
+        stamp
     }
 
-    fn from_dir(path: &Path) -> impl Iterator<Item = Stamp> {
-        WalkDir::new(path)
-            .into_iter()
-            .map(|entry| entry.unwrap())
-            .filter(|entry| entry.file_type().is_file())
-            .map(|entry| {
-                let time = (|| -> io::Result<_> { entry.metadata()?.modified() })();
+    fn add_path(&mut self, path: &Path) {
+        let modified = fs::metadata(path)
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        self.time = self.time.max(modified);
+    }
 
-                Stamp {
-                    time: time.unwrap_or(SystemTime::UNIX_EPOCH),
-                    file: entry.path().into(),
-                }
-            })
+    fn add_dir(&mut self, path: &Path) {
+        for entry in WalkDir::new(path) {
+            let entry = entry.unwrap();
+            if entry.file_type().is_file() {
+                let modified = entry.metadata().ok()
+                    .and_then(|metadata| metadata.modified().ok())
+                    .unwrap_or(SystemTime::UNIX_EPOCH);
+                self.time = self.time.max(modified);
+            }
+        }
     }
 }
 
@@ -791,7 +836,7 @@ fn make_test_name(
 ) -> test::TestName {
     // Convert a complete path to something like
     //
-    //    run-pass/foo/bar/baz.rs
+    //    ui/foo/bar/baz.rs
     let path = PathBuf::from(config.src_base.file_name().unwrap())
         .join(&testpaths.relative_dir)
         .join(&testpaths.file.file_name().unwrap());
@@ -815,7 +860,7 @@ fn make_test_closure(
     revision: Option<&String>,
 ) -> test::TestFn {
     let mut config = config.clone();
-    if config.mode == DebugInfoBoth {
+    if config.mode == DebugInfoGdbLldb {
         // If both gdb and lldb were ignored, then the test as a whole
         // would be ignored.
         if !ignore.can_run_gdb() {
@@ -839,6 +884,47 @@ fn is_android_gdb_target(target: &String) -> bool {
         "arm-linux-androideabi" | "armv7-linux-androideabi" | "aarch64-linux-android" => true,
         _ => false,
     }
+}
+
+/// Returns `true` if the given target is a MSVC target for the purpouses of CDB testing.
+fn is_pc_windows_msvc_target(target: &String) -> bool {
+    target.ends_with("-pc-windows-msvc")
+}
+
+fn find_cdb(target: &String) -> Option<OsString> {
+    if !(cfg!(windows) && is_pc_windows_msvc_target(target)) {
+        return None;
+    }
+
+    let pf86 = env::var_os("ProgramFiles(x86)").or(env::var_os("ProgramFiles"))?;
+    let cdb_arch = if cfg!(target_arch="x86") {
+        "x86"
+    } else if cfg!(target_arch="x86_64") {
+        "x64"
+    } else if cfg!(target_arch="aarch64") {
+        "arm64"
+    } else if cfg!(target_arch="arm") {
+        "arm"
+    } else {
+        return None; // No compatible CDB.exe in the Windows 10 SDK
+    };
+
+    let mut path = PathBuf::new();
+    path.push(pf86);
+    path.push(r"Windows Kits\10\Debuggers"); // We could check 8.1 etc. too?
+    path.push(cdb_arch);
+    path.push(r"cdb.exe");
+
+    if !path.exists() {
+        return None;
+    }
+
+    Some(path.into_os_string())
+}
+
+/// Returns Path to CDB
+fn analyze_cdb(cdb: Option<String>, target: &String) -> Option<OsString> {
+    cdb.map(|s| OsString::from(s)).or(find_cdb(target))
 }
 
 /// Returns (Path to GDB, GDB Version, GDB has Rust Support)
@@ -1030,54 +1116,4 @@ fn extract_lldb_version(full_version_line: Option<String>) -> (Option<String>, b
 
 fn is_blacklisted_lldb_version(version: &str) -> bool {
     version == "350"
-}
-
-#[test]
-fn test_extract_gdb_version() {
-    macro_rules! test { ($($expectation:tt: $input:tt,)*) => {{$(
-        assert_eq!(extract_gdb_version($input), Some($expectation));
-    )*}}}
-
-    test! {
-        7000001: "GNU gdb (GDB) CentOS (7.0.1-45.el5.centos)",
-
-        7002000: "GNU gdb (GDB) Red Hat Enterprise Linux (7.2-90.el6)",
-
-        7004000: "GNU gdb (Ubuntu/Linaro 7.4-2012.04-0ubuntu2.1) 7.4-2012.04",
-        7004001: "GNU gdb (GDB) 7.4.1-debian",
-
-        7006001: "GNU gdb (GDB) Red Hat Enterprise Linux 7.6.1-80.el7",
-
-        7007001: "GNU gdb (Ubuntu 7.7.1-0ubuntu5~14.04.2) 7.7.1",
-        7007001: "GNU gdb (Debian 7.7.1+dfsg-5) 7.7.1",
-        7007001: "GNU gdb (GDB) Fedora 7.7.1-21.fc20",
-
-        7008000: "GNU gdb (GDB; openSUSE 13.2) 7.8",
-        7009001: "GNU gdb (GDB) Fedora 7.9.1-20.fc22",
-        7010001: "GNU gdb (GDB) Fedora 7.10.1-31.fc23",
-
-        7011000: "GNU gdb (Ubuntu 7.11-0ubuntu1) 7.11",
-        7011001: "GNU gdb (Ubuntu 7.11.1-0ubuntu1~16.04) 7.11.1",
-        7011001: "GNU gdb (Debian 7.11.1-2) 7.11.1",
-        7011001: "GNU gdb (GDB) Fedora 7.11.1-86.fc24",
-        7011001: "GNU gdb (GDB; openSUSE Leap 42.1) 7.11.1",
-        7011001: "GNU gdb (GDB; openSUSE Tumbleweed) 7.11.1",
-
-        7011090: "7.11.90",
-        7011090: "GNU gdb (Ubuntu 7.11.90.20161005-0ubuntu1) 7.11.90.20161005-git",
-
-        7012000: "7.12",
-        7012000: "GNU gdb (GDB) 7.12",
-        7012000: "GNU gdb (GDB) 7.12.20161027-git",
-        7012050: "GNU gdb (GDB) 7.12.50.20161027-git",
-    }
-}
-
-#[test]
-fn is_test_test() {
-    assert_eq!(true, is_test(&OsString::from("a_test.rs")));
-    assert_eq!(false, is_test(&OsString::from(".a_test.rs")));
-    assert_eq!(false, is_test(&OsString::from("a_cat.gif")));
-    assert_eq!(false, is_test(&OsString::from("#a_dog_gif")));
-    assert_eq!(false, is_test(&OsString::from("~a_temp_file")));
 }

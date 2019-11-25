@@ -30,11 +30,6 @@ error[E0425]: cannot find value `y` in this scope
 LL |     let x = y.;
    |             ^ not found in this scope
 
-error[E0601]: `main` function not found in crate `parser_recovery_1`
-   |
-   = note: consider adding a `main` function to `$DIR/parser-recovery-1.rs`
+error: aborting due to 4 previous errors
 
-error: aborting due to 5 previous errors
-
-Some errors have detailed explanations: E0425, E0601.
-For more information about an error, try `rustc --explain E0425`.
+For more information about this error, try `rustc --explain E0425`.

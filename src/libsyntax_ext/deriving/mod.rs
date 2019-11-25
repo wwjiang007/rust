@@ -1,10 +1,7 @@
 //! The compiler code necessary to implement the `#[derive]` extensions.
 
-use rustc_data_structures::sync::Lrc;
-use syntax::ast;
-use syntax::ext::base::{Annotatable, ExtCtxt, SyntaxExtension, Resolver};
-use syntax::ext::build::AstBuilder;
-use syntax::ext::hygiene::{Mark, SyntaxContext};
+use syntax::ast::{self, ItemKind, MetaItem};
+use syntax_expand::base::{Annotatable, ExtCtxt, MultiItemModifier};
 use syntax::ptr::P;
 use syntax::symbol::{Symbol, sym};
 use syntax_pos::Span;
@@ -28,7 +25,6 @@ pub mod decodable;
 pub mod hash;
 pub mod debug;
 pub mod default;
-pub mod custom;
 
 #[path="cmp/partial_eq.rs"]
 pub mod partial_eq;
@@ -39,118 +35,36 @@ pub mod partial_ord;
 #[path="cmp/ord.rs"]
 pub mod ord;
 
-
 pub mod generic;
 
-macro_rules! derive_traits {
-    ($( $name:expr => $func:path, )+) => {
-        pub fn is_builtin_trait(name: ast::Name) -> bool {
-            match &*name.as_str() {
-                $( $name )|+ => true,
-                _ => false,
-            }
-        }
+crate struct BuiltinDerive(
+    crate fn(&mut ExtCtxt<'_>, Span, &MetaItem, &Annotatable, &mut dyn FnMut(Annotatable))
+);
 
-        pub fn register_builtin_derives(resolver: &mut dyn Resolver) {
-            $(
-                resolver.add_builtin(
-                    ast::Ident::with_empty_ctxt(Symbol::intern($name)),
-                    Lrc::new(SyntaxExtension::BuiltinDerive($func))
-                );
-            )*
-        }
+impl MultiItemModifier for BuiltinDerive {
+    fn expand(&self,
+              ecx: &mut ExtCtxt<'_>,
+              span: Span,
+              meta_item: &MetaItem,
+              item: Annotatable)
+              -> Vec<Annotatable> {
+        // FIXME: Built-in derives often forget to give spans contexts,
+        // so we are doing it here in a centralized way.
+        let span = ecx.with_def_site_ctxt(span);
+        let mut items = Vec::new();
+        (self.0)(ecx, span, meta_item, &item, &mut |a| items.push(a));
+        items
     }
-}
-
-derive_traits! {
-    "Clone" => clone::expand_deriving_clone,
-
-    "Hash" => hash::expand_deriving_hash,
-
-    "RustcEncodable" => encodable::expand_deriving_rustc_encodable,
-
-    "RustcDecodable" => decodable::expand_deriving_rustc_decodable,
-
-    "PartialEq" => partial_eq::expand_deriving_partial_eq,
-    "Eq" => eq::expand_deriving_eq,
-    "PartialOrd" => partial_ord::expand_deriving_partial_ord,
-    "Ord" => ord::expand_deriving_ord,
-
-    "Debug" => debug::expand_deriving_debug,
-
-    "Default" => default::expand_deriving_default,
-
-    "Send" => bounds::expand_deriving_unsafe_bound,
-    "Sync" => bounds::expand_deriving_unsafe_bound,
-    "Copy" => bounds::expand_deriving_copy,
-
-    // deprecated
-    "Encodable" => encodable::expand_deriving_encodable,
-    "Decodable" => decodable::expand_deriving_decodable,
-}
-
-#[inline] // because `name` is a compile-time constant
-fn warn_if_deprecated(ecx: &mut ExtCtxt<'_>, sp: Span, name: &str) {
-    if let Some(replacement) = match name {
-        "Encodable" => Some("RustcEncodable"),
-        "Decodable" => Some("RustcDecodable"),
-        _ => None,
-    } {
-        ecx.span_warn(sp,
-                      &format!("derive({}) is deprecated in favor of derive({})",
-                               name,
-                               replacement));
-    }
-}
-
-/// Construct a name for the inner type parameter that can't collide with any type parameters of
-/// the item. This is achieved by starting with a base and then concatenating the names of all
-/// other type parameters.
-// FIXME(aburka): use real hygiene when that becomes possible
-fn hygienic_type_parameter(item: &Annotatable, base: &str) -> String {
-    let mut typaram = String::from(base);
-    if let Annotatable::Item(ref item) = *item {
-        match item.node {
-            ast::ItemKind::Struct(_, ast::Generics { ref params, .. }) |
-            ast::ItemKind::Enum(_, ast::Generics { ref params, .. }) => {
-                for param in params {
-                    match param.kind {
-                        ast::GenericParamKind::Type { .. } => {
-                            typaram.push_str(&param.ident.as_str());
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            _ => {}
-        }
-    }
-
-    typaram
 }
 
 /// Constructs an expression that calls an intrinsic
 fn call_intrinsic(cx: &ExtCtxt<'_>,
-                  mut span: Span,
+                  span: Span,
                   intrinsic: &str,
                   args: Vec<P<ast::Expr>>)
                   -> P<ast::Expr> {
-    let intrinsic_allowed_via_allow_internal_unstable = cx
-        .current_expansion.mark.expn_info().unwrap()
-        .allow_internal_unstable.map_or(false, |features| features.iter().any(|&s|
-            s == sym::core_intrinsics
-        ));
-    if intrinsic_allowed_via_allow_internal_unstable {
-        span = span.with_ctxt(cx.backtrace());
-    } else { // Avoid instability errors with user defined curstom derives, cc #36316
-        let mut info = cx.current_expansion.mark.expn_info().unwrap();
-        info.allow_internal_unstable = Some(vec![Symbol::intern("core_intrinsics")].into());
-        let mark = Mark::fresh(Mark::root());
-        mark.set_expn_info(info);
-        span = span.with_ctxt(SyntaxContext::empty().apply_mark(mark));
-    }
-    let path = cx.std_path(&["intrinsics", intrinsic]);
+    let span = cx.with_def_site_ctxt(span);
+    let path = cx.std_path(&[sym::intrinsics, Symbol::intern(intrinsic)]);
     let call = cx.expr_call_global(span, path, args);
 
     cx.expr_block(P(ast::Block {
@@ -159,4 +73,86 @@ fn call_intrinsic(cx: &ExtCtxt<'_>,
         rules: ast::BlockCheckMode::Unsafe(ast::CompilerGenerated),
         span,
     }))
+}
+
+
+// Injects `impl<...> Structural for ItemType<...> { }`. In particular,
+// does *not* add `where T: Structural` for parameters `T` in `...`.
+// (That's the main reason we cannot use TraitDef here.)
+fn inject_impl_of_structural_trait(cx: &mut ExtCtxt<'_>,
+                                   span: Span,
+                                   item: &Annotatable,
+                                   structural_path: generic::ty::Path<'_>,
+                                   push: &mut dyn FnMut(Annotatable)) {
+    let item = match *item {
+        Annotatable::Item(ref item) => item,
+        _ => {
+            // Non-Item derive is an error, but it should have been
+            // set earlier; see
+            // libsyntax/ext/expand.rs:MacroExpander::expand()
+            return;
+        }
+    };
+
+    let generics = match item.kind {
+        ItemKind::Struct(_, ref generics) |
+        ItemKind::Enum(_, ref generics) => generics,
+        // Do not inject `impl Structural for Union`. (`PartialEq` does not
+        // support unions, so we will see error downstream.)
+        ItemKind::Union(..) => return,
+        _ => unreachable!(),
+    };
+
+    // Create generics param list for where clauses and impl headers
+    let mut generics = generics.clone();
+
+    // Create the type of `self`.
+    //
+    // in addition, remove defaults from type params (impls cannot have them).
+    let self_params: Vec<_> = generics.params.iter_mut().map(|param| match &mut param.kind {
+        ast::GenericParamKind::Lifetime => {
+            ast::GenericArg::Lifetime(cx.lifetime(span, param.ident))
+        }
+        ast::GenericParamKind::Type { default } => {
+            *default = None;
+            ast::GenericArg::Type(cx.ty_ident(span, param.ident))
+        }
+        ast::GenericParamKind::Const { ty: _ } => {
+            ast::GenericArg::Const(cx.const_ident(span, param.ident))
+        }
+    }).collect();
+
+    let type_ident = item.ident;
+
+    let trait_ref = cx.trait_ref(structural_path.to_path(cx, span, type_ident, &generics));
+    let self_type = cx.ty_path(cx.path_all(span, false, vec![type_ident], self_params));
+
+    // It would be nice to also encode constraint `where Self: Eq` (by adding it
+    // onto `generics` cloned above). Unfortunately, that strategy runs afoul of
+    // rust-lang/rust#48214. So we perform that additional check in the compiler
+    // itself, instead of encoding it here.
+
+    // Keep the lint and stability attributes of the original item, to control
+    // how the generated implementation is linted.
+    let mut attrs = Vec::new();
+    attrs.extend(item.attrs
+                 .iter()
+                 .filter(|a| {
+                     [sym::allow, sym::warn, sym::deny, sym::forbid, sym::stable, sym::unstable]
+                         .contains(&a.name_or_empty())
+                 })
+                 .cloned());
+
+    let newitem = cx.item(span,
+                          ast::Ident::invalid(),
+                          attrs,
+                          ItemKind::Impl(ast::Unsafety::Normal,
+                                         ast::ImplPolarity::Positive,
+                                         ast::Defaultness::Final,
+                                         generics,
+                                         Some(trait_ref),
+                                         self_type,
+                                         Vec::new()));
+
+    push(Annotatable::Item(newitem));
 }

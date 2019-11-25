@@ -1,11 +1,11 @@
-// compile-pass
+// check-pass
 // compile-flags: -Z unpretty=hir
 
-#![feature(existential_type)]
+#![feature(type_alias_impl_trait)]
 
 trait Animal {
 }
 
 fn main() {
-    pub existential type ServeFut: Animal;
+    pub type ServeFut = impl Animal;
 }

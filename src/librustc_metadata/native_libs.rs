@@ -8,34 +8,36 @@ use rustc_target::spec::abi::Abi;
 use syntax::attr;
 use syntax::source_map::Span;
 use syntax::feature_gate::{self, GateIssue};
-use syntax::symbol::{Symbol, sym};
+use syntax::symbol::{kw, sym, Symbol};
 use syntax::{span_err, struct_span_err};
 
-pub fn collect<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>) -> Vec<NativeLibrary> {
+use rustc_error_codes::*;
+
+crate fn collect(tcx: TyCtxt<'_>) -> Vec<NativeLibrary> {
     let mut collector = Collector {
         tcx,
         libs: Vec::new(),
     };
     tcx.hir().krate().visit_all_item_likes(&mut collector);
     collector.process_command_line();
-    return collector.libs
+    return collector.libs;
 }
 
-pub fn relevant_lib(sess: &Session, lib: &NativeLibrary) -> bool {
+crate fn relevant_lib(sess: &Session, lib: &NativeLibrary) -> bool {
     match lib.cfg {
         Some(ref cfg) => attr::cfg_matches(cfg, &sess.parse_sess, None),
         None => true,
     }
 }
 
-struct Collector<'a, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+struct Collector<'tcx> {
+    tcx: TyCtxt<'tcx>,
     libs: Vec<NativeLibrary>,
 }
 
-impl<'a, 'tcx> ItemLikeVisitor<'tcx> for Collector<'a, 'tcx> {
+impl ItemLikeVisitor<'tcx> for Collector<'tcx> {
     fn visit_item(&mut self, it: &'tcx hir::Item) {
-        let fm = match it.node {
+        let fm = match it.kind {
             hir::ItemKind::ForeignMod(ref fm) => fm,
             _ => return,
         };
@@ -56,7 +58,7 @@ impl<'a, 'tcx> ItemLikeVisitor<'tcx> for Collector<'a, 'tcx> {
                 name: None,
                 kind: cstore::NativeUnknown,
                 cfg: None,
-                foreign_module: Some(self.tcx.hir().local_def_id_from_hir_id(it.hir_id)),
+                foreign_module: Some(self.tcx.hir().local_def_id(it.hir_id)),
                 wasm_import_module: None,
             };
             let mut kind_specified = false;
@@ -68,11 +70,12 @@ impl<'a, 'tcx> ItemLikeVisitor<'tcx> for Collector<'a, 'tcx> {
                         Some(name) => name,
                         None => continue, // skip like historical compilers
                     };
-                    lib.kind = match &kind.as_str()[..] {
+                    lib.kind = match &*kind.as_str() {
                         "static" => cstore::NativeStatic,
                         "static-nobundle" => cstore::NativeStaticNobundle,
                         "dylib" => cstore::NativeUnknown,
                         "framework" => cstore::NativeFramework,
+                        "raw-dylib" => cstore::NativeRawDylib,
                         k => {
                             struct_span_err!(self.tcx.sess, item.span(), E0458,
                                       "unknown kind: `{}`", k)
@@ -102,7 +105,7 @@ impl<'a, 'tcx> ItemLikeVisitor<'tcx> for Collector<'a, 'tcx> {
                     match item.value_str() {
                         Some(s) => lib.wasm_import_module = Some(s),
                         None => {
-                            let msg = "must be of the form #[link(wasm_import_module = \"...\")]";
+                            let msg = "must be of the form `#[link(wasm_import_module = \"...\")]`";
                             self.tcx.sess.span_err(item.span(), msg);
                         }
                     }
@@ -117,7 +120,7 @@ impl<'a, 'tcx> ItemLikeVisitor<'tcx> for Collector<'a, 'tcx> {
             let requires_name = kind_specified || lib.wasm_import_module.is_none();
             if lib.name.is_none() && requires_name {
                 struct_span_err!(self.tcx.sess, m.span, E0459,
-                                 "#[link(...)] specified without \
+                                 "`#[link(...)]` specified without \
                                   `name = \"foo\"`")
                     .span_label(m.span, "missing `name` argument")
                     .emit();
@@ -130,13 +133,13 @@ impl<'a, 'tcx> ItemLikeVisitor<'tcx> for Collector<'a, 'tcx> {
     fn visit_impl_item(&mut self, _it: &'tcx hir::ImplItem) {}
 }
 
-impl<'a, 'tcx> Collector<'a, 'tcx> {
+impl Collector<'tcx> {
     fn register_native_lib(&mut self, span: Option<Span>, lib: NativeLibrary) {
-        if lib.name.as_ref().map(|s| s.as_str().is_empty()).unwrap_or(false) {
+        if lib.name.as_ref().map(|&s| s == kw::Invalid).unwrap_or(false) {
             match span {
                 Some(span) => {
                     struct_span_err!(self.tcx.sess, span, E0454,
-                                     "#[link(name = \"\")] given with empty name")
+                                     "`#[link(name = \"\")]` given with empty name")
                         .span_label(span, "empty name given")
                         .emit();
                 }
@@ -159,7 +162,7 @@ impl<'a, 'tcx> Collector<'a, 'tcx> {
                                            sym::link_cfg,
                                            span.unwrap(),
                                            GateIssue::Language,
-                                           "is feature gated");
+                                           "is unstable");
         }
         if lib.kind == cstore::NativeStaticNobundle &&
            !self.tcx.features().static_nobundle {
@@ -167,7 +170,15 @@ impl<'a, 'tcx> Collector<'a, 'tcx> {
                                            sym::static_nobundle,
                                            span.unwrap_or_else(|| syntax_pos::DUMMY_SP),
                                            GateIssue::Language,
-                                           "kind=\"static-nobundle\" is feature gated");
+                                           "kind=\"static-nobundle\" is unstable");
+        }
+        if lib.kind == cstore::NativeRawDylib &&
+           !self.tcx.features().raw_dylib {
+            feature_gate::emit_feature_err(&self.tcx.sess.parse_sess,
+                                           sym::raw_dylib,
+                                           span.unwrap_or_else(|| syntax_pos::DUMMY_SP),
+                                           GateIssue::Language,
+                                           "kind=\"raw-dylib\" is unstable");
         }
         self.libs.push(lib);
     }
@@ -187,14 +198,12 @@ impl<'a, 'tcx> Collector<'a, 'tcx> {
                         &format!("an empty renaming target was specified for library `{}`",name));
                 } else if !any_duplicate {
                     self.tcx.sess.err(&format!("renaming of the library `{}` was specified, \
-                                                however this crate contains no #[link(...)] \
+                                                however this crate contains no `#[link(...)]` \
                                                 attributes referencing this library.", name));
-                } else if renames.contains(name) {
+                } else if !renames.insert(name) {
                     self.tcx.sess.err(&format!("multiple renamings were \
                                                 specified for library `{}` .",
                                                name));
-                } else {
-                    renames.insert(name);
                 }
             }
         }

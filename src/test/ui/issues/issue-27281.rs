@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 pub trait Trait<'a> {
     type T;
     type U;

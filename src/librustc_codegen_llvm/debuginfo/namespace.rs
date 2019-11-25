@@ -2,8 +2,7 @@
 
 use super::metadata::{unknown_file_metadata, UNKNOWN_LINE_NUMBER};
 use super::utils::{DIB, debug_context};
-use crate::monomorphize::Instance;
-use rustc::ty;
+use rustc::ty::{self, Instance};
 
 use crate::llvm;
 use crate::llvm::debuginfo::DIScope;
@@ -35,11 +34,11 @@ pub fn item_namespace(cx: &CodegenCx<'ll, '_>, def_id: DefId) -> &'ll DIScope {
     });
 
     let namespace_name = match def_key.disambiguated_data.data {
-        DefPathData::CrateRoot => cx.tcx.crate_name(def_id.krate).as_str(),
-        data => data.as_interned_str().as_str()
+        DefPathData::CrateRoot => cx.tcx.crate_name(def_id.krate),
+        data => data.as_symbol()
     };
 
-    let namespace_name = SmallCStr::new(&namespace_name);
+    let namespace_name = SmallCStr::new(&namespace_name.as_str());
 
     let scope = unsafe {
         llvm::LLVMRustDIBuilderCreateNameSpace(

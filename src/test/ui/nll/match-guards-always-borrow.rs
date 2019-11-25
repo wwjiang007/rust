@@ -1,5 +1,3 @@
-#![feature(nll)]
-
 // Here is arielb1's basic example from rust-lang/rust#27282
 // that AST borrowck is flummoxed by:
 
@@ -8,7 +6,7 @@ fn should_reject_destructive_mutate_in_guard() {
         None => {},
         ref mut foo if {
             (|| { let bar = foo; bar.take() })();
-            //~^ ERROR cannot move out of borrowed content [E0507]
+            //~^ ERROR cannot move out of `foo` in pattern guard [E0507]
             false } => { },
         Some(s) => std::process::exit(*s),
     }

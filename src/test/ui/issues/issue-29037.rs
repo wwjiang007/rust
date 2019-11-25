@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 #![allow(dead_code)]
 // This test ensures that each pointer type `P<X>` is covariant in `X`.
 

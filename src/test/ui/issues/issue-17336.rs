@@ -1,4 +1,4 @@
-// compile-pass
+// build-pass
 #![allow(unused_must_use)]
 #[allow(dead_code)]
 fn check(a: &str) {

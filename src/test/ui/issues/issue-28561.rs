@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 #[derive(Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 struct Array<T> {
     f00: [T; 00],

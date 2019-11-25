@@ -6,16 +6,14 @@ failures:
 
 ---- $DIR/unparseable-doc-test.rs - foo (line 6) stdout ----
 error: unterminated double quote string
- --> $DIR/unparseable-doc-test.rs:8:1
-  |
-2 | "unterminated
-  | ^^^^^^^^^^^^^
+  --> $DIR/unparseable-doc-test.rs:8:1
+   |
+LL | "unterminated
+   | ^^^^^^^^^^^^^
 
 error: aborting due to previous error
 
-thread '$DIR/unparseable-doc-test.rs - foo (line 6)' panicked at 'couldn't compile the test', src/librustdoc/test.rs:319:13
-note: Run with `RUST_BACKTRACE=1` environment variable to display a backtrace.
-
+Couldn't compile the test.
 
 failures:
     $DIR/unparseable-doc-test.rs - foo (line 6)

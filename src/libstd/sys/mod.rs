@@ -22,8 +22,11 @@
 
 #![allow(missing_debug_implementations)]
 
-cfg_if! {
-    if #[cfg(unix)] {
+cfg_if::cfg_if! {
+    if #[cfg(target_os = "vxworks")] {
+        mod vxworks;
+        pub use self::vxworks::*;
+    } else if #[cfg(unix)] {
         mod unix;
         pub use self::unix::*;
     } else if #[cfg(windows)] {
@@ -32,9 +35,9 @@ cfg_if! {
     } else if #[cfg(target_os = "cloudabi")] {
         mod cloudabi;
         pub use self::cloudabi::*;
-    } else if #[cfg(target_os = "redox")] {
-        mod redox;
-        pub use self::redox::*;
+    } else if #[cfg(target_os = "hermit")] {
+        mod hermit;
+        pub use self::hermit::*;
     } else if #[cfg(target_os = "wasi")] {
         mod wasi;
         pub use self::wasi::*;
@@ -53,13 +56,14 @@ cfg_if! {
 // then later used in the `std::os` module when documenting, for example,
 // Windows when we're compiling for Linux.
 
-#[cfg(rustdoc)]
-cfg_if! {
-    if #[cfg(any(unix, target_os = "redox"))] {
+#[cfg(doc)]
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
         // On unix we'll document what's already available
         #[stable(feature = "rust1", since = "1.0.0")]
         pub use self::ext as unix_ext;
     } else if #[cfg(any(target_os = "cloudabi",
+                        target_os = "hermit",
                         target_arch = "wasm32",
                         all(target_vendor = "fortanix", target_env = "sgx")))] {
         // On CloudABI and wasm right now the module below doesn't compile
@@ -76,8 +80,8 @@ cfg_if! {
     }
 }
 
-#[cfg(rustdoc)]
-cfg_if! {
+#[cfg(doc)]
+cfg_if::cfg_if! {
     if #[cfg(windows)] {
         // On windows we'll just be documenting what's already available
         #[allow(missing_docs)]

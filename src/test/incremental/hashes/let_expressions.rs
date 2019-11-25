@@ -5,7 +5,7 @@
 // and make sure that the hash has changed, then change nothing between rev2 and
 // rev3 and make sure that the hash has not changed.
 
-// compile-pass
+// build-pass (FIXME(62277): could be check-pass?)
 // revisions: cfail1 cfail2 cfail3
 // compile-flags: -Z query-dep-graph -Zincremental-ignore-spans
 
@@ -22,7 +22,7 @@ pub fn change_name() {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,mir_built,optimized_mir")]
+    except="HirBody,mir_built")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_name() {
     let _y = 2u64;
@@ -86,7 +86,7 @@ pub fn change_mutability_of_slot() {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,typeck_tables_of,mir_built,optimized_mir")]
+    except="HirBody,typeck_tables_of,mir_built")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_mutability_of_slot() {
     let _x: u64 = 0;
@@ -182,7 +182,7 @@ pub fn add_initializer() {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,typeck_tables_of,mir_built,optimized_mir")]
+    except="HirBody,typeck_tables_of,mir_built")]
 #[rustc_clean(cfg="cfail3")]
 pub fn add_initializer() {
     let _x: i16 = 3i16;
@@ -198,7 +198,7 @@ pub fn change_initializer() {
 
 #[cfg(not(cfail1))]
 #[rustc_clean(cfg="cfail2",
-    except="HirBody,mir_built,optimized_mir")]
+    except="HirBody,mir_built")]
 #[rustc_clean(cfg="cfail3")]
 pub fn change_initializer() {
     let _x = 5u16;

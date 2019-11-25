@@ -1,20 +1,19 @@
 //! Performs various peephole optimizations.
 
-use rustc::mir::{Constant, Location, Place, PlaceBase, Mir, Operand, ProjectionElem, Rvalue, Local};
+use rustc::mir::{
+    Constant, Location, Place, PlaceBase, PlaceRef, Body, Operand, ProjectionElem, Rvalue, Local
+};
 use rustc::mir::visit::{MutVisitor, Visitor};
 use rustc::ty::{self, TyCtxt};
 use rustc::util::nodemap::{FxHashMap, FxHashSet};
-use rustc_data_structures::indexed_vec::Idx;
+use rustc_index::vec::Idx;
 use std::mem;
 use crate::transform::{MirPass, MirSource};
 
 pub struct InstCombine;
 
-impl MirPass for InstCombine {
-    fn run_pass<'a, 'tcx>(&self,
-                          tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                          _: MirSource<'tcx>,
-                          mir: &mut Mir<'tcx>) {
+impl<'tcx> MirPass<'tcx> for InstCombine {
+    fn run_pass(&self, tcx: TyCtxt<'tcx>, _: MirSource<'tcx>, body: &mut Body<'tcx>) {
         // We only run when optimizing MIR (at any level).
         if tcx.sess.opts.debugging_opts.mir_opt_level == 0 {
             return
@@ -24,28 +23,42 @@ impl MirPass for InstCombine {
         // read-only so that we can do global analyses on the MIR in the process (e.g.
         // `Place::ty()`).
         let optimizations = {
-            let mut optimization_finder = OptimizationFinder::new(mir, tcx);
-            optimization_finder.visit_mir(mir);
+            let mut optimization_finder = OptimizationFinder::new(body, tcx);
+            optimization_finder.visit_body(body);
             optimization_finder.optimizations
         };
 
         // Then carry out those optimizations.
-        MutVisitor::visit_mir(&mut InstCombineVisitor { optimizations }, mir);
+        MutVisitor::visit_body(&mut InstCombineVisitor { optimizations, tcx }, body);
     }
 }
 
 pub struct InstCombineVisitor<'tcx> {
     optimizations: OptimizationList<'tcx>,
+    tcx: TyCtxt<'tcx>,
 }
 
 impl<'tcx> MutVisitor<'tcx> for InstCombineVisitor<'tcx> {
+    fn tcx(&self) -> TyCtxt<'tcx> {
+        self.tcx
+    }
+
     fn visit_rvalue(&mut self, rvalue: &mut Rvalue<'tcx>, location: Location) {
         if self.optimizations.and_stars.remove(&location) {
-            debug!("Replacing `&*`: {:?}", rvalue);
-            let new_place = match *rvalue {
-                Rvalue::Ref(_, _, Place::Projection(ref mut projection)) => {
-                    // Replace with dummy
-                    mem::replace(&mut projection.base, Place::Base(PlaceBase::Local(Local::new(0))))
+            debug!("replacing `&*`: {:?}", rvalue);
+            let new_place = match rvalue {
+                Rvalue::Ref(_, _, place) => {
+                    if let &[ref proj_l @ .., proj_r] = place.projection.as_ref() {
+                        place.projection = self.tcx().intern_place_elems(&vec![proj_r.clone()]);
+
+                        Place {
+                            // Replace with dummy
+                            base: mem::replace(&mut place.base, PlaceBase::Local(Local::new(0))),
+                            projection: self.tcx().intern_place_elems(proj_l),
+                        }
+                    } else {
+                        unreachable!();
+                    }
                 }
                 _ => bug!("Detected `&*` but didn't find `&*`!"),
             };
@@ -53,7 +66,7 @@ impl<'tcx> MutVisitor<'tcx> for InstCombineVisitor<'tcx> {
         }
 
         if let Some(constant) = self.optimizations.arrays_lengths.remove(&location) {
-            debug!("Replacing `Len([_; N])`: {:?}", rvalue);
+            debug!("replacing `Len([_; N])`: {:?}", rvalue);
             *rvalue = Rvalue::Use(Operand::Constant(box constant));
         }
 
@@ -62,38 +75,40 @@ impl<'tcx> MutVisitor<'tcx> for InstCombineVisitor<'tcx> {
 }
 
 /// Finds optimization opportunities on the MIR.
-struct OptimizationFinder<'b, 'a, 'tcx:'a+'b> {
-    mir: &'b Mir<'tcx>,
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+struct OptimizationFinder<'b, 'tcx> {
+    body: &'b Body<'tcx>,
+    tcx: TyCtxt<'tcx>,
     optimizations: OptimizationList<'tcx>,
 }
 
-impl<'b, 'a, 'tcx:'b> OptimizationFinder<'b, 'a, 'tcx> {
-    fn new(mir: &'b Mir<'tcx>, tcx: TyCtxt<'a, 'tcx, 'tcx>) -> OptimizationFinder<'b, 'a, 'tcx> {
+impl OptimizationFinder<'b, 'tcx> {
+    fn new(body: &'b Body<'tcx>, tcx: TyCtxt<'tcx>) -> OptimizationFinder<'b, 'tcx> {
         OptimizationFinder {
-            mir,
+            body,
             tcx,
             optimizations: OptimizationList::default(),
         }
     }
 }
 
-impl<'b, 'a, 'tcx> Visitor<'tcx> for OptimizationFinder<'b, 'a, 'tcx> {
+impl Visitor<'tcx> for OptimizationFinder<'b, 'tcx> {
     fn visit_rvalue(&mut self, rvalue: &Rvalue<'tcx>, location: Location) {
-        if let Rvalue::Ref(_, _, Place::Projection(ref projection)) = *rvalue {
-            if let ProjectionElem::Deref = projection.elem {
-                if projection.base.ty(self.mir, self.tcx).ty.is_region_ptr() {
+        if let Rvalue::Ref(_, _, place) = rvalue {
+            if let PlaceRef {
+                base,
+                projection: &[ref proj_base @ .., ProjectionElem::Deref],
+            } = place.as_ref() {
+                if Place::ty_from(base, proj_base, self.body, self.tcx).ty.is_region_ptr() {
                     self.optimizations.and_stars.insert(location);
                 }
             }
         }
 
         if let Rvalue::Len(ref place) = *rvalue {
-            let place_ty = place.ty(&self.mir.local_decls, self.tcx).ty;
-            if let ty::Array(_, len) = place_ty.sty {
-                let span = self.mir.source_info(location).span;
-                let ty = self.tcx.types.usize;
-                let constant = Constant { span, ty, literal: len, user_ty: None };
+            let place_ty = place.ty(&self.body.local_decls, self.tcx).ty;
+            if let ty::Array(_, len) = place_ty.kind {
+                let span = self.body.source_info(location).span;
+                let constant = Constant { span, literal: len, user_ty: None };
                 self.optimizations.arrays_lengths.insert(location, constant);
             }
         }

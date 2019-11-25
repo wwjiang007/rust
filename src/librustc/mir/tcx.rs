@@ -10,18 +10,18 @@ use crate::ty::layout::VariantIdx;
 use crate::hir;
 use crate::ty::util::IntTypeExt;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, TypeFoldable)]
 pub struct PlaceTy<'tcx> {
     pub ty: Ty<'tcx>,
     /// Downcast to a particular variant of an enum, if included.
     pub variant_index: Option<VariantIdx>,
 }
 
-static_assert!(PLACE_TY_IS_3_PTRS_LARGE:
-    mem::size_of::<PlaceTy<'_>>() <= 24
-);
+// At least on 64 bit systems, `PlaceTy` should not be larger than two or three pointers.
+#[cfg(target_arch = "x86_64")]
+static_assert_size!(PlaceTy<'_>, 16);
 
-impl<'a, 'gcx, 'tcx> PlaceTy<'tcx> {
+impl<'tcx> PlaceTy<'tcx> {
     pub fn from_ty(ty: Ty<'tcx>) -> PlaceTy<'tcx> {
         PlaceTy { ty, variant_index: None }
     }
@@ -33,9 +33,8 @@ impl<'a, 'gcx, 'tcx> PlaceTy<'tcx> {
     /// not carry a `Ty` for `T`.)
     ///
     /// Note that the resulting type has not been normalized.
-    pub fn field_ty(self, tcx: TyCtxt<'a, 'gcx, 'tcx>, f: &Field) -> Ty<'tcx>
-    {
-        let answer = match self.ty.sty {
+    pub fn field_ty(self, tcx: TyCtxt<'tcx>, f: &Field) -> Ty<'tcx> {
+        let answer = match self.ty.kind {
             ty::Adt(adt_def, substs) => {
                 let variant_def = match self.variant_index {
                     None => adt_def.non_enum_variant(),
@@ -57,11 +56,8 @@ impl<'a, 'gcx, 'tcx> PlaceTy<'tcx> {
     /// Convenience wrapper around `projection_ty_core` for
     /// `PlaceElem`, where we can just use the `Ty` that is already
     /// stored inline on field projection elems.
-    pub fn projection_ty(self, tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                         elem: &PlaceElem<'tcx>)
-                         -> PlaceTy<'tcx>
-    {
-        self.projection_ty_core(tcx, elem, |_, _, ty| ty)
+    pub fn projection_ty(self, tcx: TyCtxt<'tcx>, elem: &PlaceElem<'tcx>) -> PlaceTy<'tcx> {
+        self.projection_ty_core(tcx, ty::ParamEnv::empty(), elem, |_, _, ty| ty)
     }
 
     /// `place_ty.projection_ty_core(tcx, elem, |...| { ... })`
@@ -71,19 +67,21 @@ impl<'a, 'gcx, 'tcx> PlaceTy<'tcx> {
     /// (which should be trivial when `T` = `Ty`).
     pub fn projection_ty_core<V, T>(
         self,
-        tcx: TyCtxt<'a, 'gcx, 'tcx>,
+        tcx: TyCtxt<'tcx>,
+        param_env: ty::ParamEnv<'tcx>,
         elem: &ProjectionElem<V, T>,
-        mut handle_field: impl FnMut(&Self, &Field, &T) -> Ty<'tcx>)
-        -> PlaceTy<'tcx>
+        mut handle_field: impl FnMut(&Self, &Field, &T) -> Ty<'tcx>,
+    ) -> PlaceTy<'tcx>
     where
-        V: ::std::fmt::Debug, T: ::std::fmt::Debug
+        V: ::std::fmt::Debug,
+        T: ::std::fmt::Debug,
     {
         let answer = match *elem {
             ProjectionElem::Deref => {
                 let ty = self.ty
                              .builtin_deref(true)
                              .unwrap_or_else(|| {
-                                 bug!("deref projection of non-dereferencable ty {:?}", self)
+                                 bug!("deref projection of non-dereferenceable ty {:?}", self)
                              })
                              .ty;
                 PlaceTy::from_ty(ty)
@@ -91,9 +89,9 @@ impl<'a, 'gcx, 'tcx> PlaceTy<'tcx> {
             ProjectionElem::Index(_) | ProjectionElem::ConstantIndex { .. } =>
                 PlaceTy::from_ty(self.ty.builtin_index().unwrap()),
             ProjectionElem::Subslice { from, to } => {
-                PlaceTy::from_ty(match self.ty.sty {
+                PlaceTy::from_ty(match self.ty.kind {
                     ty::Array(inner, size) => {
-                        let size = size.unwrap_usize(tcx);
+                        let size = size.eval_usize(tcx, param_env);
                         let len = size - (from as u64) - (to as u64);
                         tcx.mk_array(inner, len)
                     }
@@ -113,24 +111,36 @@ impl<'a, 'gcx, 'tcx> PlaceTy<'tcx> {
     }
 }
 
-BraceStructTypeFoldableImpl! {
-    impl<'tcx> TypeFoldable<'tcx> for PlaceTy<'tcx> {
-        ty,
-        variant_index,
+impl<'tcx> Place<'tcx> {
+    pub fn ty_from<D>(
+        base: &PlaceBase<'tcx>,
+        projection: &[PlaceElem<'tcx>],
+        local_decls: &D,
+        tcx: TyCtxt<'tcx>
+    ) -> PlaceTy<'tcx>
+        where D: HasLocalDecls<'tcx>
+    {
+        projection.iter().fold(
+            base.ty(local_decls),
+            |place_ty, elem| place_ty.projection_ty(tcx, elem)
+        )
+    }
+
+    pub fn ty<D>(&self, local_decls: &D, tcx: TyCtxt<'tcx>) -> PlaceTy<'tcx>
+    where
+        D: HasLocalDecls<'tcx>,
+    {
+        Place::ty_from(&self.base, &self.projection, local_decls, tcx)
     }
 }
 
-impl<'tcx> Place<'tcx> {
-    pub fn ty<'a, 'gcx, D>(&self, local_decls: &D, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> PlaceTy<'tcx>
+impl<'tcx> PlaceBase<'tcx> {
+    pub fn ty<D>(&self, local_decls: &D) -> PlaceTy<'tcx>
         where D: HasLocalDecls<'tcx>
     {
-        match *self {
-            Place::Base(PlaceBase::Local(index)) =>
-                PlaceTy::from_ty(local_decls.local_decls()[index].ty),
-            Place::Base(PlaceBase::Static(ref data)) =>
-                PlaceTy::from_ty(data.ty),
-            Place::Projection(ref proj) =>
-                proj.base.ty(local_decls, tcx).projection_ty(tcx, &proj.elem),
+        match self {
+            PlaceBase::Local(index) => PlaceTy::from_ty(local_decls.local_decls()[*index].ty),
+            PlaceBase::Static(data) => PlaceTy::from_ty(data.ty),
         }
     }
 }
@@ -141,8 +151,9 @@ pub enum RvalueInitializationState {
 }
 
 impl<'tcx> Rvalue<'tcx> {
-    pub fn ty<'a, 'gcx, D>(&self, local_decls: &D, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> Ty<'tcx>
-        where D: HasLocalDecls<'tcx>
+    pub fn ty<D>(&self, local_decls: &D, tcx: TyCtxt<'tcx>) -> Ty<'tcx>
+    where
+        D: HasLocalDecls<'tcx>,
     {
         match *self {
             Rvalue::Use(ref operand) => operand.ty(local_decls, tcx),
@@ -177,9 +188,9 @@ impl<'tcx> Rvalue<'tcx> {
             }
             Rvalue::Discriminant(ref place) => {
                 let ty = place.ty(local_decls, tcx).ty;
-                match ty.sty {
+                match ty.kind {
                     ty::Adt(adt_def, _) => adt_def.repr.discr_type().to_ty(tcx),
-                    ty::Generator(_, substs, _) => substs.discr_ty(tcx),
+                    ty::Generator(_, substs, _) => substs.as_generator().discr_ty(tcx),
                     _ => {
                         // This can only be `0`, for now, so `u8` will suffice.
                         tcx.types.u8
@@ -222,22 +233,20 @@ impl<'tcx> Rvalue<'tcx> {
 }
 
 impl<'tcx> Operand<'tcx> {
-    pub fn ty<'a, 'gcx, D>(&self, local_decls: &D, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> Ty<'tcx>
-        where D: HasLocalDecls<'tcx>
+    pub fn ty<D>(&self, local_decls: &D, tcx: TyCtxt<'tcx>) -> Ty<'tcx>
+    where
+        D: HasLocalDecls<'tcx>,
     {
         match self {
             &Operand::Copy(ref l) |
             &Operand::Move(ref l) => l.ty(local_decls, tcx).ty,
-            &Operand::Constant(ref c) => c.ty,
+            &Operand::Constant(ref c) => c.literal.ty,
         }
     }
 }
 
 impl<'tcx> BinOp {
-      pub fn ty<'a, 'gcx>(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                          lhs_ty: Ty<'tcx>,
-                          rhs_ty: Ty<'tcx>)
-                          -> Ty<'tcx> {
+    pub fn ty(&self, tcx: TyCtxt<'tcx>, lhs_ty: Ty<'tcx>, rhs_ty: Ty<'tcx>) -> Ty<'tcx> {
         // FIXME: handle SIMD correctly
         match self {
             &BinOp::Add | &BinOp::Sub | &BinOp::Mul | &BinOp::Div | &BinOp::Rem |
@@ -260,17 +269,17 @@ impl<'tcx> BinOp {
 impl BorrowKind {
     pub fn to_mutbl_lossy(self) -> hir::Mutability {
         match self {
-            BorrowKind::Mut { .. } => hir::MutMutable,
-            BorrowKind::Shared => hir::MutImmutable,
+            BorrowKind::Mut { .. } => hir::Mutability::Mutable,
+            BorrowKind::Shared => hir::Mutability::Immutable,
 
             // We have no type corresponding to a unique imm borrow, so
             // use `&mut`. It gives all the capabilities of an `&uniq`
             // and hence is a safe "over approximation".
-            BorrowKind::Unique => hir::MutMutable,
+            BorrowKind::Unique => hir::Mutability::Mutable,
 
             // We have no type corresponding to a shallow borrow, so use
             // `&` as an approximation.
-            BorrowKind::Shallow => hir::MutImmutable,
+            BorrowKind::Shallow => hir::Mutability::Immutable,
         }
     }
 }

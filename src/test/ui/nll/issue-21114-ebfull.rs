@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 
 use std::collections::HashMap;
 use std::sync::Mutex;

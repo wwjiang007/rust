@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 
 mod m {
     pub struct S(u8);

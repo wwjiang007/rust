@@ -6,10 +6,12 @@ use std::path::{Path, PathBuf};
 
 use log::*;
 
-use crate::common::{self, CompareMode, Config, Mode};
+use crate::common::{self, CompareMode, Config, Mode, PassMode};
 use crate::util;
-
 use crate::extract_gdb_version;
+
+#[cfg(test)]
+mod tests;
 
 /// Whether to ignore the test.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -57,9 +59,9 @@ enum ParsedNameDirective {
     NoMatch,
     /// Match.
     Match,
-    /// Mode was DebugInfoBoth and this matched gdb.
+    /// Mode was DebugInfoGdbLldb and this matched gdb.
     MatchGdb,
-    /// Mode was DebugInfoBoth and this matched lldb.
+    /// Mode was DebugInfoGdbLldb and this matched lldb.
     MatchLldb,
 }
 
@@ -81,12 +83,16 @@ impl EarlyProps {
             revisions: vec![],
         };
 
-        if config.mode == common::DebugInfoBoth {
+        if config.mode == common::DebugInfoGdbLldb {
             if config.lldb_python_dir.is_none() {
                 props.ignore = props.ignore.no_lldb();
             }
             if config.gdb_version.is_none() {
                 props.ignore = props.ignore.no_gdb();
+            }
+        } else if config.mode == common::DebugInfoCdb {
+            if config.cdb.is_none() {
+                props.ignore = Ignore::Ignore;
             }
         }
 
@@ -131,14 +137,18 @@ impl EarlyProps {
                    config.parse_needs_sanitizer_support(ln) {
                     props.ignore = Ignore::Ignore;
                 }
+
+                if config.target == "wasm32-unknown-unknown" && config.parse_check_run_results(ln) {
+                    props.ignore = Ignore::Ignore;
+                }
             }
 
-            if (config.mode == common::DebugInfoGdb || config.mode == common::DebugInfoBoth) &&
+            if (config.mode == common::DebugInfoGdb || config.mode == common::DebugInfoGdbLldb) &&
                 props.ignore.can_run_gdb() && ignore_gdb(config, ln) {
                 props.ignore = props.ignore.no_gdb();
             }
 
-            if (config.mode == common::DebugInfoLldb || config.mode == common::DebugInfoBoth) &&
+            if (config.mode == common::DebugInfoLldb || config.mode == common::DebugInfoGdbLldb) &&
                 props.ignore.can_run_lldb() && ignore_lldb(config, ln) {
                 props.ignore = props.ignore.no_lldb();
             }
@@ -320,6 +330,8 @@ pub struct TestProps {
     pub force_host: bool,
     // Check stdout for error-pattern output as well as stderr
     pub check_stdout: bool,
+    // Check stdout & stderr for output of run-pass test
+    pub check_run_results: bool,
     // For UI tests, allows compiler to generate arbitrary output to stdout
     pub dont_check_compiler_stdout: bool,
     // For UI tests, allows compiler to generate arbitrary output to stderr
@@ -345,14 +357,12 @@ pub struct TestProps {
     // testing harness and used when generating compilation
     // arguments. (In particular, it propagates to the aux-builds.)
     pub incremental_dir: Option<PathBuf>,
-    // Specifies that a test must actually compile without errors.
-    pub compile_pass: bool,
+    // How far should the test proceed while still passing.
+    pass_mode: Option<PassMode>,
+    // Ignore `--pass` overrides from the command line for this test.
+    ignore_pass: bool,
     // rustdoc will test the output of the `--test` option
     pub check_test_line_numbers_match: bool,
-    // The test must be compiled and run successfully. Only used in UI tests for now.
-    pub run_pass: bool,
-    // Skip any codegen step and running the executable. Only for run-pass.
-    pub skip_codegen: bool,
     // Do not pass `-Z ui-testing` to UI tests
     pub disable_ui_testing_normalization: bool,
     // customized normalization rules
@@ -365,6 +375,8 @@ pub struct TestProps {
     // If true, `rustfix` will only apply `MachineApplicable` suggestions.
     pub rustfix_only_machine_applicable: bool,
     pub assembly_output: Option<String>,
+    // If true, the test is expected to ICE
+    pub should_ice: bool,
 }
 
 impl TestProps {
@@ -384,6 +396,7 @@ impl TestProps {
             build_aux_docs: false,
             force_host: false,
             check_stdout: false,
+            check_run_results: false,
             dont_check_compiler_stdout: false,
             dont_check_compiler_stderr: false,
             no_prefer_dynamic: false,
@@ -392,10 +405,9 @@ impl TestProps {
             pretty_compare_only: false,
             forbid_output: vec![],
             incremental_dir: None,
-            compile_pass: false,
+            pass_mode: None,
+            ignore_pass: false,
             check_test_line_numbers_match: false,
-            run_pass: false,
-            skip_codegen: false,
             disable_ui_testing_normalization: false,
             normalize_stdout: vec![],
             normalize_stderr: vec![],
@@ -403,6 +415,7 @@ impl TestProps {
             run_rustfix: false,
             rustfix_only_machine_applicable: false,
             assembly_output: None,
+            should_ice: false,
         }
     }
 
@@ -453,6 +466,10 @@ impl TestProps {
                 self.pp_exact = config.parse_pp_exact(ln, testfile);
             }
 
+            if !self.should_ice {
+                self.should_ice = config.parse_should_ice(ln);
+            }
+
             if !self.build_aux_docs {
                 self.build_aux_docs = config.parse_build_aux_docs(ln);
             }
@@ -463,6 +480,10 @@ impl TestProps {
 
             if !self.check_stdout {
                 self.check_stdout = config.parse_check_stdout(ln);
+            }
+
+            if !self.check_run_results {
+                self.check_run_results = config.parse_check_run_results(ln);
             }
 
             if !self.dont_check_compiler_stdout {
@@ -521,17 +542,10 @@ impl TestProps {
                 self.check_test_line_numbers_match = config.parse_check_test_line_numbers_match(ln);
             }
 
-            if !self.run_pass {
-                self.run_pass = config.parse_run_pass(ln);
-            }
+            self.update_pass_mode(ln, cfg, config);
 
-            if !self.compile_pass {
-                // run-pass implies compile_pass
-                self.compile_pass = config.parse_compile_pass(ln) || self.run_pass;
-            }
-
-            if !self.skip_codegen {
-                self.skip_codegen = config.parse_skip_codegen(ln);
+            if !self.ignore_pass {
+                self.ignore_pass = config.parse_ignore_pass(ln);
             }
 
             if !self.disable_ui_testing_normalization {
@@ -570,6 +584,9 @@ impl TestProps {
                 _ => 1,
             };
         }
+        if self.should_ice {
+            self.failure_status = 101;
+        }
 
         for key in &["RUST_TEST_NOCAPTURE", "RUST_TEST_THREADS"] {
             if let Ok(val) = env::var(key) {
@@ -578,6 +595,57 @@ impl TestProps {
                 }
             }
         }
+    }
+
+    fn update_pass_mode(&mut self, ln: &str, revision: Option<&str>, config: &Config) {
+        let check_no_run = |s| {
+            if config.mode != Mode::Ui && config.mode != Mode::Incremental {
+                panic!("`{}` header is only supported in UI and incremental tests", s);
+            }
+            if config.mode == Mode::Incremental &&
+                !revision.map_or(false, |r| r.starts_with("cfail")) &&
+                !self.revisions.iter().all(|r| r.starts_with("cfail")) {
+                panic!("`{}` header is only supported in `cfail` incremental tests", s);
+            }
+        };
+        let pass_mode = if config.parse_name_directive(ln, "check-pass") {
+            check_no_run("check-pass");
+            Some(PassMode::Check)
+        } else if config.parse_name_directive(ln, "build-pass") {
+            check_no_run("build-pass");
+            Some(PassMode::Build)
+        } else if config.parse_name_directive(ln, "run-pass") {
+            if config.mode != Mode::Ui {
+                panic!("`run-pass` header is only supported in UI tests")
+            }
+            Some(PassMode::Run)
+        } else if config.parse_name_directive(ln, "run-fail") {
+            if config.mode != Mode::Ui {
+                panic!("`run-fail` header is only supported in UI tests")
+            }
+            Some(PassMode::RunFail)
+        } else {
+            None
+        };
+        match (self.pass_mode, pass_mode) {
+            (None, Some(_)) => self.pass_mode = pass_mode,
+            (Some(_), Some(_)) => panic!("multiple `*-pass` headers in a single test"),
+            (_, None) => {}
+        }
+    }
+
+    pub fn pass_mode(&self, config: &Config) -> Option<PassMode> {
+        if !self.ignore_pass {
+            if let (mode @ Some(_), Some(_)) = (config.force_pass_mode, self.pass_mode) {
+                return mode;
+            }
+        }
+        self.pass_mode
+    }
+
+    // does not consider CLI override for pass mode
+    pub fn local_pass_mode(&self) -> Option<PassMode> {
+        self.pass_mode
     }
 }
 
@@ -629,6 +697,9 @@ fn iter_header(testfile: &Path, cfg: Option<&str>, it: &mut dyn FnMut(&str)) {
 }
 
 impl Config {
+    fn parse_should_ice(&self, line: &str) -> bool {
+        self.parse_name_directive(line, "should-ice")
+    }
     fn parse_error_pattern(&self, line: &str) -> Option<String> {
         self.parse_name_value_directive(line, "error-pattern")
     }
@@ -675,6 +746,10 @@ impl Config {
         self.parse_name_directive(line, "check-stdout")
     }
 
+    fn parse_check_run_results(&self, line: &str) -> bool {
+        self.parse_name_directive(line, "check-run-results")
+    }
+
     fn parse_dont_check_compiler_stdout(&self, line: &str) -> bool {
         self.parse_name_directive(line, "dont-check-compiler-stdout")
     }
@@ -706,10 +781,6 @@ impl Config {
         }
     }
 
-    fn parse_compile_pass(&self, line: &str) -> bool {
-        self.parse_name_directive(line, "compile-pass")
-    }
-
     fn parse_disable_ui_testing_normalization(&self, line: &str) -> bool {
         self.parse_name_directive(line, "disable-ui-testing-normalization")
     }
@@ -718,12 +789,8 @@ impl Config {
         self.parse_name_directive(line, "check-test-line-numbers-match")
     }
 
-    fn parse_run_pass(&self, line: &str) -> bool {
-        self.parse_name_directive(line, "run-pass")
-    }
-
-    fn parse_skip_codegen(&self, line: &str) -> bool {
-        self.parse_name_directive(line, "skip-codegen")
+    fn parse_ignore_pass(&self, line: &str) -> bool {
+        self.parse_name_directive(line, "ignore-pass")
     }
 
     fn parse_assembly_output(&self, line: &str) -> Option<String> {
@@ -790,10 +857,10 @@ impl Config {
 
             if name == "test" ||
                 util::matches_os(&self.target, name) ||             // target
+                util::matches_env(&self.target, name) ||            // env
                 name == util::get_arch(&self.target) ||             // architecture
                 name == util::get_pointer_width(&self.target) ||    // pointer width
                 name == self.stage_id.split('-').next().unwrap() || // stage
-                Some(name) == util::get_env(&self.target) ||        // env
                 (self.target != self.host && name == "cross-compile") ||
                 match self.compare_mode {
                     Some(CompareMode::Nll) => name == "compare-mode-nll",
@@ -804,7 +871,7 @@ impl Config {
                 ParsedNameDirective::Match
             } else {
                 match self.mode {
-                    common::DebugInfoBoth => {
+                    common::DebugInfoGdbLldb => {
                         if name == "gdb" {
                             ParsedNameDirective::MatchGdb
                         } else if name == "lldb" {
@@ -812,6 +879,11 @@ impl Config {
                         } else {
                             ParsedNameDirective::NoMatch
                         }
+                    },
+                    common::DebugInfoCdb => if name == "cdb" {
+                        ParsedNameDirective::Match
+                    } else {
+                        ParsedNameDirective::NoMatch
                     },
                     common::DebugInfoGdb => if name == "gdb" {
                         ParsedNameDirective::Match
@@ -936,30 +1008,4 @@ fn parse_normalization_string(line: &mut &str) -> Option<String> {
     let result = line[begin..end].to_owned();
     *line = &line[end + 1..];
     Some(result)
-}
-
-#[test]
-fn test_parse_normalization_string() {
-    let mut s = "normalize-stderr-32bit: \"something (32 bits)\" -> \"something ($WORD bits)\".";
-    let first = parse_normalization_string(&mut s);
-    assert_eq!(first, Some("something (32 bits)".to_owned()));
-    assert_eq!(s, " -> \"something ($WORD bits)\".");
-
-    // Nothing to normalize (No quotes)
-    let mut s = "normalize-stderr-32bit: something (32 bits) -> something ($WORD bits).";
-    let first = parse_normalization_string(&mut s);
-    assert_eq!(first, None);
-    assert_eq!(s, r#"normalize-stderr-32bit: something (32 bits) -> something ($WORD bits)."#);
-
-    // Nothing to normalize (Only a single quote)
-    let mut s = "normalize-stderr-32bit: \"something (32 bits) -> something ($WORD bits).";
-    let first = parse_normalization_string(&mut s);
-    assert_eq!(first, None);
-    assert_eq!(s, "normalize-stderr-32bit: \"something (32 bits) -> something ($WORD bits).");
-
-    // Nothing to normalize (Three quotes)
-    let mut s = "normalize-stderr-32bit: \"something (32 bits)\" -> \"something ($WORD bits).";
-    let first = parse_normalization_string(&mut s);
-    assert_eq!(first, Some("something (32 bits)".to_owned()));
-    assert_eq!(s, " -> \"something ($WORD bits).");
 }

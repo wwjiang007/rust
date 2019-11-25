@@ -2,11 +2,10 @@ use crate::deriving::path_std;
 use crate::deriving::generic::*;
 use crate::deriving::generic::ty::*;
 
-use syntax::ast::{self, Expr, MetaItem, GenericArg};
-use syntax::ext::base::{Annotatable, ExtCtxt};
-use syntax::ext::build::AstBuilder;
+use syntax::ast::{self, Ident, Expr, MetaItem, GenericArg};
 use syntax::ptr::P;
-use syntax::symbol::Symbol;
+use syntax::symbol::{sym, Symbol};
+use syntax_expand::base::{Annotatable, ExtCtxt};
 use syntax_pos::Span;
 
 pub fn expand_deriving_eq(cx: &mut ExtCtxt<'_>,
@@ -14,10 +13,10 @@ pub fn expand_deriving_eq(cx: &mut ExtCtxt<'_>,
                           mitem: &MetaItem,
                           item: &Annotatable,
                           push: &mut dyn FnMut(Annotatable)) {
-    let inline = cx.meta_word(span, Symbol::intern("inline"));
-    let hidden = cx.meta_list_item_word(span, Symbol::intern("hidden"));
-    let doc = cx.meta_list(span, Symbol::intern("doc"), vec![hidden]);
-    let attrs = vec![cx.attribute(span, inline), cx.attribute(span, doc)];
+    let inline = cx.meta_word(span, sym::inline);
+    let hidden = syntax::attr::mk_nested_word_item(Ident::new(sym::hidden, span));
+    let doc = syntax::attr::mk_list_item(Ident::new(sym::doc, span), vec![hidden]);
+    let attrs = vec![cx.attribute(inline), cx.attribute(doc)];
     let trait_def = TraitDef {
         span,
         attributes: Vec::new(),
@@ -41,6 +40,12 @@ pub fn expand_deriving_eq(cx: &mut ExtCtxt<'_>,
                       }],
         associated_types: Vec::new(),
     };
+
+    super::inject_impl_of_structural_trait(
+        cx, span, item,
+        path_std!(cx, marker::StructuralEq),
+        push);
+
     trait_def.expand_ext(cx, mitem, item, push, true)
 }
 
@@ -52,10 +57,10 @@ fn cs_total_eq_assert(cx: &mut ExtCtxt<'_>,
                         ty: P<ast::Ty>, span: Span, helper_name: &str) {
         // Generate statement `let _: helper_name<ty>;`,
         // set the expn ID so we can use the unstable struct.
-        let span = span.with_ctxt(cx.backtrace());
+        let span = cx.with_def_site_ctxt(span);
         let assert_path = cx.path_all(span, true,
-                                        cx.std_path(&["cmp", helper_name]),
-                                        vec![GenericArg::Type(ty)], vec![]);
+                                        cx.std_path(&[sym::cmp, Symbol::intern(helper_name)]),
+                                        vec![GenericArg::Type(ty)]);
         stmts.push(cx.stmt_let_type_only(span, cx.ty_path(assert_path)));
     }
     fn process_variant(cx: &mut ExtCtxt<'_>,
@@ -74,7 +79,7 @@ fn cs_total_eq_assert(cx: &mut ExtCtxt<'_>,
         }
         StaticEnum(enum_def, ..) => {
             for variant in &enum_def.variants {
-                process_variant(cx, &mut stmts, &variant.node.data);
+                process_variant(cx, &mut stmts, &variant.data);
             }
         }
         _ => cx.span_bug(trait_span, "unexpected substructure in `derive(Eq)`")

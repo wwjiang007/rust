@@ -16,17 +16,16 @@ use rustc::traits::{
     Environment,
     InEnvironment,
 };
-use rustc::ty::{self, Ty, TyCtxt, InferConst};
-use rustc::ty::subst::Kind;
+use rustc::ty::{self, Ty, TyCtxt};
+use rustc::ty::subst::GenericArg;
 use rustc::ty::relate::{Relate, RelateResult, TypeRelation};
-use rustc::mir::interpret::ConstValue;
 use syntax_pos::DUMMY_SP;
 
 use super::{ChalkInferenceContext, ChalkArenas, ChalkExClause, ConstrainedSubst};
 use super::unify::*;
 
-impl context::ResolventOps<ChalkArenas<'gcx>, ChalkArenas<'tcx>>
-    for ChalkInferenceContext<'cx, 'gcx, 'tcx>
+impl context::ResolventOps<ChalkArenas<'tcx>, ChalkArenas<'tcx>>
+    for ChalkInferenceContext<'cx, 'tcx>
 {
     fn resolvent_clause(
         &mut self,
@@ -34,7 +33,7 @@ impl context::ResolventOps<ChalkArenas<'gcx>, ChalkArenas<'tcx>>
         goal: &DomainGoal<'tcx>,
         subst: &CanonicalVarValues<'tcx>,
         clause: &Clause<'tcx>,
-    ) -> Fallible<Canonical<'gcx, ChalkExClause<'gcx>>> {
+    ) -> Fallible<Canonical<'tcx, ChalkExClause<'tcx>>> {
         use chalk_engine::context::UnificationOps;
 
         debug!("resolvent_clause(goal = {:?}, clause = {:?})", goal, clause);
@@ -106,13 +105,13 @@ impl context::ResolventOps<ChalkArenas<'gcx>, ChalkArenas<'tcx>>
         &mut self,
         ex_clause: ChalkExClause<'tcx>,
         selected_goal: &InEnvironment<'tcx, Goal<'tcx>>,
-        answer_table_goal: &Canonical<'gcx, InEnvironment<'gcx, Goal<'gcx>>>,
-        canonical_answer_subst: &Canonical<'gcx, ConstrainedSubst<'gcx>>,
+        answer_table_goal: &Canonical<'tcx, InEnvironment<'tcx, Goal<'tcx>>>,
+        canonical_answer_subst: &Canonical<'tcx, ConstrainedSubst<'tcx>>,
     ) -> Fallible<ChalkExClause<'tcx>> {
         debug!(
             "apply_answer_subst(ex_clause = {:?}, selected_goal = {:?})",
-            self.infcx.resolve_type_vars_if_possible(&ex_clause),
-            self.infcx.resolve_type_vars_if_possible(selected_goal)
+            self.infcx.resolve_vars_if_possible(&ex_clause),
+            self.infcx.resolve_vars_if_possible(selected_goal)
         );
 
         let (answer_subst, _) = self.infcx.instantiate_canonical_with_fresh_inference_vars(
@@ -139,19 +138,19 @@ impl context::ResolventOps<ChalkArenas<'gcx>, ChalkArenas<'tcx>>
     }
 }
 
-struct AnswerSubstitutor<'cx, 'gcx: 'tcx, 'tcx: 'cx> {
-    infcx: &'cx InferCtxt<'cx, 'gcx, 'tcx>,
+struct AnswerSubstitutor<'cx, 'tcx> {
+    infcx: &'cx InferCtxt<'cx, 'tcx>,
     environment: Environment<'tcx>,
     answer_subst: CanonicalVarValues<'tcx>,
     binder_index: ty::DebruijnIndex,
     ex_clause: ChalkExClause<'tcx>,
 }
 
-impl AnswerSubstitutor<'cx, 'gcx, 'tcx> {
+impl AnswerSubstitutor<'cx, 'tcx> {
     fn unify_free_answer_var(
         &mut self,
         answer_var: ty::BoundVar,
-        pending: Kind<'tcx>
+        pending: GenericArg<'tcx>
     ) -> RelateResult<'tcx, ()> {
         let answer_param = &self.answer_subst.var_values[answer_var];
         let pending = &ty::fold::shift_out_vars(
@@ -169,9 +168,14 @@ impl AnswerSubstitutor<'cx, 'gcx, 'tcx> {
     }
 }
 
-impl TypeRelation<'cx, 'gcx, 'tcx> for AnswerSubstitutor<'cx, 'gcx, 'tcx> {
-    fn tcx(&self) -> TyCtxt<'cx, 'gcx, 'tcx> {
+impl TypeRelation<'tcx> for AnswerSubstitutor<'cx, 'tcx> {
+    fn tcx(&self) -> TyCtxt<'tcx> {
         self.infcx.tcx
+    }
+
+    fn param_env(&self) -> ty::ParamEnv<'tcx> {
+        // FIXME(oli-obk): learn chalk and create param envs
+        ty::ParamEnv::empty()
     }
 
     fn tag(&self) -> &'static str {
@@ -207,7 +211,7 @@ impl TypeRelation<'cx, 'gcx, 'tcx> for AnswerSubstitutor<'cx, 'gcx, 'tcx> {
         let b = self.infcx.shallow_resolve(b);
         debug!("AnswerSubstitutor::tys(a = {:?}, b = {:?})", a, b);
 
-        if let &ty::Bound(debruijn, bound_ty) = &a.sty {
+        if let &ty::Bound(debruijn, bound_ty) = &a.kind {
             // Free bound var
             if debruijn == self.binder_index {
                 self.unify_free_answer_var(bound_ty.var, b.into())?;
@@ -215,7 +219,7 @@ impl TypeRelation<'cx, 'gcx, 'tcx> for AnswerSubstitutor<'cx, 'gcx, 'tcx> {
             }
         }
 
-        match (&a.sty, &b.sty) {
+        match (&a.kind, &b.kind) {
             (&ty::Bound(a_debruijn, a_bound), &ty::Bound(b_debruijn, b_bound)) => {
                 assert_eq!(a_debruijn, b_debruijn);
                 assert_eq!(a_bound.var, b_bound.var);
@@ -282,10 +286,7 @@ impl TypeRelation<'cx, 'gcx, 'tcx> for AnswerSubstitutor<'cx, 'gcx, 'tcx> {
         a: &'tcx ty::Const<'tcx>,
         b: &'tcx ty::Const<'tcx>,
     ) -> RelateResult<'tcx, &'tcx ty::Const<'tcx>> {
-        if let ty::Const {
-            val: ConstValue::Infer(InferConst::Canonical(debruijn, bound_ct)),
-            ..
-        } = a {
+        if let ty::Const { val: ty::ConstKind::Bound(debruijn, bound_ct), .. } = a {
             if *debruijn == self.binder_index {
                 self.unify_free_answer_var(*bound_ct, b.into())?;
                 return Ok(b);
@@ -294,14 +295,8 @@ impl TypeRelation<'cx, 'gcx, 'tcx> for AnswerSubstitutor<'cx, 'gcx, 'tcx> {
 
         match (a, b) {
             (
-                ty::Const {
-                    val: ConstValue::Infer(InferConst::Canonical(a_debruijn, a_bound)),
-                    ..
-                },
-                ty::Const {
-                    val: ConstValue::Infer(InferConst::Canonical(b_debruijn, b_bound)),
-                    ..
-                },
+                ty::Const { val: ty::ConstKind::Bound(a_debruijn, a_bound), .. },
+                ty::Const { val: ty::ConstKind::Bound(b_debruijn, b_bound), .. },
             ) => {
                 assert_eq!(a_debruijn, b_debruijn);
                 assert_eq!(a_bound, b_bound);

@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 // This resulted in an ICE. Test for future-proofing
 // Issue #24227
 

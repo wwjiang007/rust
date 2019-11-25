@@ -21,17 +21,18 @@
 //!
 //! [c]: https://rust-lang.github.io/rustc-guide/traits/canonicalization.html
 
-use crate::infer::{InferCtxt, RegionVariableOrigin, TypeVariableOrigin, ConstVariableOrigin};
-use crate::mir::interpret::ConstValue;
-use rustc_data_structures::indexed_vec::IndexVec;
+use crate::infer::{InferCtxt, RegionVariableOrigin, TypeVariableOrigin, TypeVariableOriginKind};
+use crate::infer::{ConstVariableOrigin, ConstVariableOriginKind};
+use crate::infer::region_constraints::MemberConstraint;
+use rustc_index::vec::IndexVec;
 use rustc_macros::HashStable;
-use serialize::UseSpecializedDecodable;
+use rustc_serialize::UseSpecializedDecodable;
 use smallvec::SmallVec;
 use std::ops::Index;
 use syntax::source_map::Span;
 use crate::ty::fold::TypeFoldable;
-use crate::ty::subst::Kind;
-use crate::ty::{self, BoundVar, InferConst, Lift, List, Region, TyCtxt};
+use crate::ty::subst::GenericArg;
+use crate::ty::{self, BoundVar, List, Region, TyCtxt};
 
 mod canonicalizer;
 
@@ -42,16 +43,17 @@ mod substitute;
 /// A "canonicalized" type `V` is one where all free inference
 /// variables have been rewritten to "canonical vars". These are
 /// numbered starting from 0 in order of first appearance.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcDecodable, RustcEncodable, HashStable)]
-pub struct Canonical<'gcx, V> {
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcDecodable, RustcEncodable)]
+#[derive(HashStable, TypeFoldable, Lift)]
+pub struct Canonical<'tcx, V> {
     pub max_universe: ty::UniverseIndex,
-    pub variables: CanonicalVarInfos<'gcx>,
+    pub variables: CanonicalVarInfos<'tcx>,
     pub value: V,
 }
 
-pub type CanonicalVarInfos<'gcx> = &'gcx List<CanonicalVarInfo>;
+pub type CanonicalVarInfos<'tcx> = &'tcx List<CanonicalVarInfo>;
 
-impl<'gcx> UseSpecializedDecodable for CanonicalVarInfos<'gcx> {}
+impl<'tcx> UseSpecializedDecodable for CanonicalVarInfos<'tcx> {}
 
 /// A set of values corresponding to the canonical variables from some
 /// `Canonical`. You can give these values to
@@ -62,16 +64,17 @@ impl<'gcx> UseSpecializedDecodable for CanonicalVarInfos<'gcx> {}
 /// vectors with the original values that were replaced by canonical
 /// variables. You will need to supply it later to instantiate the
 /// canonicalized query response.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, RustcDecodable, RustcEncodable, HashStable)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, RustcDecodable, RustcEncodable)]
+#[derive(HashStable, TypeFoldable, Lift)]
 pub struct CanonicalVarValues<'tcx> {
-    pub var_values: IndexVec<BoundVar, Kind<'tcx>>,
+    pub var_values: IndexVec<BoundVar, GenericArg<'tcx>>,
 }
 
 /// When we canonicalize a value to form a query, we wind up replacing
 /// various parts of it with canonical variables. This struct stores
 /// those replaced bits to remember for when we process the query
 /// result.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, RustcDecodable, RustcEncodable)]
+#[derive(Clone, Debug)]
 pub struct OriginalQueryValues<'tcx> {
     /// Map from the universes that appear in the query to the
     /// universes in the caller context. For the time being, we only
@@ -81,7 +84,7 @@ pub struct OriginalQueryValues<'tcx> {
 
     /// This is equivalent to `CanonicalVarValues`, but using a
     /// `SmallVec` yields a significant performance win.
-    pub var_values: SmallVec<[Kind<'tcx>; 8]>,
+    pub var_values: SmallVec<[GenericArg<'tcx>; 8]>,
 }
 
 impl Default for OriginalQueryValues<'tcx> {
@@ -185,18 +188,32 @@ pub enum CanonicalTyVarKind {
 /// After we execute a query with a canonicalized key, we get back a
 /// `Canonical<QueryResponse<..>>`. You can use
 /// `instantiate_query_result` to access the data in this result.
-#[derive(Clone, Debug, HashStable)]
+#[derive(Clone, Debug, HashStable, TypeFoldable, Lift)]
 pub struct QueryResponse<'tcx, R> {
     pub var_values: CanonicalVarValues<'tcx>,
-    pub region_constraints: Vec<QueryRegionConstraint<'tcx>>,
+    pub region_constraints: QueryRegionConstraints<'tcx>,
     pub certainty: Certainty,
     pub value: R,
 }
 
-pub type Canonicalized<'gcx, V> = Canonical<'gcx, <V as Lift<'gcx>>::Lifted>;
+#[derive(Clone, Debug, Default, HashStable, TypeFoldable, Lift)]
+pub struct QueryRegionConstraints<'tcx> {
+    pub outlives: Vec<QueryOutlivesConstraint<'tcx>>,
+    pub member_constraints: Vec<MemberConstraint<'tcx>>,
+}
 
-pub type CanonicalizedQueryResponse<'gcx, T> =
-    &'gcx Canonical<'gcx, QueryResponse<'gcx, <T as Lift<'gcx>>::Lifted>>;
+impl QueryRegionConstraints<'_> {
+    /// Represents an empty (trivially true) set of region
+    /// constraints.
+    pub fn is_empty(&self) -> bool {
+        self.outlives.is_empty() && self.member_constraints.is_empty()
+    }
+}
+
+pub type Canonicalized<'tcx, V> = Canonical<'tcx, V>;
+
+pub type CanonicalizedQueryResponse<'tcx, T> =
+    &'tcx Canonical<'tcx, QueryResponse<'tcx, T>>;
 
 /// Indicates whether or not we were able to prove the query to be
 /// true.
@@ -253,7 +270,7 @@ impl<'tcx, R> Canonical<'tcx, QueryResponse<'tcx, R>> {
     }
 }
 
-impl<'gcx, V> Canonical<'gcx, V> {
+impl<'tcx, V> Canonical<'tcx, V> {
     /// Allows you to map the `value` of a canonical while keeping the
     /// same set of bound variables.
     ///
@@ -277,7 +294,7 @@ impl<'gcx, V> Canonical<'gcx, V> {
     /// let ty: Ty<'tcx> = ...;
     /// let b: Canonical<'tcx, (T, Ty<'tcx>)> = a.unchecked_map(|v| (v, ty));
     /// ```
-    pub fn unchecked_map<W>(self, map_op: impl FnOnce(V) -> W) -> Canonical<'gcx, W> {
+    pub fn unchecked_map<W>(self, map_op: impl FnOnce(V) -> W) -> Canonical<'tcx, W> {
         let Canonical {
             max_universe,
             variables,
@@ -291,9 +308,10 @@ impl<'gcx, V> Canonical<'gcx, V> {
     }
 }
 
-pub type QueryRegionConstraint<'tcx> = ty::Binder<ty::OutlivesPredicate<Kind<'tcx>, Region<'tcx>>>;
+pub type QueryOutlivesConstraint<'tcx> =
+    ty::Binder<ty::OutlivesPredicate<GenericArg<'tcx>, Region<'tcx>>>;
 
-impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
+impl<'cx, 'tcx> InferCtxt<'cx, 'tcx> {
     /// Creates a substitution S for the canonical value with fresh
     /// inference variables and applies it to the canonical value.
     /// Returns both the instantiated result *and* the substitution S.
@@ -342,7 +360,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
         variables: &List<CanonicalVarInfo>,
         universe_map: impl Fn(ty::UniverseIndex) -> ty::UniverseIndex,
     ) -> CanonicalVarValues<'tcx> {
-        let var_values: IndexVec<BoundVar, Kind<'tcx>> = variables
+        let var_values: IndexVec<BoundVar, GenericArg<'tcx>> = variables
             .iter()
             .map(|info| self.instantiate_canonical_var(span, *info, &universe_map))
             .collect();
@@ -359,13 +377,16 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
         span: Span,
         cv_info: CanonicalVarInfo,
         universe_map: impl Fn(ty::UniverseIndex) -> ty::UniverseIndex,
-    ) -> Kind<'tcx> {
+    ) -> GenericArg<'tcx> {
         match cv_info.kind {
             CanonicalVarKind::Ty(ty_kind) => {
                 let ty = match ty_kind {
                     CanonicalTyVarKind::General(ui) => {
                         self.next_ty_var_in_universe(
-                            TypeVariableOrigin::MiscVariable(span),
+                            TypeVariableOrigin {
+                                kind: TypeVariableOriginKind::MiscVariable,
+                                span,
+                            },
                             universe_map(ui)
                         )
                     }
@@ -403,10 +424,16 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
             CanonicalVarKind::Const(ui) => {
                 self.next_const_var_in_universe(
                     self.next_ty_var_in_universe(
-                        TypeVariableOrigin::MiscVariable(span),
+                        TypeVariableOrigin {
+                            kind: TypeVariableOriginKind::MiscVariable,
+                            span,
+                        },
                         universe_map(ui),
                     ),
-                    ConstVariableOrigin::MiscVariable(span),
+                    ConstVariableOrigin {
+                        kind: ConstVariableOriginKind::MiscVariable,
+                        span,
+                    },
                     universe_map(ui),
                 ).into()
             }
@@ -421,7 +448,7 @@ impl<'cx, 'gcx, 'tcx> InferCtxt<'cx, 'gcx, 'tcx> {
                 };
                 self.tcx.mk_const(
                     ty::Const {
-                        val: ConstValue::Placeholder(placeholder_mapped),
+                        val: ty::ConstKind::Placeholder(placeholder_mapped),
                         ty: self.tcx.types.err, // FIXME(const_generics)
                     }
                 ).into()
@@ -442,21 +469,6 @@ CloneTypeFoldableImpls! {
     }
 }
 
-BraceStructTypeFoldableImpl! {
-    impl<'tcx, C> TypeFoldable<'tcx> for Canonical<'tcx, C> {
-        max_universe,
-        variables,
-        value,
-    } where C: TypeFoldable<'tcx>
-}
-
-BraceStructLiftImpl! {
-    impl<'a, 'tcx, T> Lift<'tcx> for Canonical<'a, T> {
-        type Lifted = Canonical<'tcx, T::Lifted>;
-        max_universe, variables, value
-    } where T: Lift<'tcx>
-}
-
 impl<'tcx> CanonicalVarValues<'tcx> {
     pub fn len(&self) -> usize {
         self.var_values.len()
@@ -468,25 +480,23 @@ impl<'tcx> CanonicalVarValues<'tcx> {
     /// `self.var_values == [Type(u32), Lifetime('a), Type(u64)]`
     /// we'll return a substitution `subst` with:
     /// `subst.var_values == [Type(^0), Lifetime(^1), Type(^2)]`.
-    pub fn make_identity<'a>(&self, tcx: TyCtxt<'a, 'tcx, 'tcx>) -> Self {
-        use crate::ty::subst::UnpackedKind;
+    pub fn make_identity(&self, tcx: TyCtxt<'tcx>) -> Self {
+        use crate::ty::subst::GenericArgKind;
 
         CanonicalVarValues {
             var_values: self.var_values.iter()
                 .zip(0..)
                 .map(|(kind, i)| match kind.unpack() {
-                    UnpackedKind::Type(..) => tcx.mk_ty(
+                    GenericArgKind::Type(..) => tcx.mk_ty(
                         ty::Bound(ty::INNERMOST, ty::BoundVar::from_u32(i).into())
                     ).into(),
-                    UnpackedKind::Lifetime(..) => tcx.mk_region(
+                    GenericArgKind::Lifetime(..) => tcx.mk_region(
                         ty::ReLateBound(ty::INNERMOST, ty::BoundRegion::BrAnon(i))
                     ).into(),
-                    UnpackedKind::Const(ct) => {
+                    GenericArgKind::Const(ct) => {
                         tcx.mk_const(ty::Const {
                             ty: ct.ty,
-                            val: ConstValue::Infer(
-                                InferConst::Canonical(ty::INNERMOST, ty::BoundVar::from_u32(i))
-                            ),
+                            val: ty::ConstKind::Bound(ty::INNERMOST, ty::BoundVar::from_u32(i)),
                         }).into()
                     }
                 })
@@ -496,44 +506,18 @@ impl<'tcx> CanonicalVarValues<'tcx> {
 }
 
 impl<'a, 'tcx> IntoIterator for &'a CanonicalVarValues<'tcx> {
-    type Item = Kind<'tcx>;
-    type IntoIter = ::std::iter::Cloned<::std::slice::Iter<'a, Kind<'tcx>>>;
+    type Item = GenericArg<'tcx>;
+    type IntoIter = ::std::iter::Cloned<::std::slice::Iter<'a, GenericArg<'tcx>>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.var_values.iter().cloned()
     }
 }
 
-BraceStructLiftImpl! {
-    impl<'a, 'tcx> Lift<'tcx> for CanonicalVarValues<'a> {
-        type Lifted = CanonicalVarValues<'tcx>;
-        var_values,
-    }
-}
-
-BraceStructTypeFoldableImpl! {
-    impl<'tcx> TypeFoldable<'tcx> for CanonicalVarValues<'tcx> {
-        var_values,
-    }
-}
-
-BraceStructTypeFoldableImpl! {
-    impl<'tcx, R> TypeFoldable<'tcx> for QueryResponse<'tcx, R> {
-        var_values, region_constraints, certainty, value
-    } where R: TypeFoldable<'tcx>,
-}
-
-BraceStructLiftImpl! {
-    impl<'a, 'tcx, R> Lift<'tcx> for QueryResponse<'a, R> {
-        type Lifted = QueryResponse<'tcx, R::Lifted>;
-        var_values, region_constraints, certainty, value
-    } where R: Lift<'tcx>
-}
-
 impl<'tcx> Index<BoundVar> for CanonicalVarValues<'tcx> {
-    type Output = Kind<'tcx>;
+    type Output = GenericArg<'tcx>;
 
-    fn index(&self, value: BoundVar) -> &Kind<'tcx> {
+    fn index(&self, value: BoundVar) -> &GenericArg<'tcx> {
         &self.var_values[value]
     }
 }

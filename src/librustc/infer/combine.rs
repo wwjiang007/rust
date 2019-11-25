@@ -28,10 +28,11 @@ use super::{InferCtxt, MiscVariable, TypeTrace};
 use super::lub::Lub;
 use super::sub::Sub;
 use super::type_variable::TypeVariableValue;
-use super::unify_key::{ConstVarValue, ConstVariableValue, ConstVariableOrigin};
+use super::unify_key::{ConstVarValue, ConstVariableValue};
+use super::unify_key::{ConstVariableOrigin, ConstVariableOriginKind};
+use super::unify_key::replace_if_possible;
 
 use crate::hir::def_id::DefId;
-use crate::mir::interpret::ConstValue;
 use crate::ty::{IntType, UintType};
 use crate::ty::{self, Ty, TyCtxt, InferConst};
 use crate::ty::error::TypeError;
@@ -43,30 +44,32 @@ use syntax::ast;
 use syntax_pos::{Span, DUMMY_SP};
 
 #[derive(Clone)]
-pub struct CombineFields<'infcx, 'gcx: 'infcx+'tcx, 'tcx: 'infcx> {
-    pub infcx: &'infcx InferCtxt<'infcx, 'gcx, 'tcx>,
+pub struct CombineFields<'infcx, 'tcx> {
+    pub infcx: &'infcx InferCtxt<'infcx, 'tcx>,
     pub trace: TypeTrace<'tcx>,
     pub cause: Option<ty::relate::Cause>,
     pub param_env: ty::ParamEnv<'tcx>,
     pub obligations: PredicateObligations<'tcx>,
 }
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub enum RelationDir {
     SubtypeOf, SupertypeOf, EqTo
 }
 
-impl<'infcx, 'gcx, 'tcx> InferCtxt<'infcx, 'gcx, 'tcx> {
-    pub fn super_combine_tys<R>(&self,
-                                relation: &mut R,
-                                a: Ty<'tcx>,
-                                b: Ty<'tcx>)
-                                -> RelateResult<'tcx, Ty<'tcx>>
-        where R: TypeRelation<'infcx, 'gcx, 'tcx>
+impl<'infcx, 'tcx> InferCtxt<'infcx, 'tcx> {
+    pub fn super_combine_tys<R>(
+        &self,
+        relation: &mut R,
+        a: Ty<'tcx>,
+        b: Ty<'tcx>,
+    ) -> RelateResult<'tcx, Ty<'tcx>>
+    where
+        R: TypeRelation<'tcx>,
     {
         let a_is_expected = relation.a_is_expected();
 
-        match (&a.sty, &b.sty) {
+        match (&a.kind, &b.kind) {
             // Relate integral variables to other types
             (&ty::Infer(ty::IntVar(a_id)), &ty::Infer(ty::IntVar(b_id))) => {
                 self.int_unification_table
@@ -122,13 +125,19 @@ impl<'infcx, 'gcx, 'tcx> InferCtxt<'infcx, 'gcx, 'tcx> {
         b: &'tcx ty::Const<'tcx>,
     ) -> RelateResult<'tcx, &'tcx ty::Const<'tcx>>
     where
-        R: TypeRelation<'infcx, 'gcx, 'tcx>,
+        R: TypeRelation<'tcx>,
     {
+        debug!("{}.consts({:?}, {:?})", relation.tag(), a, b);
+        if a == b { return Ok(a); }
+
+        let a = replace_if_possible(self.const_unification_table.borrow_mut(), a);
+        let b = replace_if_possible(self.const_unification_table.borrow_mut(), b);
+
         let a_is_expected = relation.a_is_expected();
 
         match (a.val, b.val) {
-            (ConstValue::Infer(InferConst::Var(a_vid)),
-                ConstValue::Infer(InferConst::Var(b_vid))) => {
+            (ty::ConstKind::Infer(InferConst::Var(a_vid)),
+                ty::ConstKind::Infer(InferConst::Var(b_vid))) => {
                 self.const_unification_table
                     .borrow_mut()
                     .unify_var_var(a_vid, b_vid)
@@ -137,16 +146,16 @@ impl<'infcx, 'gcx, 'tcx> InferCtxt<'infcx, 'gcx, 'tcx> {
             }
 
             // All other cases of inference with other variables are errors.
-            (ConstValue::Infer(InferConst::Var(_)), ConstValue::Infer(_)) |
-            (ConstValue::Infer(_), ConstValue::Infer(InferConst::Var(_))) => {
-                bug!("tried to combine ConstValue::Infer/ConstValue::Infer(InferConst::Var)")
+            (ty::ConstKind::Infer(InferConst::Var(_)), ty::ConstKind::Infer(_)) |
+            (ty::ConstKind::Infer(_), ty::ConstKind::Infer(InferConst::Var(_))) => {
+                bug!("tried to combine ConstKind::Infer/ConstKind::Infer(InferConst::Var)")
             }
 
-            (ConstValue::Infer(InferConst::Var(vid)), _) => {
+            (ty::ConstKind::Infer(InferConst::Var(vid)), _) => {
                 return self.unify_const_variable(a_is_expected, vid, b);
             }
 
-            (_, ConstValue::Infer(InferConst::Var(vid))) => {
+            (_, ty::ConstKind::Infer(InferConst::Var(vid))) => {
                 return self.unify_const_variable(!a_is_expected, vid, a);
             }
 
@@ -165,7 +174,10 @@ impl<'infcx, 'gcx, 'tcx> InferCtxt<'infcx, 'gcx, 'tcx> {
         self.const_unification_table
             .borrow_mut()
             .unify_var_value(vid, ConstVarValue {
-                origin: ConstVariableOrigin::ConstInference(DUMMY_SP),
+                origin: ConstVariableOrigin {
+                    kind: ConstVariableOriginKind::ConstInference,
+                    span: DUMMY_SP,
+                },
                 val: ConstVariableValue::Known { value },
             })
             .map_err(|e| const_unification_error(vid_is_expected, e))?;
@@ -202,24 +214,24 @@ impl<'infcx, 'gcx, 'tcx> InferCtxt<'infcx, 'gcx, 'tcx> {
     }
 }
 
-impl<'infcx, 'gcx, 'tcx> CombineFields<'infcx, 'gcx, 'tcx> {
-    pub fn tcx(&self) -> TyCtxt<'infcx, 'gcx, 'tcx> {
+impl<'infcx, 'tcx> CombineFields<'infcx, 'tcx> {
+    pub fn tcx(&self) -> TyCtxt<'tcx> {
         self.infcx.tcx
     }
 
-    pub fn equate<'a>(&'a mut self, a_is_expected: bool) -> Equate<'a, 'infcx, 'gcx, 'tcx> {
+    pub fn equate<'a>(&'a mut self, a_is_expected: bool) -> Equate<'a, 'infcx, 'tcx> {
         Equate::new(self, a_is_expected)
     }
 
-    pub fn sub<'a>(&'a mut self, a_is_expected: bool) -> Sub<'a, 'infcx, 'gcx, 'tcx> {
+    pub fn sub<'a>(&'a mut self, a_is_expected: bool) -> Sub<'a, 'infcx, 'tcx> {
         Sub::new(self, a_is_expected)
     }
 
-    pub fn lub<'a>(&'a mut self, a_is_expected: bool) -> Lub<'a, 'infcx, 'gcx, 'tcx> {
+    pub fn lub<'a>(&'a mut self, a_is_expected: bool) -> Lub<'a, 'infcx, 'tcx> {
         Lub::new(self, a_is_expected)
     }
 
-    pub fn glb<'a>(&'a mut self, a_is_expected: bool) -> Glb<'a, 'infcx, 'gcx, 'tcx> {
+    pub fn glb<'a>(&'a mut self, a_is_expected: bool) -> Glb<'a, 'infcx, 'tcx> {
         Glb::new(self, a_is_expected)
     }
 
@@ -334,6 +346,7 @@ impl<'infcx, 'gcx, 'tcx> CombineFields<'infcx, 'gcx, 'tcx> {
             ambient_variance,
             needs_wf: false,
             root_ty: ty,
+            param_env: self.param_env,
         };
 
         let ty = match generalize.relate(&ty, &ty) {
@@ -349,8 +362,8 @@ impl<'infcx, 'gcx, 'tcx> CombineFields<'infcx, 'gcx, 'tcx> {
     }
 }
 
-struct Generalizer<'cx, 'gcx: 'cx+'tcx, 'tcx: 'cx> {
-    infcx: &'cx InferCtxt<'cx, 'gcx, 'tcx>,
+struct Generalizer<'cx, 'tcx> {
+    infcx: &'cx InferCtxt<'cx, 'tcx>,
 
     /// The span, used when creating new type variables and things.
     span: Span,
@@ -373,6 +386,8 @@ struct Generalizer<'cx, 'gcx: 'cx+'tcx, 'tcx: 'cx> {
 
     /// The root type that we are generalizing. Used when reporting cycles.
     root_ty: Ty<'tcx>,
+
+    param_env: ty::ParamEnv<'tcx>,
 }
 
 /// Result from a generalization operation. This includes
@@ -409,10 +424,11 @@ struct Generalization<'tcx> {
     needs_wf: bool,
 }
 
-impl<'cx, 'gcx, 'tcx> TypeRelation<'cx, 'gcx, 'tcx> for Generalizer<'cx, 'gcx, 'tcx> {
-    fn tcx(&self) -> TyCtxt<'cx, 'gcx, 'tcx> {
+impl TypeRelation<'tcx> for Generalizer<'_, 'tcx> {
+    fn tcx(&self) -> TyCtxt<'tcx> {
         self.infcx.tcx
     }
+    fn param_env(&self) -> ty::ParamEnv<'tcx> { self.param_env }
 
     fn tag(&self) -> &'static str {
         "Generalizer"
@@ -469,7 +485,7 @@ impl<'cx, 'gcx, 'tcx> TypeRelation<'cx, 'gcx, 'tcx> for Generalizer<'cx, 'gcx, '
         // any other type variable related to `vid` via
         // subtyping. This is basically our "occurs check", preventing
         // us from creating infinitely sized types.
-        match t.sty {
+        match t.kind {
             ty::Infer(ty::TyVar(vid)) => {
                 let mut variables = self.infcx.type_variables.borrow_mut();
                 let vid = variables.root_var(vid);
@@ -477,7 +493,7 @@ impl<'cx, 'gcx, 'tcx> TypeRelation<'cx, 'gcx, 'tcx> for Generalizer<'cx, 'gcx, '
                 if sub_vid == self.for_vid_sub_root {
                     // If sub-roots are equal, then `for_vid` and
                     // `vid` are related via subtyping.
-                    return Err(TypeError::CyclicTy(self.root_ty));
+                    Err(TypeError::CyclicTy(self.root_ty))
                 } else {
                     match variables.probe(vid) {
                         TypeVariableValue::Known { value: u } => {
@@ -510,7 +526,7 @@ impl<'cx, 'gcx, 'tcx> TypeRelation<'cx, 'gcx, 'tcx> for Generalizer<'cx, 'gcx, '
                             let u = self.tcx().mk_ty_var(new_var_id);
                             debug!("generalize: replacing original vid={:?} with new={:?}",
                                    vid, u);
-                            return Ok(u);
+                            Ok(u)
                         }
                     }
                 }
@@ -585,19 +601,26 @@ impl<'cx, 'gcx, 'tcx> TypeRelation<'cx, 'gcx, 'tcx> for Generalizer<'cx, 'gcx, '
     ) -> RelateResult<'tcx, &'tcx ty::Const<'tcx>> {
         assert_eq!(c, c2); // we are abusing TypeRelation here; both LHS and RHS ought to be ==
 
-        match c {
-            ty::Const { val: ConstValue::Infer(InferConst::Var(vid)), .. } => {
+        match c.val {
+            ty::ConstKind::Infer(InferConst::Var(vid)) => {
                 let mut variable_table = self.infcx.const_unification_table.borrow_mut();
-                match variable_table.probe_value(*vid).val.known() {
-                    Some(u) => {
-                        self.relate(&u, &u)
+                let var_value = variable_table.probe_value(vid);
+                match var_value.val {
+                    ConstVariableValue::Known { value: u } => self.relate(&u, &u),
+                    ConstVariableValue::Unknown { universe } => {
+                        if self.for_universe.can_name(universe) {
+                            Ok(c)
+                        } else {
+                            let new_var_id = variable_table.new_key(ConstVarValue {
+                                origin: var_value.origin,
+                                val: ConstVariableValue::Unknown { universe: self.for_universe },
+                            });
+                            Ok(self.tcx().mk_const_var(new_var_id, c.ty))
+                        }
                     }
-                    None => Ok(c),
                 }
             }
-            _ => {
-                relate::super_relate_consts(self, c, c)
-            }
+            _ => relate::super_relate_consts(self, c, c),
         }
     }
 }

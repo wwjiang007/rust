@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 #![allow(dead_code)]
 // pretty-expanded FIXME #23616
 // ignore-cloudabi no std::fs

@@ -87,6 +87,14 @@ extern "C" char *LLVMRustGetLastError(void) {
   return Ret;
 }
 
+extern "C" unsigned int LLVMRustGetInstructionCount(LLVMModuleRef M) {
+#if LLVM_VERSION_GE(7, 0)
+  return unwrap(M)->getInstructionCount();
+#else
+  report_fatal_error("Module::getInstructionCount not available before LLVM 7");
+#endif
+}
+
 extern "C" void LLVMRustSetLastError(const char *Err) {
   free((void *)LastError);
   LastError = strdup(Err);
@@ -237,6 +245,17 @@ extern "C" void LLVMRustAddDereferenceableOrNullCallSiteAttr(LLVMValueRef Instr,
       Call->getContext(), Index, B));
 }
 
+extern "C" void LLVMRustAddByValCallSiteAttr(LLVMValueRef Instr, unsigned Index,
+                                             LLVMTypeRef Ty) {
+  CallSite Call = CallSite(unwrap<Instruction>(Instr));
+#if LLVM_VERSION_GE(9, 0)
+  Attribute Attr = Attribute::getWithByValType(Call->getContext(), unwrap(Ty));
+#else
+  Attribute Attr = Attribute::get(Call->getContext(), Attribute::ByVal);
+#endif
+  Call.addAttribute(Index, Attr);
+}
+
 extern "C" void LLVMRustAddFunctionAttribute(LLVMValueRef Fn, unsigned Index,
                                              LLVMRustAttribute RustAttr) {
   Function *A = unwrap<Function>(Fn);
@@ -269,6 +288,17 @@ extern "C" void LLVMRustAddDereferenceableOrNullAttr(LLVMValueRef Fn,
   AttrBuilder B;
   B.addDereferenceableOrNullAttr(Bytes);
   A->addAttributes(Index, B);
+}
+
+extern "C" void LLVMRustAddByValAttr(LLVMValueRef Fn, unsigned Index,
+                                     LLVMTypeRef Ty) {
+  Function *F = unwrap<Function>(Fn);
+#if LLVM_VERSION_GE(9, 0)
+  Attribute Attr = Attribute::getWithByValType(F->getContext(), unwrap(Ty));
+#else
+  Attribute Attr = Attribute::get(F->getContext(), Attribute::ByVal);
+#endif
+  F->addAttribute(Index, Attr);
 }
 
 extern "C" void LLVMRustAddFunctionAttrStringValue(LLVMValueRef Fn,

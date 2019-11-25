@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 
 trait Foo {
     const BLAH: &'static str;

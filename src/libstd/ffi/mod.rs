@@ -163,14 +163,14 @@ pub use self::c_str::{FromBytesWithNulError};
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use self::os_str::{OsString, OsStr};
 
-#[stable(feature = "raw_os", since = "1.1.0")]
+#[stable(feature = "core_c_void", since = "1.30.0")]
 pub use core::ffi::c_void;
 
 #[unstable(feature = "c_variadic",
            reason = "the `c_variadic` feature has not been properly tested on \
                      all supported platforms",
            issue = "44930")]
-pub use core::ffi::VaList;
+pub use core::ffi::{VaList, VaListImpl};
 
 mod c_str;
 mod os_str;

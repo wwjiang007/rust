@@ -62,19 +62,20 @@
 #![warn(missing_docs)]
 #![warn(missing_debug_implementations)]
 #![deny(intra_doc_link_resolution_failure)] // rustdoc is run without -D warnings
-
-#![deny(rust_2018_idioms)]
 #![allow(explicit_outlives_requirements)]
+#![allow(incomplete_features)]
 
 #![feature(allow_internal_unstable)]
 #![feature(arbitrary_self_types)]
 #![feature(asm)]
-#![feature(associated_type_defaults)]
+#![feature(bound_cloned)]
 #![feature(cfg_target_has_atomic)]
 #![feature(concat_idents)]
 #![feature(const_fn)]
 #![feature(const_fn_union)]
-#![feature(custom_attribute)]
+#![feature(const_generics)]
+#![feature(custom_inner_attributes)]
+#![feature(decl_macro)]
 #![feature(doc_cfg)]
 #![feature(doc_spotlight)]
 #![feature(extern_types)]
@@ -84,12 +85,11 @@
 #![feature(iter_once_with)]
 #![feature(lang_items)]
 #![feature(link_llvm_intrinsics)]
-#![feature(never_type)]
+#![cfg_attr(bootstrap, feature(never_type))]
 #![feature(nll)]
-#![feature(bind_by_move_pattern_guards)]
 #![feature(exhaustive_patterns)]
 #![feature(no_core)]
-#![feature(on_unimplemented)]
+#![cfg_attr(bootstrap, feature(on_unimplemented))]
 #![feature(optin_builtin_traits)]
 #![feature(prelude_import)]
 #![feature(repr_simd, platform_intrinsics)]
@@ -100,6 +100,7 @@
 #![feature(staged_api)]
 #![feature(std_internals)]
 #![feature(stmt_expr_attributes)]
+#![feature(transparent_unions)]
 #![feature(unboxed_closures)]
 #![feature(unsized_locals)]
 #![feature(untagged_unions)]
@@ -115,23 +116,23 @@
 #![feature(wasm_target_feature)]
 #![feature(avx512_target_feature)]
 #![feature(cmpxchg16b_target_feature)]
-#![feature(const_slice_len)]
-#![feature(const_str_as_bytes)]
-#![feature(const_str_len)]
+#![feature(rtm_target_feature)]
+#![feature(f16c_target_feature)]
+#![feature(hexagon_target_feature)]
 #![feature(const_int_conversion)]
 #![feature(const_transmute)]
-#![feature(reverse_bits)]
-#![feature(non_exhaustive)]
 #![feature(structural_match)]
 #![feature(abi_unadjusted)]
 #![feature(adx_target_feature)]
-#![feature(maybe_uninit, maybe_uninit_slice, maybe_uninit_array)]
+#![feature(maybe_uninit_slice)]
 #![feature(external_doc)]
+#![feature(associated_type_bounds)]
 
 #[prelude_import]
 #[allow(unused)]
 use prelude::v1::*;
 
+#[cfg(not(test))] // See #65860
 #[macro_use]
 mod macros;
 
@@ -179,10 +180,14 @@ pub mod hint;
 
 /* Core language traits */
 
+#[cfg(not(test))] // See #65860
 pub mod marker;
 pub mod ops;
+#[cfg(not(test))] // See #65860
 pub mod cmp;
+#[cfg(not(test))] // See #65860
 pub mod clone;
+#[cfg(not(test))] // See #65860
 pub mod default;
 pub mod convert;
 pub mod borrow;
@@ -190,6 +195,7 @@ pub mod borrow;
 /* Core types and methods on primitives */
 
 pub mod any;
+#[cfg(not(test))] // See #65860
 pub mod array;
 pub mod ascii;
 pub mod sync;
@@ -197,7 +203,9 @@ pub mod cell;
 pub mod char;
 pub mod panic;
 pub mod panicking;
+#[cfg(not(test))] // See #65860
 pub mod pin;
+#[cfg(not(test))] // See #65860
 pub mod iter;
 pub mod option;
 pub mod raw;
@@ -205,14 +213,18 @@ pub mod result;
 pub mod ffi;
 
 pub mod slice;
+#[cfg(not(test))] // See #65860
 pub mod str;
+#[cfg(not(test))] // See #65860
 pub mod hash;
+#[cfg(not(test))] // See #65860
 pub mod fmt;
 pub mod time;
 
 pub mod unicode;
 
 /* Async */
+#[cfg(not(test))] // See #65860
 pub mod future;
 pub mod task;
 
@@ -221,16 +233,17 @@ pub mod task;
 pub mod alloc;
 
 // note: does not need to be public
+mod bool;
 mod tuple;
 mod unit;
 
 // Pull in the `core_arch` crate directly into libcore. The contents of
-// `core_arch` are in a different repository: rust-lang-nursery/stdsimd.
+// `core_arch` are in a different repository: rust-lang/stdarch.
 //
 // `core_arch` depends on libcore, but the contents of this module are
 // set up in such a way that directly pulling it here works such that the
 // crate uses the this crate as its libcore.
-#[path = "../stdsimd/crates/core_arch/src/mod.rs"]
+#[path = "../stdarch/crates/core_arch/src/mod.rs"]
 #[allow(missing_docs, missing_debug_implementations, dead_code, unused_imports)]
 #[unstable(feature = "stdsimd", issue = "48556")]
 mod core_arch;

@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 #![allow(dead_code)]
 struct Function<T, F> { t: T, f: F }
 

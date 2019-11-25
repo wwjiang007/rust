@@ -1,7 +1,6 @@
 use crate::ty::{self, Ty, TyCtxt, InferConst};
 use crate::ty::error::TypeError;
 use crate::ty::relate::{self, Relate, TypeRelation, RelateResult};
-use crate::mir::interpret::ConstValue;
 
 /// A type "A" *matches* "B" if the fresh types in B could be
 /// substituted with values so as to make it equal to A. Matching is
@@ -19,19 +18,21 @@ use crate::mir::interpret::ConstValue;
 /// Like subtyping, matching is really a binary relation, so the only
 /// important thing about the result is Ok/Err. Also, matching never
 /// affects any type variables or unification state.
-pub struct Match<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'gcx, 'tcx>
+pub struct Match<'tcx> {
+    tcx: TyCtxt<'tcx>,
+    param_env: ty::ParamEnv<'tcx>,
 }
 
-impl<'a, 'gcx, 'tcx> Match<'a, 'gcx, 'tcx> {
-    pub fn new(tcx: TyCtxt<'a, 'gcx, 'tcx>) -> Match<'a, 'gcx, 'tcx> {
-        Match { tcx }
+impl Match<'tcx> {
+    pub fn new(tcx: TyCtxt<'tcx>, param_env: ty::ParamEnv<'tcx>) -> Match<'tcx> {
+        Match { tcx, param_env }
     }
 }
 
-impl<'a, 'gcx, 'tcx> TypeRelation<'a, 'gcx, 'tcx> for Match<'a, 'gcx, 'tcx> {
+impl TypeRelation<'tcx> for Match<'tcx> {
     fn tag(&self) -> &'static str { "Match" }
-    fn tcx(&self) -> TyCtxt<'a, 'gcx, 'tcx> { self.tcx }
+    fn tcx(&self) -> TyCtxt<'tcx> { self.tcx }
+    fn param_env(&self) -> ty::ParamEnv<'tcx> { self.param_env }
     fn a_is_expected(&self) -> bool { true } // irrelevant
 
     fn relate_with_variance<T: Relate<'tcx>>(&mut self,
@@ -57,7 +58,7 @@ impl<'a, 'gcx, 'tcx> TypeRelation<'a, 'gcx, 'tcx> for Match<'a, 'gcx, 'tcx> {
                a, b);
         if a == b { return Ok(a); }
 
-        match (&a.sty, &b.sty) {
+        match (&a.kind, &b.kind) {
             (_, &ty::Infer(ty::FreshTy(_))) |
             (_, &ty::Infer(ty::FreshIntTy(_))) |
             (_, &ty::Infer(ty::FreshFloatTy(_))) => {
@@ -90,11 +91,11 @@ impl<'a, 'gcx, 'tcx> TypeRelation<'a, 'gcx, 'tcx> for Match<'a, 'gcx, 'tcx> {
         }
 
         match (a.val, b.val) {
-            (_, ConstValue::Infer(InferConst::Fresh(_))) => {
+            (_, ty::ConstKind::Infer(InferConst::Fresh(_))) => {
                 return Ok(a);
             }
 
-            (ConstValue::Infer(_), _) | (_, ConstValue::Infer(_)) => {
+            (ty::ConstKind::Infer(_), _) | (_, ty::ConstKind::Infer(_)) => {
                 return Err(TypeError::ConstMismatch(relate::expected_found(self, &a, &b)));
             }
 

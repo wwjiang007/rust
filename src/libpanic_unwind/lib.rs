@@ -5,9 +5,8 @@
 //! essentially gets categorized into three buckets currently:
 //!
 //! 1. MSVC targets use SEH in the `seh.rs` file.
-//! 2. The 64-bit MinGW target half-uses SEH and half-use gcc-like information
-//!    in the `seh64_gnu.rs` module.
-//! 3. All other targets use libunwind/libgcc in the `gcc/mod.rs` module.
+//! 2. Emscripten uses C++ exceptions in the `emcc.rs` file.
+//! 3. All other targets use libunwind/libgcc in the `gcc.rs` file.
 //!
 //! More documentation about each implementation can be found in the respective
 //! module.
@@ -16,8 +15,6 @@
 #![unstable(feature = "panic_unwind", issue = "32837")]
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/",
        issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/")]
-
-#![deny(rust_2018_idioms)]
 
 #![feature(core_intrinsics)]
 #![feature(lang_items)]
@@ -38,24 +35,24 @@ use core::mem;
 use core::raw;
 use core::panic::BoxMeUp;
 
-#[macro_use]
-mod macros;
-
-cfg_if! {
-    if #[cfg(target_os = "emscripten")] {
+cfg_if::cfg_if! {
+    if #[cfg(miri)] {
+        #[path = "miri.rs"]
+        mod imp;
+    } else if #[cfg(target_os = "emscripten")] {
         #[path = "emcc.rs"]
         mod imp;
     } else if #[cfg(target_arch = "wasm32")] {
         #[path = "dummy.rs"]
+        mod imp;
+    } else if #[cfg(target_os = "hermit")] {
+        #[path = "hermit.rs"]
         mod imp;
     } else if #[cfg(all(target_env = "msvc", target_arch = "aarch64"))] {
         #[path = "dummy.rs"]
         mod imp;
     } else if #[cfg(target_env = "msvc")] {
         #[path = "seh.rs"]
-        mod imp;
-    } else if #[cfg(all(windows, target_arch = "x86_64", target_env = "gnu"))] {
-        #[path = "seh64_gnu.rs"]
         mod imp;
     } else {
         // Rust runtime's startup objects depend on these symbols, so make them public.
@@ -67,7 +64,6 @@ cfg_if! {
 }
 
 mod dwarf;
-mod windows;
 
 // Entry point for catching an exception, implemented using the `try` intrinsic
 // in the compiler.

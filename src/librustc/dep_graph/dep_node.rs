@@ -49,6 +49,7 @@
 //! user of the `DepNode` API of having to know how to compute the expected
 //! fingerprint for a given set of node parameters.
 
+use crate::mir;
 use crate::mir::interpret::GlobalId;
 use crate::hir::def_id::{CrateNum, DefId, DefIndex, CRATE_DEF_INDEX};
 use crate::hir::map::DefPathHash;
@@ -58,7 +59,7 @@ use crate::ich::{Fingerprint, StableHashingContext};
 use rustc_data_structures::stable_hasher::{StableHasher, HashStable};
 use std::fmt;
 use std::hash::Hash;
-use syntax_pos::symbol::InternedString;
+use syntax_pos::symbol::Symbol;
 use crate::traits;
 use crate::traits::query::{
     CanonicalProjectionGoal, CanonicalTyGoal, CanonicalTypeOpAscribeUserTypeGoal,
@@ -113,7 +114,6 @@ macro_rules! define_dep_nodes {
 
         impl DepKind {
             #[allow(unreachable_code)]
-            #[inline]
             pub fn can_reconstruct_query_key<$tcx>(&self) -> bool {
                 match *self {
                     $(
@@ -141,9 +141,6 @@ macro_rules! define_dep_nodes {
                 }
             }
 
-            // FIXME: Make `is_anon`, `is_eval_always` and `has_params` properties
-            // of queries
-            #[inline(always)]
             pub fn is_anon(&self) -> bool {
                 match *self {
                     $(
@@ -152,7 +149,6 @@ macro_rules! define_dep_nodes {
                 }
             }
 
-            #[inline(always)]
             pub fn is_eval_always(&self) -> bool {
                 match *self {
                     $(
@@ -162,7 +158,6 @@ macro_rules! define_dep_nodes {
             }
 
             #[allow(unreachable_code)]
-            #[inline(always)]
             pub fn has_params(&self) -> bool {
                 match *self {
                     $(
@@ -202,12 +197,9 @@ macro_rules! define_dep_nodes {
 
         impl DepNode {
             #[allow(unreachable_code, non_snake_case)]
-            #[inline(always)]
-            pub fn new<'a, 'gcx, 'tcx>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                                       dep: DepConstructor<'gcx>)
+            pub fn new<'tcx>(tcx: TyCtxt<'tcx>,
+                                       dep: DepConstructor<'tcx>)
                                        -> DepNode
-                where 'gcx: 'a + 'tcx,
-                      'tcx: 'a
             {
                 match dep {
                     $(
@@ -224,14 +216,16 @@ macro_rules! define_dep_nodes {
                                     hash
                                 };
 
-                                if cfg!(debug_assertions) &&
-                                   !dep_node.kind.can_reconstruct_query_key() &&
-                                   (tcx.sess.opts.debugging_opts.incremental_info ||
-                                    tcx.sess.opts.debugging_opts.query_dep_graph)
+                                #[cfg(debug_assertions)]
                                 {
-                                    tcx.dep_graph.register_dep_node_debug_str(dep_node, || {
-                                        arg.to_debug_str(tcx)
-                                    });
+                                    if !dep_node.kind.can_reconstruct_query_key() &&
+                                    (tcx.sess.opts.debugging_opts.incremental_info ||
+                                        tcx.sess.opts.debugging_opts.query_dep_graph)
+                                    {
+                                        tcx.dep_graph.register_dep_node_debug_str(dep_node, || {
+                                            arg.to_debug_str(tcx)
+                                        });
+                                    }
                                 }
 
                                 return dep_node;
@@ -247,14 +241,16 @@ macro_rules! define_dep_nodes {
                                     hash
                                 };
 
-                                if cfg!(debug_assertions) &&
-                                   !dep_node.kind.can_reconstruct_query_key() &&
-                                   (tcx.sess.opts.debugging_opts.incremental_info ||
-                                    tcx.sess.opts.debugging_opts.query_dep_graph)
+                                #[cfg(debug_assertions)]
                                 {
-                                    tcx.dep_graph.register_dep_node_debug_str(dep_node, || {
-                                        tupled_args.to_debug_str(tcx)
-                                    });
+                                    if !dep_node.kind.can_reconstruct_query_key() &&
+                                    (tcx.sess.opts.debugging_opts.incremental_info ||
+                                        tcx.sess.opts.debugging_opts.query_dep_graph)
+                                    {
+                                        tcx.dep_graph.register_dep_node_debug_str(dep_node, || {
+                                            tupled_args.to_debug_str(tcx)
+                                        });
+                                    }
                                 }
 
                                 return dep_node;
@@ -272,7 +268,6 @@ macro_rules! define_dep_nodes {
             /// Construct a DepNode from the given DepKind and DefPathHash. This
             /// method will assert that the given DepKind actually requires a
             /// single DefId/DefPathHash parameter.
-            #[inline(always)]
             pub fn from_def_path_hash(kind: DepKind,
                                       def_path_hash: DefPathHash)
                                       -> DepNode {
@@ -286,7 +281,6 @@ macro_rules! define_dep_nodes {
             /// Creates a new, parameterless DepNode. This method will assert
             /// that the DepNode corresponding to the given DepKind actually
             /// does not require any parameters.
-            #[inline(always)]
             pub fn new_no_params(kind: DepKind) -> DepNode {
                 debug_assert!(!kind.has_params());
                 DepNode {
@@ -305,8 +299,7 @@ macro_rules! define_dep_nodes {
             /// DepNode. Condition (2) might not be fulfilled if a DepNode
             /// refers to something from the previous compilation session that
             /// has been removed.
-            #[inline]
-            pub fn extract_def_id(&self, tcx: TyCtxt<'_, '_, '_>) -> Option<DefId> {
+            pub fn extract_def_id(&self, tcx: TyCtxt<'_>) -> Option<DefId> {
                 if self.kind.can_reconstruct_query_key() {
                     let def_path_hash = DefPathHash(self.hash);
                     tcx.def_path_hash_to_def_id.as_ref()?
@@ -391,15 +384,13 @@ impl fmt::Debug for DepNode {
 
 
 impl DefPathHash {
-    #[inline(always)]
     pub fn to_dep_node(self, kind: DepKind) -> DepNode {
         DepNode::from_def_path_hash(kind, self)
     }
 }
 
 impl DefId {
-    #[inline(always)]
-    pub fn to_dep_node(self, tcx: TyCtxt<'_, '_, '_>, kind: DepKind) -> DepNode {
+    pub fn to_dep_node(self, tcx: TyCtxt<'_>, kind: DepKind) -> DepNode {
         DepNode::from_def_path_hash(kind, tcx.def_path_hash(self))
     }
 }
@@ -435,55 +426,56 @@ rustc_dep_node_append!([define_dep_nodes!][ <'tcx>
 
     [anon] TraitSelect,
 
-    [] CompileCodegenUnit(InternedString),
+    [] CompileCodegenUnit(Symbol),
 
     [eval_always] Analysis(CrateNum),
 ]);
 
 pub trait RecoverKey<'tcx>: Sized {
-    fn recover(tcx: TyCtxt<'_, 'tcx, 'tcx>, dep_node: &DepNode) -> Option<Self>;
+    fn recover(tcx: TyCtxt<'tcx>, dep_node: &DepNode) -> Option<Self>;
 }
 
 impl RecoverKey<'tcx> for CrateNum {
-    fn recover(tcx: TyCtxt<'_, 'tcx, 'tcx>, dep_node: &DepNode) -> Option<Self> {
+    fn recover(tcx: TyCtxt<'tcx>, dep_node: &DepNode) -> Option<Self> {
         dep_node.extract_def_id(tcx).map(|id| id.krate)
     }
 }
 
 impl RecoverKey<'tcx> for DefId {
-    fn recover(tcx: TyCtxt<'_, 'tcx, 'tcx>, dep_node: &DepNode) -> Option<Self> {
+    fn recover(tcx: TyCtxt<'tcx>, dep_node: &DepNode) -> Option<Self> {
         dep_node.extract_def_id(tcx)
     }
 }
 
 impl RecoverKey<'tcx> for DefIndex {
-    fn recover(tcx: TyCtxt<'_, 'tcx, 'tcx>, dep_node: &DepNode) -> Option<Self> {
+    fn recover(tcx: TyCtxt<'tcx>, dep_node: &DepNode) -> Option<Self> {
         dep_node.extract_def_id(tcx).map(|id| id.index)
     }
 }
 
-trait DepNodeParams<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> : fmt::Debug {
+trait DepNodeParams<'tcx>: fmt::Debug {
     const CAN_RECONSTRUCT_QUERY_KEY: bool;
 
     /// This method turns the parameters of a DepNodeConstructor into an opaque
     /// Fingerprint to be used in DepNode.
     /// Not all DepNodeParams support being turned into a Fingerprint (they
     /// don't need to if the corresponding DepNode is anonymous).
-    fn to_fingerprint(&self, _: TyCtxt<'a, 'gcx, 'tcx>) -> Fingerprint {
+    fn to_fingerprint(&self, _: TyCtxt<'tcx>) -> Fingerprint {
         panic!("Not implemented. Accidentally called on anonymous node?")
     }
 
-    fn to_debug_str(&self, _: TyCtxt<'a, 'gcx, 'tcx>) -> String {
+    fn to_debug_str(&self, _: TyCtxt<'tcx>) -> String {
         format!("{:?}", self)
     }
 }
 
-impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a, T> DepNodeParams<'a, 'gcx, 'tcx> for T
-    where T: HashStable<StableHashingContext<'a>> + fmt::Debug
+impl<'tcx, T> DepNodeParams<'tcx> for T
+where
+    T: HashStable<StableHashingContext<'tcx>> + fmt::Debug,
 {
     default const CAN_RECONSTRUCT_QUERY_KEY: bool = false;
 
-    default fn to_fingerprint(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> Fingerprint {
+    default fn to_fingerprint(&self, tcx: TyCtxt<'tcx>) -> Fingerprint {
         let mut hcx = tcx.create_stable_hashing_context();
         let mut hasher = StableHasher::new();
 
@@ -492,39 +484,39 @@ impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a, T> DepNodeParams<'a, 'gcx, 'tcx> for T
         hasher.finish()
     }
 
-    default fn to_debug_str(&self, _: TyCtxt<'a, 'gcx, 'tcx>) -> String {
+    default fn to_debug_str(&self, _: TyCtxt<'tcx>) -> String {
         format!("{:?}", *self)
     }
 }
 
-impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for DefId {
+impl<'tcx> DepNodeParams<'tcx> for DefId {
     const CAN_RECONSTRUCT_QUERY_KEY: bool = true;
 
-    fn to_fingerprint(&self, tcx: TyCtxt<'_, '_, '_>) -> Fingerprint {
+    fn to_fingerprint(&self, tcx: TyCtxt<'_>) -> Fingerprint {
         tcx.def_path_hash(*self).0
     }
 
-    fn to_debug_str(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> String {
+    fn to_debug_str(&self, tcx: TyCtxt<'tcx>) -> String {
         tcx.def_path_str(*self)
     }
 }
 
-impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for DefIndex {
+impl<'tcx> DepNodeParams<'tcx> for DefIndex {
     const CAN_RECONSTRUCT_QUERY_KEY: bool = true;
 
-    fn to_fingerprint(&self, tcx: TyCtxt<'_, '_, '_>) -> Fingerprint {
+    fn to_fingerprint(&self, tcx: TyCtxt<'_>) -> Fingerprint {
         tcx.hir().definitions().def_path_hash(*self).0
     }
 
-    fn to_debug_str(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> String {
+    fn to_debug_str(&self, tcx: TyCtxt<'tcx>) -> String {
         tcx.def_path_str(DefId::local(*self))
     }
 }
 
-impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for CrateNum {
+impl<'tcx> DepNodeParams<'tcx> for CrateNum {
     const CAN_RECONSTRUCT_QUERY_KEY: bool = true;
 
-    fn to_fingerprint(&self, tcx: TyCtxt<'_, '_, '_>) -> Fingerprint {
+    fn to_fingerprint(&self, tcx: TyCtxt<'_>) -> Fingerprint {
         let def_id = DefId {
             krate: *self,
             index: CRATE_DEF_INDEX,
@@ -532,18 +524,18 @@ impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for CrateNum {
         tcx.def_path_hash(def_id).0
     }
 
-    fn to_debug_str(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> String {
-        tcx.crate_name(*self).as_str().to_string()
+    fn to_debug_str(&self, tcx: TyCtxt<'tcx>) -> String {
+        tcx.crate_name(*self).to_string()
     }
 }
 
-impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for (DefId, DefId) {
+impl<'tcx> DepNodeParams<'tcx> for (DefId, DefId) {
     const CAN_RECONSTRUCT_QUERY_KEY: bool = false;
 
     // We actually would not need to specialize the implementation of this
     // method but it's faster to combine the hashes than to instantiate a full
     // hashing context and stable-hashing state.
-    fn to_fingerprint(&self, tcx: TyCtxt<'_, '_, '_>) -> Fingerprint {
+    fn to_fingerprint(&self, tcx: TyCtxt<'_>) -> Fingerprint {
         let (def_id_0, def_id_1) = *self;
 
         let def_path_hash_0 = tcx.def_path_hash(def_id_0);
@@ -552,7 +544,7 @@ impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for (DefId, De
         def_path_hash_0.0.combine(def_path_hash_1.0)
     }
 
-    fn to_debug_str(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>) -> String {
+    fn to_debug_str(&self, tcx: TyCtxt<'tcx>) -> String {
         let (def_id_0, def_id_1) = *self;
 
         format!("({}, {})",
@@ -561,13 +553,13 @@ impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for (DefId, De
     }
 }
 
-impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for HirId {
+impl<'tcx> DepNodeParams<'tcx> for HirId {
     const CAN_RECONSTRUCT_QUERY_KEY: bool = false;
 
     // We actually would not need to specialize the implementation of this
     // method but it's faster to combine the hashes than to instantiate a full
     // hashing context and stable-hashing state.
-    fn to_fingerprint(&self, tcx: TyCtxt<'_, '_, '_>) -> Fingerprint {
+    fn to_fingerprint(&self, tcx: TyCtxt<'_>) -> Fingerprint {
         let HirId {
             owner,
             local_id,
@@ -586,7 +578,7 @@ impl<'a, 'gcx: 'tcx + 'a, 'tcx: 'a> DepNodeParams<'a, 'gcx, 'tcx> for HirId {
 /// the need to be mapped or unmapped. (This ensures we can serialize
 /// them even in the absence of a tcx.)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash,
-         RustcEncodable, RustcDecodable)]
+         RustcEncodable, RustcDecodable, HashStable)]
 pub struct WorkProductId {
     hash: Fingerprint
 }
@@ -607,7 +599,3 @@ impl WorkProductId {
         }
     }
 }
-
-impl_stable_hash_for!(struct crate::dep_graph::WorkProductId {
-    hash
-});

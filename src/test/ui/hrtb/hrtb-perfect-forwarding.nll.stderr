@@ -11,7 +11,7 @@ LL | |     no_hrtb(&mut t);
 LL | | }
    | |_^ cannot return without recursing
    |
-   = note: #[warn(unconditional_recursion)] on by default
+   = note: `#[warn(unconditional_recursion)]` on by default
    = help: a `loop` may express intention better if this is on purpose
 
 warning: function cannot return without recursing
@@ -58,6 +58,8 @@ LL | fn foo_hrtb_bar_not<'b,T>(mut t: T)
 ...
 LL |     foo_hrtb_bar_not(&mut t);
    |     ^^^^^^^^^^^^^^^^^^^^^^^^ requires that `'b` must outlive `'static`
+   |
+   = help: consider replacing `'b` with `'static`
 
 warning: function cannot return without recursing
   --> $DIR/hrtb-perfect-forwarding.rs:49:1

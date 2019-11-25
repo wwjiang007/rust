@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 trait Tup {
     type T0;
     type T1;

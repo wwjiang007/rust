@@ -20,10 +20,14 @@ pub trait Step: Clone + PartialOrd + Sized {
     /// without overflow.
     fn steps_between(start: &Self, end: &Self) -> Option<usize>;
 
-    /// Replaces this step with `1`, returning itself.
+    /// Replaces this step with `1`, returning a clone of itself.
+    ///
+    /// The output of this method should always be greater than the output of replace_zero.
     fn replace_one(&mut self) -> Self;
 
-    /// Replaces this step with `0`, returning itself.
+    /// Replaces this step with `0`, returning a clone of itself.
+    ///
+    /// The output of this method should always be less than the output of replace_one.
     fn replace_zero(&mut self) -> Self;
 
     /// Adds one to this step, returning the result.
@@ -34,6 +38,13 @@ pub trait Step: Clone + PartialOrd + Sized {
 
     /// Adds a `usize`, returning `None` on overflow.
     fn add_usize(&self, n: usize) -> Option<Self>;
+
+    /// Subtracts a `usize`, returning `None` on underflow.
+    fn sub_usize(&self, n: usize) -> Option<Self> {
+        // this default implementation makes the addition of `sub_usize` a non-breaking change
+        let _ = n;
+        unimplemented!()
+    }
 }
 
 // These are still macro-generated because the integer literals resolve to different types.
@@ -85,6 +96,15 @@ macro_rules! step_impl_unsigned {
                 }
             }
 
+            #[inline]
+            #[allow(unreachable_patterns)]
+            fn sub_usize(&self, n: usize) -> Option<Self> {
+                match <$t>::try_from(n) {
+                    Ok(n_as_t) => self.checked_sub(n_as_t),
+                    Err(_) => None,
+                }
+            }
+
             step_identical_methods!();
         }
     )*)
@@ -119,6 +139,25 @@ macro_rules! step_impl_signed {
                             Some(wrapped)
                         } else {
                             None  // Addition overflowed
+                        }
+                    }
+                    Err(_) => None,
+                }
+            }
+
+            #[inline]
+            #[allow(unreachable_patterns)]
+            fn sub_usize(&self, n: usize) -> Option<Self> {
+                match <$unsigned>::try_from(n) {
+                    Ok(n_as_unsigned) => {
+                        // Wrapping in unsigned space handles cases like
+                        // `80_i8.sub_usize(200) == Some(-120_i8)`,
+                        // even though 200_usize is out of range for i8.
+                        let wrapped = (*self as $unsigned).wrapping_sub(n_as_unsigned) as $t;
+                        if wrapped <= *self {
+                            Some(wrapped)
+                        } else {
+                            None  // Subtraction underflowed
                         }
                     }
                     Err(_) => None,
@@ -245,6 +284,19 @@ impl<A: Step> DoubleEndedIterator for ops::Range<A> {
         } else {
             None
         }
+    }
+
+    #[inline]
+    fn nth_back(&mut self, n: usize) -> Option<A> {
+        if let Some(minus_n) = self.end.sub_usize(n) {
+            if minus_n > self.start {
+                self.end = minus_n.sub_one();
+                return Some(self.end.clone())
+            }
+        }
+
+        self.end = self.start.clone();
+        None
     }
 }
 
@@ -401,6 +453,34 @@ impl<A: Step> DoubleEndedIterator for ops::RangeInclusive<A> {
         } else {
             self.end.clone()
         })
+    }
+
+    #[inline]
+    fn nth_back(&mut self, n: usize) -> Option<A> {
+        self.compute_is_empty();
+        if self.is_empty.unwrap_or_default() {
+            return None;
+        }
+
+        if let Some(minus_n) = self.end.sub_usize(n) {
+            use crate::cmp::Ordering::*;
+
+            match minus_n.partial_cmp(&self.start) {
+                Some(Greater) => {
+                    self.is_empty = Some(false);
+                    self.end = minus_n.sub_one();
+                    return Some(minus_n);
+                }
+                Some(Equal) => {
+                    self.is_empty = Some(true);
+                    return Some(minus_n);
+                }
+                _ => {}
+            }
+        }
+
+        self.is_empty = Some(true);
+        None
     }
 
     #[inline]

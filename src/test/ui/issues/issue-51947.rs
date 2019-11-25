@@ -1,4 +1,4 @@
-// compile-pass
+// build-pass
 
 #![crate_type = "lib"]
 #![feature(linkage)]

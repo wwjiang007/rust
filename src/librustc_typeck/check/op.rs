@@ -5,20 +5,23 @@ use super::method::MethodCallee;
 use rustc::ty::{self, Ty, TypeFoldable};
 use rustc::ty::TyKind::{Ref, Adt, FnDef, Str, Uint, Never, Tuple, Char, Array};
 use rustc::ty::adjustment::{Adjustment, Adjust, AllowTwoPhase, AutoBorrow, AutoBorrowMutability};
-use rustc::infer::type_variable::TypeVariableOrigin;
+use rustc::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
 use errors::{self,Applicability};
 use syntax_pos::Span;
 use syntax::ast::Ident;
 use rustc::hir;
 
-impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
+use rustc_error_codes::*;
+
+impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     /// Checks a `a <op>= b`
-    pub fn check_binop_assign(&self,
-                              expr: &'gcx hir::Expr,
-                              op: hir::BinOp,
-                              lhs_expr: &'gcx hir::Expr,
-                              rhs_expr: &'gcx hir::Expr) -> Ty<'tcx>
-    {
+    pub fn check_binop_assign(
+        &self,
+        expr: &'tcx hir::Expr,
+        op: hir::BinOp,
+        lhs_expr: &'tcx hir::Expr,
+        rhs_expr: &'tcx hir::Expr,
+    ) -> Ty<'tcx> {
         let (lhs_ty, rhs_ty, return_ty) =
             self.check_overloaded_binop(expr, lhs_expr, rhs_expr, op, IsAssign::Yes);
 
@@ -30,7 +33,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             return_ty
         };
 
-        if !lhs_expr.is_place_expr() {
+        if !lhs_expr.is_syntactic_place_expr() {
             struct_span_err!(
                 self.tcx.sess, lhs_expr.span,
                 E0067, "invalid left-hand side expression")
@@ -43,12 +46,13 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     }
 
     /// Checks a potentially overloaded binary operator.
-    pub fn check_binop(&self,
-                       expr: &'gcx hir::Expr,
-                       op: hir::BinOp,
-                       lhs_expr: &'gcx hir::Expr,
-                       rhs_expr: &'gcx hir::Expr) -> Ty<'tcx>
-    {
+    pub fn check_binop(
+        &self,
+        expr: &'tcx hir::Expr,
+        op: hir::BinOp,
+        lhs_expr: &'tcx hir::Expr,
+        rhs_expr: &'tcx hir::Expr,
+    ) -> Ty<'tcx> {
         let tcx = self.tcx;
 
         debug!("check_binop(expr.hir_id={}, expr={:?}, op={:?}, lhs_expr={:?}, rhs_expr={:?})",
@@ -104,14 +108,14 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         }
     }
 
-    fn enforce_builtin_binop_types(&self,
-                                   lhs_expr: &'gcx hir::Expr,
-                                   lhs_ty: Ty<'tcx>,
-                                   rhs_expr: &'gcx hir::Expr,
-                                   rhs_ty: Ty<'tcx>,
-                                   op: hir::BinOp)
-                                   -> Ty<'tcx>
-    {
+    fn enforce_builtin_binop_types(
+        &self,
+        lhs_expr: &'tcx hir::Expr,
+        lhs_ty: Ty<'tcx>,
+        rhs_expr: &'tcx hir::Expr,
+        rhs_ty: Ty<'tcx>,
+        op: hir::BinOp,
+    ) -> Ty<'tcx> {
         debug_assert!(is_builtin_binop(lhs_ty, rhs_ty, op));
 
         let tcx = self.tcx;
@@ -142,14 +146,14 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         }
     }
 
-    fn check_overloaded_binop(&self,
-                              expr: &'gcx hir::Expr,
-                              lhs_expr: &'gcx hir::Expr,
-                              rhs_expr: &'gcx hir::Expr,
-                              op: hir::BinOp,
-                              is_assign: IsAssign)
-                              -> (Ty<'tcx>, Ty<'tcx>, Ty<'tcx>)
-    {
+    fn check_overloaded_binop(
+        &self,
+        expr: &'tcx hir::Expr,
+        lhs_expr: &'tcx hir::Expr,
+        rhs_expr: &'tcx hir::Expr,
+        op: hir::BinOp,
+        is_assign: IsAssign,
+    ) -> (Ty<'tcx>, Ty<'tcx>, Ty<'tcx>) {
         debug!("check_overloaded_binop(expr.hir_id={}, op={:?}, is_assign={:?})",
                expr.hir_id,
                op,
@@ -163,7 +167,10 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 // e.g., adding `&'a T` and `&'b T`, given `&'x T: Add<&'x T>`, will result
                 // in `&'a T <: &'x T` and `&'b T <: &'x T`, instead of `'a = 'b = 'x`.
                 let lhs_ty = self.check_expr_with_needs(lhs_expr, Needs::None);
-                let fresh_var = self.next_ty_var(TypeVariableOrigin::MiscVariable(lhs_expr.span));
+                let fresh_var = self.next_ty_var(TypeVariableOrigin {
+                    kind: TypeVariableOriginKind::MiscVariable,
+                    span: lhs_expr.span,
+                });
                 self.demand_coerce(lhs_expr, lhs_ty, fresh_var,  AllowTwoPhase::No)
             }
             IsAssign::Yes => {
@@ -174,7 +181,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 self.check_expr_with_needs(lhs_expr, Needs::MutPlace)
             }
         };
-        let lhs_ty = self.resolve_type_vars_with_obligations(lhs_ty);
+        let lhs_ty = self.resolve_vars_with_obligations(lhs_ty);
 
         // N.B., as we have not yet type-checked the RHS, we don't have the
         // type at hand. Make a variable to represent it. The whole reason
@@ -182,22 +189,25 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         // using this variable as the expected type, which sometimes lets
         // us do better coercions than we would be able to do otherwise,
         // particularly for things like `String + &String`.
-        let rhs_ty_var = self.next_ty_var(TypeVariableOrigin::MiscVariable(rhs_expr.span));
+        let rhs_ty_var = self.next_ty_var(TypeVariableOrigin {
+            kind: TypeVariableOriginKind::MiscVariable,
+            span: rhs_expr.span,
+        });
 
         let result = self.lookup_op_method(lhs_ty, &[rhs_ty_var], Op::Binary(op, is_assign));
 
         // see `NB` above
         let rhs_ty = self.check_expr_coercable_to_type(rhs_expr, rhs_ty_var);
-        let rhs_ty = self.resolve_type_vars_with_obligations(rhs_ty);
+        let rhs_ty = self.resolve_vars_with_obligations(rhs_ty);
 
         let return_ty = match result {
             Ok(method) => {
                 let by_ref_binop = !op.node.is_by_value();
                 if is_assign == IsAssign::Yes || by_ref_binop {
-                    if let ty::Ref(region, _, mutbl) = method.sig.inputs()[0].sty {
+                    if let ty::Ref(region, _, mutbl) = method.sig.inputs()[0].kind {
                         let mutbl = match mutbl {
-                            hir::MutImmutable => AutoBorrowMutability::Immutable,
-                            hir::MutMutable => AutoBorrowMutability::Mutable {
+                            hir::Mutability::Immutable => AutoBorrowMutability::Immutable,
+                            hir::Mutability::Mutable => AutoBorrowMutability::Mutable {
                                 // Allow two-phase borrows for binops in initial deployment
                                 // since they desugar to methods
                                 allow_two_phase_borrow: AllowTwoPhase::Yes,
@@ -211,10 +221,10 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                     }
                 }
                 if by_ref_binop {
-                    if let ty::Ref(region, _, mutbl) = method.sig.inputs()[1].sty {
+                    if let ty::Ref(region, _, mutbl) = method.sig.inputs()[1].kind {
                         let mutbl = match mutbl {
-                            hir::MutImmutable => AutoBorrowMutability::Immutable,
-                            hir::MutMutable => AutoBorrowMutability::Mutable {
+                            hir::Mutability::Immutable => AutoBorrowMutability::Immutable,
+                            hir::Mutability::Mutable => AutoBorrowMutability::Mutable {
                                 // Allow two-phase borrows for binops in initial deployment
                                 // since they desugar to methods
                                 allow_two_phase_borrow: AllowTwoPhase::Yes,
@@ -260,7 +270,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                 op.node.as_str(), lhs_ty),
                             );
                             let mut suggested_deref = false;
-                            if let Ref(_, mut rty, _) = lhs_ty.sty {
+                            if let Ref(_, rty, _) = lhs_ty.kind {
                                 if {
                                     self.infcx.type_is_copy_modulo_regions(self.param_env,
                                                                            rty,
@@ -271,13 +281,10 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                             .is_ok()
                                 } {
                                     if let Ok(lstring) = source_map.span_to_snippet(lhs_expr.span) {
-                                        while let Ref(_, rty_inner, _) = rty.sty {
-                                            rty = rty_inner;
-                                        }
                                         let msg = &format!(
                                             "`{}=` can be used on '{}', you can dereference `{}`",
                                             op.node.as_str(),
-                                            rty,
+                                            rty.peel_refs(),
                                             lstring,
                                         );
                                         err.span_suggestion(
@@ -310,7 +317,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                     // This has nothing here because it means we did string
                                     // concatenation (e.g., "Hello " += "World!"). This means
                                     // we don't want the note in the else clause to be emitted
-                                } else if let ty::Param(_) = lhs_ty.sty {
+                                } else if let ty::Param(_) = lhs_ty.kind {
                                     // FIXME: point to span of param
                                     err.note(&format!(
                                         "`{}` might need a bound for `{}`",
@@ -353,7 +360,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                             }
 
                             let mut suggested_deref = false;
-                            if let Ref(_, mut rty, _) = lhs_ty.sty {
+                            if let Ref(_, rty, _) = lhs_ty.kind {
                                 if {
                                     self.infcx.type_is_copy_modulo_regions(self.param_env,
                                                                            rty,
@@ -364,17 +371,13 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                             .is_ok()
                                 } {
                                     if let Ok(lstring) = source_map.span_to_snippet(lhs_expr.span) {
-                                        while let Ref(_, rty_inner, _) = rty.sty {
-                                            rty = rty_inner;
-                                        }
-                                        let msg = &format!(
-                                                "`{}` can be used on '{}', you can \
-                                                dereference `{2}`: `*{2}`",
-                                                op.node.as_str(),
-                                                rty,
-                                                lstring
-                                        );
-                                        err.help(msg);
+                                        err.help(&format!(
+                                            "`{}` can be used on '{}', you can \
+                                            dereference `{2}`: `*{2}`",
+                                            op.node.as_str(),
+                                            rty.peel_refs(),
+                                            lstring
+                                        ));
                                         suggested_deref = true;
                                     }
                                 }
@@ -405,7 +408,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                                     // This has nothing here because it means we did string
                                     // concatenation (e.g., "Hello " + "World!"). This means
                                     // we don't want the note in the else clause to be emitted
-                                } else if let ty::Param(_) = lhs_ty.sty {
+                                } else if let ty::Param(_) = lhs_ty.kind {
                                     // FIXME: point to span of param
                                     err.note(&format!(
                                         "`{}` might need a bound for `{}`",
@@ -442,7 +445,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         is_assign: IsAssign,
     ) -> bool /* did we suggest to call a function because of missing parenthesis? */ {
         err.span_label(span, ty.to_string());
-        if let FnDef(def_id, _) = ty.sty {
+        if let FnDef(def_id, _) = ty.kind {
             let source_map = self.tcx.sess.source_map();
             let hir_id = match self.tcx.hir().as_local_hir_id(def_id) {
                 Some(hir_id) => hir_id,
@@ -460,7 +463,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 }
             };
 
-            let other_ty = if let FnDef(def_id, _) = other_ty.sty {
+            let other_ty = if let FnDef(def_id, _) = other_ty.kind {
                 let hir_id = match self.tcx.hir().as_local_hir_id(def_id) {
                     Some(hir_id) => hir_id,
                     None => return false,
@@ -509,8 +512,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     /// to print the normal "implementation of `std::ops::Add` might be missing" note
     fn check_str_addition(
         &self,
-        lhs_expr: &'gcx hir::Expr,
-        rhs_expr: &'gcx hir::Expr,
+        lhs_expr: &'tcx hir::Expr,
+        rhs_expr: &'tcx hir::Expr,
         lhs_ty: Ty<'tcx>,
         rhs_ty: Ty<'tcx>,
         err: &mut errors::DiagnosticBuilder<'_>,
@@ -530,10 +533,10 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
 
         let is_std_string = |ty| &format!("{:?}", ty) == "std::string::String";
 
-        match (&lhs_ty.sty, &rhs_ty.sty) {
+        match (&lhs_ty.kind, &rhs_ty.kind) {
             (&Ref(_, l_ty, _), &Ref(_, r_ty, _)) // &str or &String + &str, &String or &&str
-                if (l_ty.sty == Str || is_std_string(l_ty)) && (
-                        r_ty.sty == Str || is_std_string(r_ty) ||
+                if (l_ty.kind == Str || is_std_string(l_ty)) && (
+                        r_ty.kind == Str || is_std_string(r_ty) ||
                         &format!("{:?}", rhs_ty) == "&&str"
                     ) =>
             {
@@ -567,7 +570,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 true
             }
             (&Ref(_, l_ty, _), &Adt(..)) // Handle `&str` & `&String` + `String`
-                if (l_ty.sty == Str || is_std_string(l_ty)) && is_std_string(rhs_ty) =>
+                if (l_ty.kind == Str || is_std_string(l_ty)) && is_std_string(rhs_ty) =>
             {
                 err.span_label(
                     op.span,
@@ -605,12 +608,12 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         }
     }
 
-    pub fn check_user_unop(&self,
-                           ex: &'gcx hir::Expr,
-                           operand_ty: Ty<'tcx>,
-                           op: hir::UnOp)
-                           -> Ty<'tcx>
-    {
+    pub fn check_user_unop(
+        &self,
+        ex: &'tcx hir::Expr,
+        operand_ty: Ty<'tcx>,
+        op: hir::UnOp,
+    ) -> Ty<'tcx> {
         assert!(op.is_by_value());
         match self.lookup_op_method(operand_ty, &[], Op::Unary(op, ex.span)) {
             Ok(method) => {
@@ -618,19 +621,19 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 method.sig.output()
             }
             Err(()) => {
-                let actual = self.resolve_type_vars_if_possible(&operand_ty);
+                let actual = self.resolve_vars_if_possible(&operand_ty);
                 if !actual.references_error() {
                     let mut err = struct_span_err!(self.tcx.sess, ex.span, E0600,
                                      "cannot apply unary operator `{}` to type `{}`",
                                      op.as_str(), actual);
                     err.span_label(ex.span, format!("cannot apply unary \
                                                     operator `{}`", op.as_str()));
-                    match actual.sty {
+                    match actual.kind {
                         Uint(_) if op == hir::UnNeg => {
                             err.note("unsigned values cannot be negated");
                         },
                         Str | Never | Char | Tuple(_) | Array(_,_) => {},
-                        Ref(_, ref lty, _) if lty.sty == Str => {},
+                        Ref(_, ref lty, _) if lty.kind == Str => {},
                         _ => {
                             let missing_trait = match op {
                                 hir::UnNeg => "std::ops::Neg",
@@ -723,7 +726,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         match method {
             Some(ok) => {
                 let method = self.register_infer_ok_obligations(ok);
-                self.select_obligations_where_possible(false);
+                self.select_obligations_where_possible(false, |_| {});
 
                 Ok(method)
             }

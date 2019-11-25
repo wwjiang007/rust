@@ -31,21 +31,23 @@ pub struct DecodeUtf16Error {
 /// ```
 /// use std::char::decode_utf16;
 ///
-/// fn main() {
-///     // 𝄞mus<invalid>ic<invalid>
-///     let v = [0xD834, 0xDD1E, 0x006d, 0x0075,
-///              0x0073, 0xDD1E, 0x0069, 0x0063,
-///              0xD834];
+/// // 𝄞mus<invalid>ic<invalid>
+/// let v = [
+///     0xD834, 0xDD1E, 0x006d, 0x0075, 0x0073, 0xDD1E, 0x0069, 0x0063, 0xD834,
+/// ];
 ///
-///     assert_eq!(decode_utf16(v.iter().cloned())
-///                            .map(|r| r.map_err(|e| e.unpaired_surrogate()))
-///                            .collect::<Vec<_>>(),
-///                vec![Ok('𝄞'),
-///                     Ok('m'), Ok('u'), Ok('s'),
-///                     Err(0xDD1E),
-///                     Ok('i'), Ok('c'),
-///                     Err(0xD834)]);
-/// }
+/// assert_eq!(
+///     decode_utf16(v.iter().cloned())
+///         .map(|r| r.map_err(|e| e.unpaired_surrogate()))
+///         .collect::<Vec<_>>(),
+///     vec![
+///         Ok('𝄞'),
+///         Ok('m'), Ok('u'), Ok('s'),
+///         Err(0xDD1E),
+///         Ok('i'), Ok('c'),
+///         Err(0xD834)
+///     ]
+/// );
 /// ```
 ///
 /// A lossy decoder can be obtained by replacing `Err` results with the replacement character:
@@ -53,17 +55,17 @@ pub struct DecodeUtf16Error {
 /// ```
 /// use std::char::{decode_utf16, REPLACEMENT_CHARACTER};
 ///
-/// fn main() {
-///     // 𝄞mus<invalid>ic<invalid>
-///     let v = [0xD834, 0xDD1E, 0x006d, 0x0075,
-///              0x0073, 0xDD1E, 0x0069, 0x0063,
-///              0xD834];
+/// // 𝄞mus<invalid>ic<invalid>
+/// let v = [
+///     0xD834, 0xDD1E, 0x006d, 0x0075, 0x0073, 0xDD1E, 0x0069, 0x0063, 0xD834,
+/// ];
 ///
-///     assert_eq!(decode_utf16(v.iter().cloned())
-///                    .map(|r| r.unwrap_or(REPLACEMENT_CHARACTER))
-///                    .collect::<String>(),
-///                "𝄞mus�ic�");
-/// }
+/// assert_eq!(
+///     decode_utf16(v.iter().cloned())
+///        .map(|r| r.unwrap_or(REPLACEMENT_CHARACTER))
+///        .collect::<String>(),
+///     "𝄞mus�ic�"
+/// );
 /// ```
 #[stable(feature = "decode_utf16", since = "1.9.0")]
 #[inline]
@@ -85,7 +87,7 @@ impl<I: Iterator<Item = u16>> Iterator for DecodeUtf16<I> {
         };
 
         if u < 0xD800 || 0xDFFF < u {
-            // not a surrogate
+            // SAFETY: not a surrogate
             Some(Ok(unsafe { from_u32_unchecked(u as u32) }))
         } else if u >= 0xDC00 {
             // a trailing surrogate
@@ -105,6 +107,7 @@ impl<I: Iterator<Item = u16>> Iterator for DecodeUtf16<I> {
 
             // all ok, so lets decode it.
             let c = (((u - 0xD800) as u32) << 10 | (u2 - 0xDC00) as u32) + 0x1_0000;
+            // SAFETY: we checked that it's a legal unicode value
             Some(Ok(unsafe { from_u32_unchecked(c) }))
         }
     }

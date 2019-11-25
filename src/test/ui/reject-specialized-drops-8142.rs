@@ -28,8 +28,8 @@ impl<'ml>               Drop for M<'ml>         { fn drop(&mut self) { } } // AC
 
 impl                    Drop for N<'static>     { fn drop(&mut self) { } } // REJECT
 //~^ ERROR mismatched types
-//~| expected type `N<'n>`
-//~|    found type `N<'static>`
+//~| expected struct `N<'n>`
+//~|    found struct `N<'static>`
 
 impl<COkNoBound> Drop for O<COkNoBound> { fn drop(&mut self) { } } // ACCEPT
 
@@ -52,6 +52,6 @@ impl<One>         Drop for V<One,One>     { fn drop(&mut self) { } } // REJECT
 //~^ ERROR Implementations of Drop cannot be specialized
 
 impl<'lw>         Drop for W<'lw,'lw>     { fn drop(&mut self) { } } // REJECT
-//~^ ERROR cannot infer an appropriate lifetime
+//~^ ERROR cannot infer an appropriate lifetime for lifetime parameter `'lw`
 
 pub fn main() { }

@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 
 struct AtomicRefMut<'a> {
     value: &'a mut i32,

@@ -13,7 +13,7 @@ use crate::LlvmCodegenBackend;
 use rustc::hir::def_id::LOCAL_CRATE;
 use rustc_codegen_ssa::back::write::{CodegenContext, ModuleConfig, run_assembler};
 use rustc_codegen_ssa::traits::*;
-use rustc::session::config::{self, OutputType, Passes, Lto, PgoGenerate};
+use rustc::session::config::{self, OutputType, Passes, Lto, SwitchWithOptPath};
 use rustc::session::Session;
 use rustc::ty::TyCtxt;
 use rustc_codegen_ssa::{RLIB_BYTECODE_EXTENSION, ModuleCodegen, CompiledModule};
@@ -89,7 +89,7 @@ pub fn create_informational_target_machine(
 }
 
 pub fn create_target_machine(
-    tcx: TyCtxt<'_, '_, '_>,
+    tcx: TyCtxt<'_>,
     find_features: bool,
 ) -> &'static mut llvm::TargetMachine {
     target_machine_factory(&tcx.sess, tcx.backend_optimization_level(LOCAL_CRATE), find_features)()
@@ -161,6 +161,7 @@ pub fn target_machine_factory(sess: &Session, optlvl: config::OptLevel, find_fea
     let cpu = SmallCStr::new(llvm_util::target_cpu(sess));
     let features = features.join(",");
     let features = CString::new(features).unwrap();
+    let abi = SmallCStr::new(&sess.target.target.options.llvm_abiname);
     let is_pie_binary = !find_features && is_pie_binary(sess);
     let trap_unreachable = sess.target.target.options.trap_unreachable;
     let emit_stack_size_section = sess.opts.debugging_opts.emit_stack_sizes;
@@ -170,7 +171,7 @@ pub fn target_machine_factory(sess: &Session, optlvl: config::OptLevel, find_fea
     Arc::new(move || {
         let tm = unsafe {
             llvm::LLVMRustCreateTargetMachine(
-                triple.as_ptr(), cpu.as_ptr(), features.as_ptr(),
+                triple.as_ptr(), cpu.as_ptr(), features.as_ptr(), abi.as_ptr(),
                 code_model,
                 reloc_model,
                 opt_level,
@@ -221,8 +222,8 @@ impl<'a> DiagnosticHandlers<'a> {
                llcx: &'a llvm::Context) -> Self {
         let data = Box::into_raw(Box::new((cgcx, handler)));
         unsafe {
-            llvm::LLVMRustSetInlineAsmDiagnosticHandler(llcx, inline_asm_handler, data as *mut _);
-            llvm::LLVMContextSetDiagnosticHandler(llcx, diagnostic_handler, data as *mut _);
+            llvm::LLVMRustSetInlineAsmDiagnosticHandler(llcx, inline_asm_handler, data.cast());
+            llvm::LLVMContextSetDiagnosticHandler(llcx, diagnostic_handler, data.cast());
         }
         DiagnosticHandlers { data, llcx }
     }
@@ -239,9 +240,9 @@ impl<'a> Drop for DiagnosticHandlers<'a> {
     }
 }
 
-unsafe extern "C" fn report_inline_asm<'a, 'b>(cgcx: &'a CodegenContext<LlvmCodegenBackend>,
-                                               msg: &'b str,
-                                               cookie: c_uint) {
+unsafe extern "C" fn report_inline_asm(cgcx: &CodegenContext<LlvmCodegenBackend>,
+                                       msg: &str,
+                                       cookie: c_uint) {
     cgcx.diag_emitter.inline_asm_error(cookie as u32, msg.to_owned());
 }
 
@@ -306,6 +307,8 @@ pub(crate) unsafe fn optimize(cgcx: &CodegenContext<LlvmCodegenBackend>,
                    config: &ModuleConfig)
     -> Result<(), FatalError>
 {
+    let _timer = cgcx.prof.generic_activity("LLVM_module_optimize");
+
     let llmod = module.module_llvm.llmod();
     let llcx = &*module.module_llvm.llcx;
     let tm = &*module.module_llvm.tm;
@@ -329,33 +332,55 @@ pub(crate) unsafe fn optimize(cgcx: &CodegenContext<LlvmCodegenBackend>,
         let mpm = llvm::LLVMCreatePassManager();
 
         {
-            // If we're verifying or linting, add them to the function pass
-            // manager.
-            let addpass = |pass_name: &str| {
+            let find_pass = |pass_name: &str| {
                 let pass_name = SmallCStr::new(pass_name);
-                let pass = match llvm::LLVMRustFindAndCreatePass(pass_name.as_ptr()) {
-                    Some(pass) => pass,
-                    None => return false,
-                };
-                let pass_manager = match llvm::LLVMRustPassKind(pass) {
-                    llvm::PassKind::Function => &*fpm,
-                    llvm::PassKind::Module => &*mpm,
-                    llvm::PassKind::Other => {
-                        diag_handler.err("Encountered LLVM pass kind we can't handle");
-                        return true
-                    },
-                };
-                llvm::LLVMRustAddPass(pass_manager, pass);
-                true
+                llvm::LLVMRustFindAndCreatePass(pass_name.as_ptr())
             };
 
-            if config.verify_llvm_ir { assert!(addpass("verify")); }
+            if config.verify_llvm_ir {
+                // Verification should run as the very first pass.
+                llvm::LLVMRustAddPass(fpm, find_pass("verify").unwrap());
+            }
+
+            let mut extra_passes = Vec::new();
+            let mut have_name_anon_globals_pass = false;
+
+            for pass_name in &config.passes {
+                if pass_name == "lint" {
+                    // Linting should also be performed early, directly on the generated IR.
+                    llvm::LLVMRustAddPass(fpm, find_pass("lint").unwrap());
+                    continue;
+                }
+
+                if let Some(pass) = find_pass(pass_name) {
+                    extra_passes.push(pass);
+                } else {
+                    diag_handler.warn(&format!("unknown pass `{}`, ignoring", pass_name));
+                }
+
+                if pass_name == "name-anon-globals" {
+                    have_name_anon_globals_pass = true;
+                }
+            }
+
+            for pass_name in &cgcx.plugin_passes {
+                if let Some(pass) = find_pass(pass_name) {
+                    extra_passes.push(pass);
+                } else {
+                    diag_handler.err(&format!("a plugin asked for LLVM pass \
+                                               `{}` but LLVM does not \
+                                               recognize it", pass_name));
+                }
+
+                if pass_name == "name-anon-globals" {
+                    have_name_anon_globals_pass = true;
+                }
+            }
 
             // Some options cause LLVM bitcode to be emitted, which uses ThinLTOBuffers, so we need
             // to make sure we run LLVM's NameAnonGlobals pass when emitting bitcode; otherwise
             // we'll get errors in LLVM.
             let using_thin_buffers = config.bitcode_needed();
-            let mut have_name_anon_globals_pass = false;
             if !config.no_prepopulate_passes {
                 llvm::LLVMRustAddAnalysisPasses(tm, fpm, llmod);
                 llvm::LLVMRustAddAnalysisPasses(tm, mpm, llmod);
@@ -364,34 +389,22 @@ pub(crate) unsafe fn optimize(cgcx: &CodegenContext<LlvmCodegenBackend>,
                 let prepare_for_thin_lto = cgcx.lto == Lto::Thin || cgcx.lto == Lto::ThinLocal ||
                     (cgcx.lto != Lto::Fat && cgcx.opts.cg.linker_plugin_lto.enabled());
                 with_llvm_pmb(llmod, &config, opt_level, prepare_for_thin_lto, &mut |b| {
+                    llvm::LLVMRustAddLastExtensionPasses(
+                        b, extra_passes.as_ptr(), extra_passes.len() as size_t);
                     llvm::LLVMPassManagerBuilderPopulateFunctionPassManager(b, fpm);
                     llvm::LLVMPassManagerBuilderPopulateModulePassManager(b, mpm);
                 });
 
                 have_name_anon_globals_pass = have_name_anon_globals_pass || prepare_for_thin_lto;
                 if using_thin_buffers && !prepare_for_thin_lto {
-                    assert!(addpass("name-anon-globals"));
+                    llvm::LLVMRustAddPass(mpm, find_pass("name-anon-globals").unwrap());
                     have_name_anon_globals_pass = true;
                 }
-            }
-
-            for pass in &config.passes {
-                if !addpass(pass) {
-                    diag_handler.warn(&format!("unknown pass `{}`, ignoring", pass));
-                }
-                if pass == "name-anon-globals" {
-                    have_name_anon_globals_pass = true;
-                }
-            }
-
-            for pass in &cgcx.plugin_passes {
-                if !addpass(pass) {
-                    diag_handler.err(&format!("a plugin asked for LLVM pass \
-                                               `{}` but LLVM does not \
-                                               recognize it", pass));
-                }
-                if pass == "name-anon-globals" {
-                    have_name_anon_globals_pass = true;
+            } else {
+                // If we don't use the standard pipeline, directly populate the MPM
+                // with the extra passes.
+                for pass in extra_passes {
+                    llvm::LLVMRustAddPass(mpm, pass);
                 }
             }
 
@@ -413,18 +426,16 @@ pub(crate) unsafe fn optimize(cgcx: &CodegenContext<LlvmCodegenBackend>,
 
         // Finally, run the actual optimization passes
         {
-            let _timer = cgcx.profile_activity("LLVM_function_passes");
+            let _timer = cgcx.prof.generic_activity("LLVM_module_optimize_function_passes");
             time_ext(config.time_passes,
-                        None,
                         &format!("llvm function passes [{}]", module_name.unwrap()),
                         || {
                 llvm::LLVMRustRunFunctionPassManager(fpm, llmod)
             });
         }
         {
-            let _timer = cgcx.profile_activity("LLVM_module_passes");
+            let _timer = cgcx.prof.generic_activity("LLVM_module_optimize_module_passes");
             time_ext(config.time_passes,
-                    None,
                     &format!("llvm module passes [{}]", module_name.unwrap()),
                     || {
                 llvm::LLVMRunPassManager(mpm, llmod)
@@ -444,7 +455,7 @@ pub(crate) unsafe fn codegen(cgcx: &CodegenContext<LlvmCodegenBackend>,
                   config: &ModuleConfig)
     -> Result<CompiledModule, FatalError>
 {
-    let _timer = cgcx.profile_activity("codegen");
+    let _timer = cgcx.prof.generic_activity("LLVM_module_codegen");
     {
         let llmod = module.module_llvm.llmod();
         let llcx = &*module.module_llvm.llcx;
@@ -495,12 +506,12 @@ pub(crate) unsafe fn codegen(cgcx: &CodegenContext<LlvmCodegenBackend>,
 
 
         if write_bc || config.emit_bc_compressed || config.embed_bitcode {
-            let _timer = cgcx.profile_activity("LLVM_make_bitcode");
+            let _timer = cgcx.prof.generic_activity("LLVM_module_codegen_make_bitcode");
             let thin = ThinBuffer::new(llmod);
             let data = thin.data();
 
             if write_bc {
-                let _timer = cgcx.profile_activity("LLVM_emit_bitcode");
+                let _timer = cgcx.prof.generic_activity("LLVM_module_codegen_emit_bitcode");
                 if let Err(e) = fs::write(&bc_out, data) {
                     let msg = format!("failed to write bytecode to {}: {}", bc_out.display(), e);
                     diag_handler.err(&msg);
@@ -508,12 +519,13 @@ pub(crate) unsafe fn codegen(cgcx: &CodegenContext<LlvmCodegenBackend>,
             }
 
             if config.embed_bitcode {
-                let _timer = cgcx.profile_activity("LLVM_embed_bitcode");
+                let _timer = cgcx.prof.generic_activity("LLVM_module_codegen_embed_bitcode");
                 embed_bitcode(cgcx, llcx, llmod, Some(data));
             }
 
             if config.emit_bc_compressed {
-                let _timer = cgcx.profile_activity("LLVM_compress_bitcode");
+                let _timer =
+                    cgcx.prof.generic_activity("LLVM_module_codegen_emit_compressed_bitcode");
                 let dst = bc_out.with_extension(RLIB_BYTECODE_EXTENSION);
                 let data = bytecode::encode(&module.name, data);
                 if let Err(e) = fs::write(&dst, data) {
@@ -525,10 +537,10 @@ pub(crate) unsafe fn codegen(cgcx: &CodegenContext<LlvmCodegenBackend>,
             embed_bitcode(cgcx, llcx, llmod, None);
         }
 
-        time_ext(config.time_passes, None, &format!("codegen passes [{}]", module_name.unwrap()),
+        time_ext(config.time_passes, &format!("codegen passes [{}]", module_name.unwrap()),
             || -> Result<(), FatalError> {
             if config.emit_ir {
-                let _timer = cgcx.profile_activity("LLVM_emit_ir");
+                let _timer = cgcx.prof.generic_activity("LLVM_module_codegen_emit_ir");
                 let out = cgcx.output_filenames.temp_path(OutputType::LlvmAssembly, module_name);
                 let out_c = path_to_c_string(&out);
 
@@ -575,7 +587,7 @@ pub(crate) unsafe fn codegen(cgcx: &CodegenContext<LlvmCodegenBackend>,
             }
 
             if config.emit_asm || asm_to_obj {
-                let _timer = cgcx.profile_activity("LLVM_emit_asm");
+                let _timer = cgcx.prof.generic_activity("LLVM_module_codegen_emit_asm");
                 let path = cgcx.output_filenames.temp_path(OutputType::Assembly, module_name);
 
                 // We can't use the same module for asm and binary output, because that triggers
@@ -593,13 +605,13 @@ pub(crate) unsafe fn codegen(cgcx: &CodegenContext<LlvmCodegenBackend>,
             }
 
             if write_obj {
-                let _timer = cgcx.profile_activity("LLVM_emit_obj");
+                let _timer = cgcx.prof.generic_activity("LLVM_module_codegen_emit_obj");
                 with_codegen(tm, llmod, config.no_builtins, |cpm| {
                     write_output_file(diag_handler, tm, cpm, llmod, &obj_out,
                                       llvm::FileType::ObjectFile)
                 })?;
             } else if asm_to_obj {
-                let _timer = cgcx.profile_activity("LLVM_asm_to_obj");
+                let _timer = cgcx.prof.generic_activity("LLVM_module_codegen_asm_to_obj");
                 let assembly = cgcx.output_filenames.temp_path(OutputType::Assembly, module_name);
                 run_assembler(cgcx, diag_handler, &assembly, &obj_out);
 
@@ -659,7 +671,7 @@ unsafe fn embed_bitcode(cgcx: &CodegenContext<LlvmCodegenBackend>,
     let llglobal = llvm::LLVMAddGlobal(
         llmod,
         common::val_ty(llconst),
-        "rustc.embedded.module\0".as_ptr() as *const _,
+        "rustc.embedded.module\0".as_ptr().cast(),
     );
     llvm::LLVMSetInitializer(llglobal, llconst);
 
@@ -671,7 +683,7 @@ unsafe fn embed_bitcode(cgcx: &CodegenContext<LlvmCodegenBackend>,
     } else {
         ".llvmbc\0"
     };
-    llvm::LLVMSetSection(llglobal, section.as_ptr() as *const _);
+    llvm::LLVMSetSection(llglobal, section.as_ptr().cast());
     llvm::LLVMRustSetLinkage(llglobal, llvm::Linkage::PrivateLinkage);
     llvm::LLVMSetGlobalConstant(llglobal, llvm::True);
 
@@ -679,7 +691,7 @@ unsafe fn embed_bitcode(cgcx: &CodegenContext<LlvmCodegenBackend>,
     let llglobal = llvm::LLVMAddGlobal(
         llmod,
         common::val_ty(llconst),
-        "rustc.embedded.cmdline\0".as_ptr() as *const _,
+        "rustc.embedded.cmdline\0".as_ptr().cast(),
     );
     llvm::LLVMSetInitializer(llglobal, llconst);
     let section = if  is_apple {
@@ -687,7 +699,7 @@ unsafe fn embed_bitcode(cgcx: &CodegenContext<LlvmCodegenBackend>,
     } else {
         ".llvmcmd\0"
     };
-    llvm::LLVMSetSection(llglobal, section.as_ptr() as *const _);
+    llvm::LLVMSetSection(llglobal, section.as_ptr().cast());
     llvm::LLVMRustSetLinkage(llglobal, llvm::Linkage::PrivateLinkage);
 }
 
@@ -707,7 +719,7 @@ pub unsafe fn with_llvm_pmb(llmod: &llvm::Module,
     let inline_threshold = config.inline_threshold;
 
     let pgo_gen_path = match config.pgo_gen {
-        PgoGenerate::Enabled(ref opt_dir_path) => {
+        SwitchWithOptPath::Enabled(ref opt_dir_path) => {
             let path = if let Some(dir_path) = opt_dir_path {
                 dir_path.join("default_%m.profraw")
             } else {
@@ -716,16 +728,14 @@ pub unsafe fn with_llvm_pmb(llmod: &llvm::Module,
 
             Some(CString::new(format!("{}", path.display())).unwrap())
         }
-        PgoGenerate::Disabled => {
+        SwitchWithOptPath::Disabled => {
             None
         }
     };
 
-    let pgo_use_path = if config.pgo_use.is_empty() {
-        None
-    } else {
-        Some(CString::new(config.pgo_use.as_bytes()).unwrap())
-    };
+    let pgo_use_path = config.pgo_use.as_ref().map(|path_buf| {
+        CString::new(path_buf.to_string_lossy().as_bytes()).unwrap()
+    });
 
     llvm::LLVMRustConfigurePassManagerBuilder(
         builder,
@@ -795,10 +805,10 @@ fn create_msvc_imps(
         return
     }
     // The x86 ABI seems to require that leading underscores are added to symbol
-    // names, so we need an extra underscore on 32-bit. There's also a leading
+    // names, so we need an extra underscore on x86. There's also a leading
     // '\x01' here which disables LLVM's symbol mangling (e.g., no extra
     // underscores added in front).
-    let prefix = if cgcx.target_pointer_width == "32" {
+    let prefix = if cgcx.target_arch == "x86" {
         "\x01__imp__"
     } else {
         "\x01__imp_"
@@ -831,7 +841,7 @@ fn create_msvc_imps(
         for (imp_name, val) in globals {
             let imp = llvm::LLVMAddGlobal(llmod,
                                           i8p_ty,
-                                          imp_name.as_ptr() as *const _);
+                                          imp_name.as_ptr().cast());
             llvm::LLVMSetInitializer(imp, consts::ptrcast(val, i8p_ty));
             llvm::LLVMRustSetLinkage(imp, llvm::Linkage::ExternalLinkage);
         }

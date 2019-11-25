@@ -71,22 +71,7 @@ impl FileDesc {
         #[cfg(target_os = "android")]
         use super::android::cvt_pread64;
 
-        #[cfg(target_os = "emscripten")]
-        unsafe fn cvt_pread64(fd: c_int, buf: *mut c_void, count: usize, offset: i64)
-            -> io::Result<isize>
-        {
-            use crate::convert::TryInto;
-            use libc::pread64;
-            // pread64 on emscripten actually takes a 32 bit offset
-            if let Ok(o) = offset.try_into() {
-                cvt(pread64(fd, buf, count, o))
-            } else {
-                Err(io::Error::new(io::ErrorKind::InvalidInput,
-                                   "cannot pread >2GB"))
-            }
-        }
-
-        #[cfg(not(any(target_os = "android", target_os = "emscripten")))]
+        #[cfg(not(target_os = "android"))]
         unsafe fn cvt_pread64(fd: c_int, buf: *mut c_void, count: usize, offset: i64)
             -> io::Result<isize>
         {
@@ -128,22 +113,7 @@ impl FileDesc {
         #[cfg(target_os = "android")]
         use super::android::cvt_pwrite64;
 
-        #[cfg(target_os = "emscripten")]
-        unsafe fn cvt_pwrite64(fd: c_int, buf: *const c_void, count: usize, offset: i64)
-            -> io::Result<isize>
-        {
-            use crate::convert::TryInto;
-            use libc::pwrite64;
-            // pwrite64 on emscripten actually takes a 32 bit offset
-            if let Ok(o) = offset.try_into() {
-                cvt(pwrite64(fd, buf, count, o))
-            } else {
-                Err(io::Error::new(io::ErrorKind::InvalidInput,
-                                   "cannot pwrite >2GB"))
-            }
-        }
-
-        #[cfg(not(any(target_os = "android", target_os = "emscripten")))]
+        #[cfg(not(target_os = "android"))]
         unsafe fn cvt_pwrite64(fd: c_int, buf: *const c_void, count: usize, offset: i64)
             -> io::Result<isize>
         {
@@ -175,7 +145,9 @@ impl FileDesc {
                   target_os = "emscripten",
                   target_os = "fuchsia",
                   target_os = "l4re",
-                  target_os = "haiku")))]
+                  target_os = "linux",
+                  target_os = "haiku",
+                  target_os = "redox")))]
     pub fn set_cloexec(&self) -> io::Result<()> {
         unsafe {
             cvt(libc::ioctl(self.fd, libc::FIOCLEX))?;
@@ -187,7 +159,9 @@ impl FileDesc {
               target_os = "emscripten",
               target_os = "fuchsia",
               target_os = "l4re",
-              target_os = "haiku"))]
+              target_os = "linux",
+              target_os = "haiku",
+              target_os = "redox"))]
     pub fn set_cloexec(&self) -> io::Result<()> {
         unsafe {
             let previous = cvt(libc::fcntl(self.fd, libc::F_GETFD))?;

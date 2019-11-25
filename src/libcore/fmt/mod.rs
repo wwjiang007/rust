@@ -1,5 +1,7 @@
 //! Utilities for formatting and printing strings.
 
+// ignore-tidy-undocumented-unsafe
+
 #![stable(feature = "rust1", since = "1.0.0")]
 
 use crate::cell::{UnsafeCell, Cell, RefCell, Ref, RefMut};
@@ -108,10 +110,10 @@ pub struct Error;
 /// [`io::Write`]: ../../std/io/trait.Write.html
 #[stable(feature = "rust1", since = "1.0.0")]
 pub trait Write {
-    /// Writes a slice of bytes into this writer, returning whether the write
+    /// Writes a string slice into this writer, returning whether the write
     /// succeeded.
     ///
-    /// This method can only succeed if the entire byte slice was successfully
+    /// This method can only succeed if the entire string slice was successfully
     /// written, and this method will not return until all data has been
     /// written or an error occurs.
     ///
@@ -518,7 +520,7 @@ impl Display for Arguments<'_> {
     label="`{Self}` cannot be formatted using `{{:?}}` because it doesn't implement `{Debug}`",
 )]
 #[doc(alias = "{:?}")]
-#[lang = "debug_trait"]
+#[rustc_diagnostic_item = "debug_trait"]
 pub trait Debug {
     /// Formats the value using the given formatter.
     ///
@@ -544,6 +546,18 @@ pub trait Debug {
     #[stable(feature = "rust1", since = "1.0.0")]
     fn fmt(&self, f: &mut Formatter<'_>) -> Result;
 }
+
+// Separate module to reexport the macro `Debug` from prelude without the trait `Debug`.
+pub(crate) mod macros {
+    /// Derive macro generating an impl of the trait `Debug`.
+    #[rustc_builtin_macro]
+    #[stable(feature = "builtin_macro_prelude", since = "1.38.0")]
+    #[allow_internal_unstable(core_intrinsics)]
+    pub macro Debug($item:item) { /* compiler built-in */ }
+}
+#[stable(feature = "builtin_macro_prelude", since = "1.38.0")]
+#[doc(inline)]
+pub use macros::Debug;
 
 /// Format trait for an empty format, `{}`.
 ///
@@ -886,7 +900,7 @@ pub trait Pointer {
 ///
 /// # Examples
 ///
-/// Basic usage with `i32`:
+/// Basic usage with `f64`:
 ///
 /// ```
 /// let x = 42.0; // 42.0 is '4.2e1' in scientific notation
@@ -929,7 +943,7 @@ pub trait LowerExp {
 ///
 /// # Examples
 ///
-/// Basic usage with `f32`:
+/// Basic usage with `f64`:
 ///
 /// ```
 /// let x = 42.0; // 42.0 is '4.2E1' in scientific notation
@@ -1520,12 +1534,10 @@ impl<'a> Formatter<'a> {
     ///     }
     /// }
     ///
-    /// fn main() {
-    ///     assert_eq!(&format!("{:<}", Foo), "left");
-    ///     assert_eq!(&format!("{:>}", Foo), "right");
-    ///     assert_eq!(&format!("{:^}", Foo), "center");
-    ///     assert_eq!(&format!("{}", Foo), "into the void");
-    /// }
+    /// assert_eq!(&format!("{:<}", Foo), "left");
+    /// assert_eq!(&format!("{:>}", Foo), "right");
+    /// assert_eq!(&format!("{:^}", Foo), "center");
+    /// assert_eq!(&format!("{}", Foo), "into the void");
     /// ```
     #[stable(feature = "fmt_flags_align", since = "1.28.0")]
     pub fn align(&self) -> Option<Alignment> {
@@ -1923,14 +1935,14 @@ macro_rules! fmt_refs {
 
 fmt_refs! { Debug, Display, Octal, Binary, LowerHex, UpperHex, LowerExp, UpperExp }
 
-#[unstable(feature = "never_type", issue = "35121")]
+#[stable(feature = "never_type", since = "1.41.0")]
 impl Debug for ! {
     fn fmt(&self, _: &mut Formatter<'_>) -> Result {
         *self
     }
 }
 
-#[unstable(feature = "never_type", issue = "35121")]
+#[stable(feature = "never_type", since = "1.41.0")]
 impl Display for ! {
     fn fmt(&self, _: &mut Formatter<'_>) -> Result {
         *self
@@ -2015,7 +2027,7 @@ impl<T: ?Sized> Pointer for *const T {
         if f.alternate() {
             f.flags |= 1 << (FlagV1::SignAwareZeroPad as u32);
 
-            if let None = f.width {
+            if f.width.is_none() {
                 f.width = Some(((mem::size_of::<usize>() * 8) / 4) + 2);
             }
         }
@@ -2070,19 +2082,19 @@ macro_rules! tuple {
     () => ();
     ( $($name:ident,)+ ) => (
         #[stable(feature = "rust1", since = "1.0.0")]
-        impl<$($name:Debug),*> Debug for ($($name,)*) where last_type!($($name,)+): ?Sized {
+        impl<$($name:Debug),+> Debug for ($($name,)+) where last_type!($($name,)+): ?Sized {
             #[allow(non_snake_case, unused_assignments)]
             fn fmt(&self, f: &mut Formatter<'_>) -> Result {
                 let mut builder = f.debug_tuple("");
-                let ($(ref $name,)*) = *self;
+                let ($(ref $name,)+) = *self;
                 $(
                     builder.field(&$name);
-                )*
+                )+
 
                 builder.finish()
             }
         }
-        peel! { $($name,)* }
+        peel! { $($name,)+ }
     )
 }
 
@@ -2172,5 +2184,5 @@ impl<T: ?Sized + Debug> Debug for UnsafeCell<T> {
     }
 }
 
-// If you expected tests to be here, look instead at the run-pass/ifmt.rs test,
+// If you expected tests to be here, look instead at the ui/ifmt.rs test,
 // it's a lot easier than creating all of the rt::Piece structures here.

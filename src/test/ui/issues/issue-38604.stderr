@@ -1,8 +1,8 @@
 error[E0038]: the trait `Foo` cannot be made into an object
   --> $DIR/issue-38604.rs:14:13
    |
-LL |     let _f: Box<Foo> =
-   |             ^^^^^^^^ the trait `Foo` cannot be made into an object
+LL |     let _f: Box<dyn Foo> =
+   |             ^^^^^^^^^^^^ the trait `Foo` cannot be made into an object
    |
    = note: the trait cannot use `Self` as a type parameter in the supertraits or where-clauses
 
@@ -14,6 +14,7 @@ LL |         Box::new(());
    |
    = note: the trait cannot use `Self` as a type parameter in the supertraits or where-clauses
    = note: required because of the requirements on the impl of `std::ops::CoerceUnsized<std::boxed::Box<dyn Foo>>` for `std::boxed::Box<()>`
+   = note: required by cast to type `std::boxed::Box<dyn Foo>`
 
 error: aborting due to 2 previous errors
 

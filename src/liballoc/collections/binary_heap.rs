@@ -146,7 +146,7 @@
 #![stable(feature = "rust1", since = "1.0.0")]
 
 use core::ops::{Deref, DerefMut};
-use core::iter::{FromIterator, FusedIterator};
+use core::iter::{FromIterator, FusedIterator, TrustedLen};
 use core::mem::{swap, size_of, ManuallyDrop};
 use core::ptr;
 use core::fmt;
@@ -231,6 +231,20 @@ use super::SpecExtend;
 /// assert_eq!(heap.pop(), Some(Reverse(5)));
 /// assert_eq!(heap.pop(), None);
 /// ```
+///
+/// # Time complexity
+///
+/// | [push] | [pop]    | [peek]/[peek\_mut] |
+/// |--------|----------|--------------------|
+/// | O(1)~  | O(log n) | O(1)               |
+///
+/// The value for `push` is an expected cost; the method documentation gives a
+/// more detailed analysis.
+///
+/// [push]: #method.push
+/// [pop]: #method.pop
+/// [peek]: #method.peek
+/// [peek\_mut]: #method.peek_mut
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct BinaryHeap<T> {
     data: Vec<T>,
@@ -384,6 +398,10 @@ impl<T: Ord> BinaryHeap<T> {
     /// }
     /// assert_eq!(heap.peek(), Some(&2));
     /// ```
+    ///
+    /// # Time complexity
+    ///
+    /// Cost is O(1) in the worst case.
     #[stable(feature = "binary_heap_peek_mut", since = "1.12.0")]
     pub fn peek_mut(&mut self) -> Option<PeekMut<'_, T>> {
         if self.is_empty() {
@@ -411,6 +429,11 @@ impl<T: Ord> BinaryHeap<T> {
     /// assert_eq!(heap.pop(), Some(1));
     /// assert_eq!(heap.pop(), None);
     /// ```
+    ///
+    /// # Time complexity
+    ///
+    /// The worst case cost of `pop` on a heap containing *n* elements is O(log
+    /// n).
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn pop(&mut self) -> Option<T> {
         self.data.pop().map(|mut item| {
@@ -438,6 +461,22 @@ impl<T: Ord> BinaryHeap<T> {
     /// assert_eq!(heap.len(), 3);
     /// assert_eq!(heap.peek(), Some(&5));
     /// ```
+    ///
+    /// # Time complexity
+    ///
+    /// The expected cost of `push`, averaged over every possible ordering of
+    /// the elements being pushed, and over a sufficiently large number of
+    /// pushes, is O(1). This is the most meaningful cost metric when pushing
+    /// elements that are *not* already in any sorted pattern.
+    ///
+    /// The time complexity degrades if elements are pushed in predominantly
+    /// ascending order. In the worst case, elements are pushed in ascending
+    /// sorted order and the amortized cost per push is O(log n) against a heap
+    /// containing *n* elements.
+    ///
+    /// The worst case cost of a *single* call to `push` is O(n). The worst case
+    /// occurs when capacity is exhausted and needs a resize. The resize cost
+    /// has been amortized in the previous figures.
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn push(&mut self, item: T) {
         let old_len = self.len();
@@ -609,6 +648,36 @@ impl<T: Ord> BinaryHeap<T> {
             self.extend(other.drain());
         }
     }
+
+    /// Returns an iterator which retrieves elements in heap order.
+    /// The retrieved elements are removed from the original heap.
+    /// The remaining elements will be removed on drop in heap order.
+    ///
+    /// Note:
+    /// * `.drain_sorted()` is O(n lg n); much slower than `.drain()`.
+    ///   You should use the latter for most cases.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```
+    /// #![feature(binary_heap_drain_sorted)]
+    /// use std::collections::BinaryHeap;
+    ///
+    /// let mut heap = BinaryHeap::from(vec![1, 2, 3, 4, 5]);
+    /// assert_eq!(heap.len(), 5);
+    ///
+    /// drop(heap.drain_sorted()); // removes all elements in heap order
+    /// assert_eq!(heap.len(), 0);
+    /// ```
+    #[inline]
+    #[unstable(feature = "binary_heap_drain_sorted", issue = "59278")]
+    pub fn drain_sorted(&mut self) -> DrainSorted<'_, T> {
+        DrainSorted {
+            inner: self,
+        }
+    }
 }
 
 impl<T> BinaryHeap<T> {
@@ -633,6 +702,27 @@ impl<T> BinaryHeap<T> {
         Iter { iter: self.data.iter() }
     }
 
+    /// Returns an iterator which retrieves elements in heap order.
+    /// This method consumes the original heap.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    ///
+    /// ```
+    /// #![feature(binary_heap_into_iter_sorted)]
+    /// use std::collections::BinaryHeap;
+    /// let heap = BinaryHeap::from(vec![1, 2, 3, 4, 5]);
+    ///
+    /// assert_eq!(heap.into_iter_sorted().take(2).collect::<Vec<_>>(), vec![5, 4]);
+    /// ```
+    #[unstable(feature = "binary_heap_into_iter_sorted", issue = "59278")]
+    pub fn into_iter_sorted(self) -> IntoIterSorted<T> {
+        IntoIterSorted {
+            inner: self,
+        }
+    }
+
     /// Returns the greatest item in the binary heap, or `None` if it is empty.
     ///
     /// # Examples
@@ -650,6 +740,10 @@ impl<T> BinaryHeap<T> {
     /// assert_eq!(heap.peek(), Some(&5));
     ///
     /// ```
+    ///
+    /// # Time complexity
+    ///
+    /// Cost is O(1) in the worst case.
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn peek(&self) -> Option<&T> {
         self.data.get(0)
@@ -994,8 +1088,8 @@ impl<'a, T> Iterator for Iter<'a, T> {
     }
 
     #[inline]
-    fn last(mut self) -> Option<&'a T> {
-        self.next_back()
+    fn last(self) -> Option<&'a T> {
+        self.iter.last()
     }
 }
 
@@ -1052,11 +1146,6 @@ impl<T> Iterator for IntoIter<T> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
     }
-
-    #[inline]
-    fn last(mut self) -> Option<T> {
-        self.next_back()
-    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -1076,6 +1165,37 @@ impl<T> ExactSizeIterator for IntoIter<T> {
 
 #[stable(feature = "fused", since = "1.26.0")]
 impl<T> FusedIterator for IntoIter<T> {}
+
+#[unstable(feature = "binary_heap_into_iter_sorted", issue = "59278")]
+#[derive(Clone, Debug)]
+pub struct IntoIterSorted<T> {
+    inner: BinaryHeap<T>,
+}
+
+#[unstable(feature = "binary_heap_into_iter_sorted", issue = "59278")]
+impl<T: Ord> Iterator for IntoIterSorted<T> {
+    type Item = T;
+
+    #[inline]
+    fn next(&mut self) -> Option<T> {
+        self.inner.pop()
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let exact = self.inner.len();
+        (exact, Some(exact))
+    }
+}
+
+#[unstable(feature = "binary_heap_into_iter_sorted", issue = "59278")]
+impl<T: Ord> ExactSizeIterator for IntoIterSorted<T> {}
+
+#[unstable(feature = "binary_heap_into_iter_sorted", issue = "59278")]
+impl<T: Ord> FusedIterator for IntoIterSorted<T> {}
+
+#[unstable(feature = "trusted_len", issue = "37572")]
+unsafe impl<T: Ord> TrustedLen for IntoIterSorted<T> {}
 
 /// A draining iterator over the elements of a `BinaryHeap`.
 ///
@@ -1103,11 +1223,6 @@ impl<T> Iterator for Drain<'_, T> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
     }
-
-    #[inline]
-    fn last(mut self) -> Option<T> {
-        self.next_back()
-    }
 }
 
 #[stable(feature = "drain", since = "1.6.0")]
@@ -1128,8 +1243,57 @@ impl<T> ExactSizeIterator for Drain<'_, T> {
 #[stable(feature = "fused", since = "1.26.0")]
 impl<T> FusedIterator for Drain<'_, T> {}
 
+/// A draining iterator over the elements of a `BinaryHeap`.
+///
+/// This `struct` is created by the [`drain_sorted`] method on [`BinaryHeap`]. See its
+/// documentation for more.
+///
+/// [`drain_sorted`]: struct.BinaryHeap.html#method.drain_sorted
+/// [`BinaryHeap`]: struct.BinaryHeap.html
+#[unstable(feature = "binary_heap_drain_sorted", issue = "59278")]
+#[derive(Debug)]
+pub struct DrainSorted<'a, T: Ord> {
+    inner: &'a mut BinaryHeap<T>,
+}
+
+#[unstable(feature = "binary_heap_drain_sorted", issue = "59278")]
+impl<'a, T: Ord> Drop for DrainSorted<'a, T> {
+    /// Removes heap elements in heap order.
+    fn drop(&mut self) {
+        while let Some(_) = self.inner.pop() {}
+    }
+}
+
+#[unstable(feature = "binary_heap_drain_sorted", issue = "59278")]
+impl<T: Ord> Iterator for DrainSorted<'_, T> {
+    type Item = T;
+
+    #[inline]
+    fn next(&mut self) -> Option<T> {
+        self.inner.pop()
+    }
+
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let exact = self.inner.len();
+        (exact, Some(exact))
+    }
+}
+
+#[unstable(feature = "binary_heap_drain_sorted", issue = "59278")]
+impl<T: Ord> ExactSizeIterator for DrainSorted<'_, T> { }
+
+#[unstable(feature = "binary_heap_drain_sorted", issue = "59278")]
+impl<T: Ord> FusedIterator for DrainSorted<'_, T> {}
+
+#[unstable(feature = "trusted_len", issue = "37572")]
+unsafe impl<T: Ord> TrustedLen for DrainSorted<'_, T> {}
+
 #[stable(feature = "binary_heap_extras_15", since = "1.5.0")]
 impl<T: Ord> From<Vec<T>> for BinaryHeap<T> {
+    /// Converts a `Vec<T>` into a `BinaryHeap<T>`.
+    ///
+    /// This conversion happens in-place, and has `O(n)` time complexity.
     fn from(vec: Vec<T>) -> BinaryHeap<T> {
         let mut heap = BinaryHeap { data: vec };
         heap.rebuild();

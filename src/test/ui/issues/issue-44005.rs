@@ -1,4 +1,4 @@
-// compile-pass
+// build-pass
 pub trait Foo<'a> {
     type Bar;
     fn foo(&'a self) -> Self::Bar;

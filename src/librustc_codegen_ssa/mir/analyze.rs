@@ -1,29 +1,41 @@
 //! An analysis to determine which locals require allocas and
 //! which do not.
 
-use rustc_data_structures::bit_set::BitSet;
+use rustc_index::bit_set::BitSet;
 use rustc_data_structures::graph::dominators::Dominators;
-use rustc_data_structures::indexed_vec::{Idx, IndexVec};
+use rustc_index::vec::{Idx, IndexVec};
 use rustc::mir::{self, Location, TerminatorKind};
 use rustc::mir::visit::{Visitor, PlaceContext, MutatingUseContext, NonMutatingUseContext};
 use rustc::mir::traversal;
+use rustc::session::config::DebugInfo;
 use rustc::ty;
 use rustc::ty::layout::{LayoutOf, HasTyCtxt};
+use syntax_pos::DUMMY_SP;
 use super::FunctionCx;
 use crate::traits::*;
 
-pub fn non_ssa_locals<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
-    fx: &FunctionCx<'a, 'tcx, Bx>
+pub fn non_ssa_locals<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>>(
+    fx: &FunctionCx<'a, 'tcx, Bx>,
 ) -> BitSet<mir::Local> {
     let mir = fx.mir;
     let mut analyzer = LocalAnalyzer::new(fx);
 
-    analyzer.visit_mir(mir);
+    analyzer.visit_body(mir);
 
-    for (index, ty) in mir.local_decls.iter().map(|l| l.ty).enumerate() {
-        let ty = fx.monomorphize(&ty);
-        debug!("local {} has type {:?}", index, ty);
-        let layout = fx.cx.layout_of(ty);
+    for (local, decl) in mir.local_decls.iter_enumerated()
+    {
+        // FIXME(eddyb): We should figure out how to use llvm.dbg.value instead
+        // of putting everything in allocas just so we can use llvm.dbg.declare.
+        if fx.cx.sess().opts.debuginfo == DebugInfo::Full {
+            if mir.local_kind(local) == mir::LocalKind::Arg || decl.name.is_some() {
+                analyzer.not_ssa(local);
+                continue;
+            }
+        }
+
+        let ty = fx.monomorphize(&decl.ty);
+        debug!("local {:?} has type `{}`", local, ty);
+        let layout = fx.cx.spanned_layout_of(ty, decl.source_info.span);
         if fx.cx.is_backend_immediate(layout) {
             // These sorts of types are immediates that we can store
             // in an Value without an alloca.
@@ -36,20 +48,20 @@ pub fn non_ssa_locals<'a, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>>(
             // (e.g., structs) into an alloca unconditionally, just so
             // that we don't have to deal with having two pathways
             // (gep vs extractvalue etc).
-            analyzer.not_ssa(mir::Local::new(index));
+            analyzer.not_ssa(local);
         }
     }
 
     analyzer.non_ssa_locals
 }
 
-struct LocalAnalyzer<'mir, 'a: 'mir, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> {
+struct LocalAnalyzer<'mir, 'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> {
     fx: &'mir FunctionCx<'a, 'tcx, Bx>,
     dominators: Dominators<mir::BasicBlock>,
     non_ssa_locals: BitSet<mir::Local>,
     // The location of the first visited direct assignment to each
     // local, or an invalid location (out of bounds `block` index).
-    first_assignment: IndexVec<mir::Local, Location>
+    first_assignment: IndexVec<mir::Local, Location>,
 }
 
 impl<Bx: BuilderMethods<'a, 'tcx>> LocalAnalyzer<'mir, 'a, 'tcx, Bx> {
@@ -92,19 +104,105 @@ impl<Bx: BuilderMethods<'a, 'tcx>> LocalAnalyzer<'mir, 'a, 'tcx, Bx> {
             self.first_assignment[local] = location;
         }
     }
+
+    fn process_place(
+        &mut self,
+        place_ref: &mir::PlaceRef<'_, 'tcx>,
+        context: PlaceContext,
+        location: Location,
+    ) {
+        let cx = self.fx.cx;
+
+        if let [proj_base @ .., elem] = place_ref.projection {
+            // Allow uses of projections that are ZSTs or from scalar fields.
+            let is_consume = match context {
+                PlaceContext::NonMutatingUse(NonMutatingUseContext::Copy) |
+                PlaceContext::NonMutatingUse(NonMutatingUseContext::Move) => true,
+                _ => false
+            };
+            if is_consume {
+                let base_ty =
+                    mir::Place::ty_from(place_ref.base, proj_base, self.fx.mir, cx.tcx());
+                let base_ty = self.fx.monomorphize(&base_ty);
+
+                // ZSTs don't require any actual memory access.
+                let elem_ty = base_ty
+                    .projection_ty(cx.tcx(), elem)
+                    .ty;
+                let elem_ty = self.fx.monomorphize(&elem_ty);
+                let span = if let mir::PlaceBase::Local(index) = place_ref.base {
+                    self.fx.mir.local_decls[*index].source_info.span
+                } else {
+                    DUMMY_SP
+                };
+                if cx.spanned_layout_of(elem_ty, span).is_zst() {
+                    return;
+                }
+
+                if let mir::ProjectionElem::Field(..) = elem {
+                    let layout = cx.spanned_layout_of(base_ty.ty, span);
+                    if cx.is_backend_immediate(layout) || cx.is_backend_scalar_pair(layout) {
+                        // Recurse with the same context, instead of `Projection`,
+                        // potentially stopping at non-operand projections,
+                        // which would trigger `not_ssa` on locals.
+                        self.process_place(
+                            &mir::PlaceRef {
+                                base: place_ref.base,
+                                projection: proj_base,
+                            },
+                            context,
+                            location,
+                        );
+                        return;
+                    }
+                }
+            }
+
+            // A deref projection only reads the pointer, never needs the place.
+            if let mir::ProjectionElem::Deref = elem {
+                self.process_place(
+                    &mir::PlaceRef {
+                        base: place_ref.base,
+                        projection: proj_base,
+                    },
+                    PlaceContext::NonMutatingUse(NonMutatingUseContext::Copy),
+                    location
+                );
+                return;
+            }
+        }
+
+        // FIXME this is super_place code, is repeated here to avoid cloning place or changing
+        // visit_place API
+        let mut context = context;
+
+        if !place_ref.projection.is_empty() {
+            context = if context.is_mutating_use() {
+                PlaceContext::MutatingUse(MutatingUseContext::Projection)
+            } else {
+                PlaceContext::NonMutatingUse(NonMutatingUseContext::Projection)
+            };
+        }
+
+        self.visit_place_base(place_ref.base, context, location);
+        self.visit_projection(place_ref.base, place_ref.projection, context, location);
+    }
+
 }
 
-impl<'mir, 'a: 'mir, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
-    for LocalAnalyzer<'mir, 'a, 'tcx, Bx> {
+impl<'mir, 'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
+    for LocalAnalyzer<'mir, 'a, 'tcx, Bx>
+{
     fn visit_assign(&mut self,
                     place: &mir::Place<'tcx>,
                     rvalue: &mir::Rvalue<'tcx>,
                     location: Location) {
         debug!("visit_assign(place={:?}, rvalue={:?})", place, rvalue);
 
-        if let mir::Place::Base(mir::PlaceBase::Local(index)) = *place {
+        if let Some(index) = place.as_local() {
             self.assign(index, location);
-            if !self.fx.rvalue_creates_operand(rvalue) {
+            let decl_span = self.fx.mir.local_decls[index].source_info.span;
+            if !self.fx.rvalue_creates_operand(rvalue, decl_span) {
                 self.not_ssa(index);
             }
         } else {
@@ -125,7 +223,7 @@ impl<'mir, 'a: 'mir, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
             mir::TerminatorKind::Call {
                 func: mir::Operand::Constant(ref c),
                 ref args, ..
-            } => match c.ty.sty {
+            } => match c.literal.ty.kind {
                 ty::FnDef(did, _) => Some((did, args)),
                 _ => None,
             },
@@ -154,51 +252,7 @@ impl<'mir, 'a: 'mir, 'tcx: 'a, Bx: BuilderMethods<'a, 'tcx>> Visitor<'tcx>
                    context: PlaceContext,
                    location: Location) {
         debug!("visit_place(place={:?}, context={:?})", place, context);
-        let cx = self.fx.cx;
-
-        if let mir::Place::Projection(ref proj) = *place {
-            // Allow uses of projections that are ZSTs or from scalar fields.
-            let is_consume = match context {
-                PlaceContext::NonMutatingUse(NonMutatingUseContext::Copy) |
-                PlaceContext::NonMutatingUse(NonMutatingUseContext::Move) => true,
-                _ => false
-            };
-            if is_consume {
-                let base_ty = proj.base.ty(self.fx.mir, cx.tcx());
-                let base_ty = self.fx.monomorphize(&base_ty);
-
-                // ZSTs don't require any actual memory access.
-                let elem_ty = base_ty
-                    .projection_ty(cx.tcx(), &proj.elem)
-                    .ty;
-                let elem_ty = self.fx.monomorphize(&elem_ty);
-                if cx.layout_of(elem_ty).is_zst() {
-                    return;
-                }
-
-                if let mir::ProjectionElem::Field(..) = proj.elem {
-                    let layout = cx.layout_of(base_ty.ty);
-                    if cx.is_backend_immediate(layout) || cx.is_backend_scalar_pair(layout) {
-                        // Recurse with the same context, instead of `Projection`,
-                        // potentially stopping at non-operand projections,
-                        // which would trigger `not_ssa` on locals.
-                        self.visit_place(&proj.base, context, location);
-                        return;
-                    }
-                }
-            }
-
-            // A deref projection only reads the pointer, never needs the place.
-            if let mir::ProjectionElem::Deref = proj.elem {
-                return self.visit_place(
-                    &proj.base,
-                    PlaceContext::NonMutatingUse(NonMutatingUseContext::Copy),
-                    location
-                );
-            }
-        }
-
-        self.super_place(place, context, location);
+        self.process_place(&place.as_ref(), context, location);
     }
 
     fn visit_local(&mut self,
@@ -272,9 +326,9 @@ impl CleanupKind {
     }
 }
 
-pub fn cleanup_kinds<'a, 'tcx>(mir: &mir::Mir<'tcx>) -> IndexVec<mir::BasicBlock, CleanupKind> {
+pub fn cleanup_kinds(mir: &mir::Body<'_>) -> IndexVec<mir::BasicBlock, CleanupKind> {
     fn discover_masters<'tcx>(result: &mut IndexVec<mir::BasicBlock, CleanupKind>,
-                              mir: &mir::Mir<'tcx>) {
+                              mir: &mir::Body<'tcx>) {
         for (bb, data) in mir.basic_blocks().iter_enumerated() {
             match data.terminator().kind {
                 TerminatorKind::Goto { .. } |
@@ -304,7 +358,7 @@ pub fn cleanup_kinds<'a, 'tcx>(mir: &mir::Mir<'tcx>) -> IndexVec<mir::BasicBlock
     }
 
     fn propagate<'tcx>(result: &mut IndexVec<mir::BasicBlock, CleanupKind>,
-                       mir: &mir::Mir<'tcx>) {
+                       mir: &mir::Body<'tcx>) {
         let mut funclet_succs = IndexVec::from_elem(None, mir.basic_blocks());
 
         let mut set_successor = |funclet: mir::BasicBlock, succ| {

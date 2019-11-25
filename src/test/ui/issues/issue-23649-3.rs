@@ -1,4 +1,4 @@
-// compile-pass
+// build-pass
 #[derive(PartialEq)]
 struct Slice { slice: [u8] }
 

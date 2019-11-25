@@ -11,13 +11,13 @@ use rustc::ty::{self, TyCtxt, Ty};
 use rustc::hir::def_id::DefId;
 use rustc_data_structures::fx::FxHashSet;
 
-struct ClauseVisitor<'set, 'a, 'tcx: 'a + 'set> {
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
-    round: &'set mut FxHashSet<Clause<'tcx>>,
+struct ClauseVisitor<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
+    round: &'a mut FxHashSet<Clause<'tcx>>,
 }
 
-impl ClauseVisitor<'set, 'a, 'tcx> {
-    fn new(tcx: TyCtxt<'a, 'tcx, 'tcx>, round: &'set mut FxHashSet<Clause<'tcx>>) -> Self {
+impl ClauseVisitor<'a, 'tcx> {
+    fn new(tcx: TyCtxt<'tcx>, round: &'a mut FxHashSet<Clause<'tcx>>) -> Self {
         ClauseVisitor {
             tcx,
             round,
@@ -25,7 +25,7 @@ impl ClauseVisitor<'set, 'a, 'tcx> {
     }
 
     fn visit_ty(&mut self, ty: Ty<'tcx>) {
-        match ty.sty {
+        match ty.kind {
             ty::Projection(data) => {
                 self.round.extend(
                     self.tcx.program_clauses_for(data.item_def_id)
@@ -127,8 +127,8 @@ impl ClauseVisitor<'set, 'a, 'tcx> {
     }
 }
 
-crate fn program_clauses_for_env<'a, 'tcx>(
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
+crate fn program_clauses_for_env<'tcx>(
+    tcx: TyCtxt<'tcx>,
     environment: Environment<'tcx>,
 ) -> Clauses<'tcx> {
     debug!("program_clauses_for_env(environment={:?})", environment);
@@ -160,10 +160,7 @@ crate fn program_clauses_for_env<'a, 'tcx>(
     );
 }
 
-crate fn environment<'a, 'tcx>(
-    tcx: TyCtxt<'a, 'tcx, 'tcx>,
-    def_id: DefId
-) -> Environment<'tcx> {
+crate fn environment(tcx: TyCtxt<'_>, def_id: DefId) -> Environment<'_> {
     use super::{Lower, IntoFromEnvGoal};
     use rustc::hir::{Node, TraitItemKind, ImplItemKind, ItemKind, ForeignItemKind};
 
@@ -188,7 +185,7 @@ crate fn environment<'a, 'tcx>(
         .map(Clause::ForAll);
 
     let hir_id = tcx.hir().as_local_hir_id(def_id).unwrap();
-    let node = tcx.hir().get_by_hir_id(hir_id);
+    let node = tcx.hir().get(hir_id);
 
     enum NodeKind {
         TraitImpl,
@@ -198,24 +195,24 @@ crate fn environment<'a, 'tcx>(
     };
 
     let node_kind = match node {
-        Node::TraitItem(item) => match item.node {
+        Node::TraitItem(item) => match item.kind {
             TraitItemKind::Method(..) => NodeKind::Fn,
             _ => NodeKind::Other,
         }
 
-        Node::ImplItem(item) => match item.node {
+        Node::ImplItem(item) => match item.kind {
             ImplItemKind::Method(..) => NodeKind::Fn,
             _ => NodeKind::Other,
         }
 
-        Node::Item(item) => match item.node {
+        Node::Item(item) => match item.kind {
             ItemKind::Impl(.., Some(..), _, _) => NodeKind::TraitImpl,
             ItemKind::Impl(.., None, _, _) => NodeKind::InherentImpl,
             ItemKind::Fn(..) => NodeKind::Fn,
             _ => NodeKind::Other,
         }
 
-        Node::ForeignItem(item) => match item.node {
+        Node::ForeignItem(item) => match item.kind {
             ForeignItemKind::Fn(..) => NodeKind::Fn,
             _ => NodeKind::Other,
         }

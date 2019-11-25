@@ -5,7 +5,7 @@ use crate::hair::*;
 use rustc::mir::*;
 use rustc::ty::CanonicalUserTypeAnnotation;
 
-impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> Builder<'a, 'tcx> {
     /// Compile `expr`, yielding a compile-time constant. Assumes that
     /// `expr` is a valid compile-time constant!
     pub fn as_constant<M>(&mut self, expr: M) -> Constant<'tcx>
@@ -38,13 +38,20 @@ impl<'a, 'gcx, 'tcx> Builder<'a, 'gcx, 'tcx> {
                         inferred_ty: ty,
                     })
                 });
+                assert_eq!(literal.ty, ty);
                 Constant {
                     span,
-                    ty,
                     user_ty,
                     literal,
                 }
             },
+            ExprKind::StaticRef { literal, .. } => {
+                Constant {
+                    span,
+                    user_ty: None,
+                    literal,
+                }
+            }
             _ => span_bug!(span, "expression is not a valid constant {:?}", kind),
         }
     }

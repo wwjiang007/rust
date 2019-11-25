@@ -6,11 +6,10 @@ extern crate syntax;
 // Load rustc as a plugin to get macros
 #[macro_use]
 extern crate rustc;
-extern crate rustc_plugin;
+extern crate rustc_driver;
 
-use rustc::lint::{EarlyContext, LintContext, LintPass, EarlyLintPass,
-                  LintArray};
-use rustc_plugin::Registry;
+use rustc::lint::{EarlyContext, EarlyLintPass, LintArray, LintContext, LintPass, LintId};
+use rustc_driver::plugin::Registry;
 use syntax::ast;
 declare_tool_lint!(pub clippy::TEST_LINT, Warn, "Warn about stuff");
 declare_tool_lint!(
@@ -19,7 +18,14 @@ declare_tool_lint!(
     Warn, "Warn about other stuff"
 );
 
-declare_lint_pass!(Pass => [TEST_LINT, TEST_GROUP]);
+declare_tool_lint!(
+    /// Some docs
+    pub rustc::TEST_RUSTC_TOOL_LINT,
+    Deny,
+    "Deny internal stuff"
+);
+
+declare_lint_pass!(Pass => [TEST_LINT, TEST_GROUP, TEST_RUSTC_TOOL_LINT]);
 
 impl EarlyLintPass for Pass {
     fn check_item(&mut self, cx: &EarlyContext, it: &ast::Item) {
@@ -34,6 +40,8 @@ impl EarlyLintPass for Pass {
 
 #[plugin_registrar]
 pub fn plugin_registrar(reg: &mut Registry) {
-    reg.register_early_lint_pass(box Pass);
-    reg.register_lint_group("clippy::group", Some("clippy_group"), vec![TEST_LINT, TEST_GROUP]);
+    reg.lint_store.register_lints(&[&TEST_RUSTC_TOOL_LINT, &TEST_LINT, &TEST_GROUP]);
+    reg.lint_store.register_early_pass(|| box Pass);
+    reg.lint_store.register_group(true, "clippy::group", Some("clippy_group"),
+        vec![LintId::of(&TEST_LINT), LintId::of(&TEST_GROUP)]);
 }

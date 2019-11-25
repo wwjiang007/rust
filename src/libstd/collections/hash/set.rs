@@ -1,5 +1,5 @@
 use crate::borrow::Borrow;
-use crate::collections::CollectionAllocErr;
+use crate::collections::TryReserveError;
 use crate::fmt;
 use crate::hash::{Hash, BuildHasher};
 use crate::iter::{Chain, FromIterator, FusedIterator};
@@ -93,11 +93,9 @@ use super::map::{self, HashMap, Keys, RandomState};
 /// ```
 /// use std::collections::HashSet;
 ///
-/// fn main() {
-///     let viking_names: HashSet<&'static str> =
-///         [ "Einar", "Olaf", "Harald" ].iter().cloned().collect();
-///     // use the values stored in the set
-/// }
+/// let viking_names: HashSet<&'static str> =
+///     [ "Einar", "Olaf", "Harald" ].iter().cloned().collect();
+/// // use the values stored in the set
 /// ```
 ///
 /// [`Cell`]: ../../std/cell/struct.Cell.html
@@ -383,7 +381,7 @@ impl<T, S> HashSet<T, S>
     /// ```
     #[inline]
     #[unstable(feature = "try_reserve", reason = "new API", issue="48043")]
-    pub fn try_reserve(&mut self, additional: usize) -> Result<(), CollectionAllocErr> {
+    pub fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
         self.map.try_reserve(additional)
     }
 
@@ -553,7 +551,7 @@ impl<T, S> HashSet<T, S>
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
     pub fn union<'a>(&'a self, other: &'a HashSet<T, S>) -> Union<'a, T, S> {
-        if self.len() <= other.len() {
+        if self.len() >= other.len() {
             Union {
                 iter: self.iter().chain(other.difference(self)),
             }
@@ -1782,13 +1780,15 @@ mod test_set {
 
     #[test]
     fn test_from_iter() {
-        let xs = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+        let xs = [1, 2, 2, 3, 4, 5, 6, 7, 8, 9];
 
         let set: HashSet<_> = xs.iter().cloned().collect();
 
         for x in &xs {
             assert!(set.contains(x));
         }
+
+        assert_eq!(set.iter().len(), xs.len() - 1);
     }
 
     #[test]

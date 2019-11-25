@@ -56,7 +56,7 @@ use core::ptr;
 use core::str::{pattern::Pattern, lossy};
 
 use crate::borrow::{Cow, ToOwned};
-use crate::collections::CollectionAllocErr;
+use crate::collections::TryReserveError;
 use crate::boxed::Box;
 use crate::str::{self, from_boxed_utf8_unchecked, FromStr, Utf8Error, Chars};
 use crate::vec::Vec;
@@ -164,10 +164,8 @@ use crate::vec::Vec;
 ///
 /// fn example_func<A: TraitExample>(example_arg: A) {}
 ///
-/// fn main() {
-///     let example_string = String::from("example_string");
-///     example_func(&example_string);
-/// }
+/// let example_string = String::from("example_string");
+/// example_func(&example_string);
 /// ```
 ///
 /// There are two options that would work instead. The first would be to
@@ -198,20 +196,21 @@ use crate::vec::Vec;
 ///
 /// let story = String::from("Once upon a time...");
 ///
-/// let ptr = story.as_ptr();
+// FIXME Update this when vec_into_raw_parts is stabilized
+/// // Prevent automatically dropping the String's data
+/// let mut story = mem::ManuallyDrop::new(story);
+///
+/// let ptr = story.as_mut_ptr();
 /// let len = story.len();
 /// let capacity = story.capacity();
 ///
 /// // story has nineteen bytes
 /// assert_eq!(19, len);
 ///
-/// // Now that we have our parts, we throw the story away.
-/// mem::forget(story);
-///
 /// // We can re-build a String out of ptr, len, and capacity. This is all
 /// // unsafe because we are responsible for making sure the components are
 /// // valid:
-/// let s = unsafe { String::from_raw_parts(ptr as *mut _, len, capacity) } ;
+/// let s = unsafe { String::from_raw_parts(ptr, len, capacity) } ;
 ///
 /// assert_eq!(String::from("Once upon a time..."), s);
 /// ```
@@ -369,7 +368,6 @@ impl String {
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
-    #[rustc_const_unstable(feature = "const_string_new")]
     pub const fn new() -> String {
         String { vec: Vec::new() }
     }
@@ -429,7 +427,7 @@ impl String {
 
     /// Converts a vector of bytes to a `String`.
     ///
-    /// A string slice ([`&str`]) is made of bytes ([`u8`]), and a vector of bytes
+    /// A string ([`String`]) is made of bytes ([`u8`]), and a vector of bytes
     /// ([`Vec<u8>`]) is made of bytes, so this function converts between the
     /// two. Not all byte slices are valid `String`s, however: `String`
     /// requires that it is valid UTF-8. `from_utf8()` checks to ensure that
@@ -446,7 +444,7 @@ impl String {
     /// If you need a [`&str`] instead of a `String`, consider
     /// [`str::from_utf8`].
     ///
-    /// The inverse of this method is [`as_bytes`].
+    /// The inverse of this method is [`into_bytes`].
     ///
     /// # Errors
     ///
@@ -480,11 +478,11 @@ impl String {
     /// with this error.
     ///
     /// [`from_utf8_unchecked`]: struct.String.html#method.from_utf8_unchecked
-    /// [`&str`]: ../../std/primitive.str.html
+    /// [`String`]: struct.String.html
     /// [`u8`]: ../../std/primitive.u8.html
     /// [`Vec<u8>`]: ../../std/vec/struct.Vec.html
     /// [`str::from_utf8`]: ../../std/str/fn.from_utf8.html
-    /// [`as_bytes`]: struct.String.html#method.as_bytes
+    /// [`into_bytes`]: struct.String.html#method.into_bytes
     /// [`FromUtf8Error`]: struct.FromUtf8Error.html
     /// [`Err`]: ../../std/result/enum.Result.html#variant.Err
     #[inline]
@@ -552,7 +550,7 @@ impl String {
     /// assert_eq!("Hello �World", output);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
-    pub fn from_utf8_lossy<'a>(v: &'a [u8]) -> Cow<'a, str> {
+    pub fn from_utf8_lossy(v: &[u8]) -> Cow<'_, str> {
         let mut iter = lossy::Utf8Lossy::from_bytes(v).chunks();
 
         let (first_valid, first_broken) = if let Some(chunk) = iter.next() {
@@ -650,6 +648,37 @@ impl String {
         decode_utf16(v.iter().cloned()).map(|r| r.unwrap_or(REPLACEMENT_CHARACTER)).collect()
     }
 
+    /// Decomposes a `String` into its raw components.
+    ///
+    /// Returns the raw pointer to the underlying data, the length of
+    /// the string (in bytes), and the allocated capacity of the data
+    /// (in bytes). These are the same arguments in the same order as
+    /// the arguments to [`from_raw_parts`].
+    ///
+    /// After calling this function, the caller is responsible for the
+    /// memory previously managed by the `String`. The only way to do
+    /// this is to convert the raw pointer, length, and capacity back
+    /// into a `String` with the [`from_raw_parts`] function, allowing
+    /// the destructor to perform the cleanup.
+    ///
+    /// [`from_raw_parts`]: #method.from_raw_parts
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(vec_into_raw_parts)]
+    /// let s = String::from("hello");
+    ///
+    /// let (ptr, len, cap) = s.into_raw_parts();
+    ///
+    /// let rebuilt = unsafe { String::from_raw_parts(ptr, len, cap) };
+    /// assert_eq!(rebuilt, "hello");
+    /// ```
+    #[unstable(feature = "vec_into_raw_parts", reason = "new API", issue = "65816")]
+    pub fn into_raw_parts(self) -> (*mut u8, usize, usize) {
+        self.vec.into_raw_parts()
+    }
+
     /// Creates a new `String` from a length, capacity, and pointer.
     ///
     /// # Safety
@@ -658,7 +687,7 @@ impl String {
     /// checked:
     ///
     /// * The memory at `ptr` needs to have been previously allocated by the
-    ///   same allocator the standard library uses.
+    ///   same allocator the standard library uses, with a required alignment of exactly 1.
     /// * `length` needs to be less than or equal to `capacity`.
     /// * `capacity` needs to be the correct value.
     ///
@@ -680,13 +709,16 @@ impl String {
     ///
     /// unsafe {
     ///     let s = String::from("hello");
-    ///     let ptr = s.as_ptr();
+    ///
+    // FIXME Update this when vec_into_raw_parts is stabilized
+    ///     // Prevent automatically dropping the String's data
+    ///     let mut s = mem::ManuallyDrop::new(s);
+    ///
+    ///     let ptr = s.as_mut_ptr();
     ///     let len = s.len();
     ///     let capacity = s.capacity();
     ///
-    ///     mem::forget(s);
-    ///
-    ///     let s = String::from_raw_parts(ptr as *mut _, len, capacity);
+    ///     let s = String::from_raw_parts(ptr, len, capacity);
     ///
     ///     assert_eq!(String::from("hello"), s);
     /// }
@@ -937,9 +969,9 @@ impl String {
     ///
     /// ```
     /// #![feature(try_reserve)]
-    /// use std::collections::CollectionAllocErr;
+    /// use std::collections::TryReserveError;
     ///
-    /// fn process_data(data: &str) -> Result<String, CollectionAllocErr> {
+    /// fn process_data(data: &str) -> Result<String, TryReserveError> {
     ///     let mut output = String::new();
     ///
     ///     // Pre-reserve the memory, exiting if we can't
@@ -953,7 +985,7 @@ impl String {
     /// # process_data("rust").expect("why is the test harness OOMing on 4 bytes?");
     /// ```
     #[unstable(feature = "try_reserve", reason = "new API", issue="48043")]
-    pub fn try_reserve(&mut self, additional: usize) -> Result<(), CollectionAllocErr> {
+    pub fn try_reserve(&mut self, additional: usize) -> Result<(), TryReserveError> {
         self.vec.try_reserve(additional)
     }
 
@@ -975,9 +1007,9 @@ impl String {
     ///
     /// ```
     /// #![feature(try_reserve)]
-    /// use std::collections::CollectionAllocErr;
+    /// use std::collections::TryReserveError;
     ///
-    /// fn process_data(data: &str) -> Result<String, CollectionAllocErr> {
+    /// fn process_data(data: &str) -> Result<String, TryReserveError> {
     ///     let mut output = String::new();
     ///
     ///     // Pre-reserve the memory, exiting if we can't
@@ -991,7 +1023,7 @@ impl String {
     /// # process_data("rust").expect("why is the test harness OOMing on 4 bytes?");
     /// ```
     #[unstable(feature = "try_reserve", reason = "new API", issue="48043")]
-    pub fn try_reserve_exact(&mut self, additional: usize) -> Result<(), CollectionAllocErr>  {
+    pub fn try_reserve_exact(&mut self, additional: usize) -> Result<(), TryReserveError>  {
         self.vec.try_reserve_exact(additional)
     }
 
@@ -1370,7 +1402,9 @@ impl String {
         &mut self.vec
     }
 
-    /// Returns the length of this `String`, in bytes.
+    /// Returns the length of this `String`, in bytes, not [`char`]s or
+    /// graphemes. In other words, it may not be what a human considers the
+    /// length of the string.
     ///
     /// # Examples
     ///
@@ -1378,8 +1412,11 @@ impl String {
     ///
     /// ```
     /// let a = String::from("foo");
-    ///
     /// assert_eq!(a.len(), 3);
+    ///
+    /// let fancy_f = String::from("ƒoo");
+    /// assert_eq!(fancy_f.len(), 4);
+    /// assert_eq!(fancy_f.chars().count(), 3);
     /// ```
     #[inline]
     #[stable(feature = "rust1", since = "1.0.0")]
@@ -1838,6 +1875,7 @@ impl PartialEq for String {
 macro_rules! impl_eq {
     ($lhs:ty, $rhs: ty) => {
         #[stable(feature = "rust1", since = "1.0.0")]
+        #[allow(unused_lifetimes)]
         impl<'a, 'b> PartialEq<$rhs> for $lhs {
             #[inline]
             fn eq(&self, other: &$rhs) -> bool { PartialEq::eq(&self[..], &other[..]) }
@@ -1846,6 +1884,7 @@ macro_rules! impl_eq {
         }
 
         #[stable(feature = "rust1", since = "1.0.0")]
+        #[allow(unused_lifetimes)]
         impl<'a, 'b> PartialEq<$lhs> for $rhs {
             #[inline]
             fn eq(&self, other: &$lhs) -> bool { PartialEq::eq(&self[..], &other[..]) }
@@ -2385,6 +2424,7 @@ impl Iterator for Drain<'_> {
     fn size_hint(&self) -> (usize, Option<usize>) {
         self.iter.size_hint()
     }
+
     #[inline]
     fn last(mut self) -> Option<char> {
         self.next_back()

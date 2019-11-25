@@ -31,24 +31,24 @@ impl Condvar {
               target_os = "ios",
               target_os = "l4re",
               target_os = "android",
-              target_os = "hermit"))]
+              target_os = "redox"))]
     pub unsafe fn init(&mut self) {}
 
     #[cfg(not(any(target_os = "macos",
                   target_os = "ios",
                   target_os = "l4re",
                   target_os = "android",
-                  target_os = "hermit")))]
+                  target_os = "redox")))]
     pub unsafe fn init(&mut self) {
-        use crate::mem;
-        let mut attr: libc::pthread_condattr_t = mem::uninitialized();
-        let r = libc::pthread_condattr_init(&mut attr);
+        use crate::mem::MaybeUninit;
+        let mut attr = MaybeUninit::<libc::pthread_condattr_t>::uninit();
+        let r = libc::pthread_condattr_init(attr.as_mut_ptr());
         assert_eq!(r, 0);
-        let r = libc::pthread_condattr_setclock(&mut attr, libc::CLOCK_MONOTONIC);
+        let r = libc::pthread_condattr_setclock(attr.as_mut_ptr(), libc::CLOCK_MONOTONIC);
         assert_eq!(r, 0);
-        let r = libc::pthread_cond_init(self.inner.get(), &attr);
+        let r = libc::pthread_cond_init(self.inner.get(), attr.as_ptr());
         assert_eq!(r, 0);
-        let r = libc::pthread_condattr_destroy(&mut attr);
+        let r = libc::pthread_condattr_destroy(attr.as_mut_ptr());
         assert_eq!(r, 0);
     }
 
@@ -76,8 +76,7 @@ impl Condvar {
     // from changes made to the system time.
     #[cfg(not(any(target_os = "macos",
                   target_os = "ios",
-                  target_os = "android",
-                  target_os = "hermit")))]
+                  target_os = "android")))]
     pub unsafe fn wait_timeout(&self, mutex: &Mutex, dur: Duration) -> bool {
         use crate::mem;
 
@@ -107,7 +106,7 @@ impl Condvar {
     // This implementation is modeled after libcxx's condition_variable
     // https://github.com/llvm-mirror/libcxx/blob/release_35/src/condition_variable.cpp#L46
     // https://github.com/llvm-mirror/libcxx/blob/release_35/include/__mutex_base#L367
-    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android", target_os = "hermit"))]
+    #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
     pub unsafe fn wait_timeout(&self, mutex: &Mutex, mut dur: Duration) -> bool {
         use crate::ptr;
         use crate::time::Instant;

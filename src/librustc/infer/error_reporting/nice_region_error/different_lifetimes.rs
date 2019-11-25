@@ -2,10 +2,12 @@
 //! where both the regions are anonymous.
 
 use crate::infer::error_reporting::nice_region_error::NiceRegionError;
-use crate::infer::error_reporting::nice_region_error::util::AnonymousArgInfo;
+use crate::infer::error_reporting::nice_region_error::util::AnonymousParamInfo;
 use crate::util::common::ErrorReported;
 
-impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
+use rustc_error_codes::*;
+
+impl<'a, 'tcx> NiceRegionError<'a, 'tcx> {
     /// Print the error message for lifetime errors when both the concerned regions are anonymous.
     ///
     /// Consider a case where we have
@@ -43,7 +45,7 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
     ///
     /// It will later be extended to trait objects.
     pub(super) fn try_report_anon_anon_conflict(&self) -> Option<ErrorReported> {
-        let (span, sub, sup) = self.get_regions();
+        let (span, sub, sup) = self.regions();
 
         // Determine whether the sub and sup consist of both anonymous (elided) regions.
         let anon_reg_sup = self.tcx().is_suitable_region(sup)?;
@@ -59,13 +61,13 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
         let ty_sub = self.find_anon_type(sub, &bregion_sub)?;
 
         debug!(
-            "try_report_anon_anon_conflict: found_arg1={:?} sup={:?} br1={:?}",
+            "try_report_anon_anon_conflict: found_param1={:?} sup={:?} br1={:?}",
             ty_sub,
             sup,
             bregion_sup
         );
         debug!(
-            "try_report_anon_anon_conflict: found_arg2={:?} sub={:?} br2={:?}",
+            "try_report_anon_anon_conflict: found_param2={:?} sub={:?} br2={:?}",
             ty_sup,
             sub,
             bregion_sub
@@ -74,24 +76,24 @@ impl<'a, 'gcx, 'tcx> NiceRegionError<'a, 'gcx, 'tcx> {
         let (ty_sup, ty_fndecl_sup) = ty_sup;
         let (ty_sub, ty_fndecl_sub) = ty_sub;
 
-        let AnonymousArgInfo {
-            arg: anon_arg_sup, ..
-        } = self.find_arg_with_region(sup, sup)?;
-        let AnonymousArgInfo {
-            arg: anon_arg_sub, ..
-        } = self.find_arg_with_region(sub, sub)?;
+        let AnonymousParamInfo {
+            param: anon_param_sup, ..
+        } = self.find_param_with_region(sup, sup)?;
+        let AnonymousParamInfo {
+            param: anon_param_sub, ..
+        } = self.find_param_with_region(sub, sub)?;
 
         let sup_is_ret_type =
             self.is_return_type_anon(scope_def_id_sup, bregion_sup, ty_fndecl_sup);
         let sub_is_ret_type =
             self.is_return_type_anon(scope_def_id_sub, bregion_sub, ty_fndecl_sub);
 
-        let span_label_var1 = match anon_arg_sup.original_pat().simple_ident() {
+        let span_label_var1 = match anon_param_sup.pat.simple_ident() {
             Some(simple_ident) => format!(" from `{}`", simple_ident),
             None => String::new(),
         };
 
-        let span_label_var2 = match anon_arg_sub.original_pat().simple_ident() {
+        let span_label_var2 = match anon_param_sub.pat.simple_ident() {
             Some(simple_ident) => format!(" into `{}`", simple_ident),
             None => String::new(),
         };

@@ -6,11 +6,6 @@
 #![feature(generators)]
 #![cfg_attr(unix, feature(libc))]
 
-#![deny(rust_2018_idioms)]
-#![deny(internal)]
-
-#![allow(unused_imports)]
-
 #![recursion_limit="256"]
 
 #[cfg(unix)]
@@ -21,6 +16,8 @@ mod passes;
 mod queries;
 pub mod util;
 mod proc_macro_decls;
-mod profile;
 
 pub use interface::{run_compiler, Config};
+
+#[cfg(test)]
+mod tests;

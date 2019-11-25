@@ -18,7 +18,7 @@
 
 
 
-// compile-pass
+// check-pass
 
 struct Foo(String);
 

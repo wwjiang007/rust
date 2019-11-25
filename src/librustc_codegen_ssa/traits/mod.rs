@@ -38,12 +38,12 @@ pub use self::intrinsic::IntrinsicCallMethods;
 pub use self::misc::MiscMethods;
 pub use self::statics::{StaticMethods, StaticBuilderMethods};
 pub use self::type_::{
-    ArgTypeMethods, BaseTypeMethods, DerivedTypeMethods, LayoutTypeMethods, TypeMethods,
+    ArgAbiMethods, BaseTypeMethods, DerivedTypeMethods, LayoutTypeMethods, TypeMethods,
 };
 pub use self::write::{ModuleBufferMethods, ThinBufferMethods, WriteBackendMethods};
-use rustc::ty::layout::{HasParamEnv, HasTyCtxt};
-use rustc_target::spec::{HasTargetSpec};
 
+use rustc::ty::layout::{HasParamEnv, HasTyCtxt};
+use rustc_target::spec::HasTargetSpec;
 
 use std::fmt;
 
@@ -58,7 +58,7 @@ pub trait CodegenMethods<'tcx>:
     + StaticMethods
     + DebugInfoMethods<'tcx>
     + DeclareMethods<'tcx>
-    + AsmMethods<'tcx>
+    + AsmMethods
     + PreDefineMethods<'tcx>
     + HasParamEnv<'tcx>
     + HasTyCtxt<'tcx>
@@ -74,7 +74,7 @@ impl<'tcx, T> CodegenMethods<'tcx> for T where
         + StaticMethods
         + DebugInfoMethods<'tcx>
         + DeclareMethods<'tcx>
-        + AsmMethods<'tcx>
+        + AsmMethods
         + PreDefineMethods<'tcx>
         + HasParamEnv<'tcx>
         + HasTyCtxt<'tcx>
@@ -88,6 +88,7 @@ pub trait HasCodegen<'tcx>:
     type CodegenCx: CodegenMethods<'tcx>
         + BackendTypes<
             Value = Self::Value,
+            Function = Self::Function,
             BasicBlock = Self::BasicBlock,
             Type = Self::Type,
             Funclet = Self::Funclet,

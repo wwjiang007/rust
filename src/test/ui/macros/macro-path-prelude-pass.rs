@@ -1,6 +1,4 @@
-// compile-pass
-
-#![feature(extern_prelude)]
+// check-pass
 
 mod m {
     fn check() {

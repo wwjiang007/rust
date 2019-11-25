@@ -8,13 +8,13 @@ use syntax_pos::Span;
 use rustc::hir;
 use rustc::hir::Node;
 use rustc::hir::{print, lowering::is_range_literal};
-use rustc::ty::{self, Ty, AssociatedItem};
+use rustc::ty::{self, Ty, AssocItem};
 use rustc::ty::adjustment::AllowTwoPhase;
 use errors::{Applicability, DiagnosticBuilder};
 
 use super::method::probe;
 
-impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
     // Requires that the two types unify, and prints an error message if
     // they don't.
     pub fn demand_suptype(&self, sp: Span, expected: Ty<'tcx>, actual: Ty<'tcx>) {
@@ -102,21 +102,23 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     // N.B., this code relies on `self.diverges` to be accurate. In
     // particular, assignments to `!` will be permitted if the
     // diverges flag is currently "always".
-    pub fn demand_coerce_diag(&self,
-                              expr: &hir::Expr,
-                              checked_ty: Ty<'tcx>,
-                              expected: Ty<'tcx>,
-                              allow_two_phase: AllowTwoPhase)
-                              -> (Ty<'tcx>, Option<DiagnosticBuilder<'tcx>>) {
-        let expected = self.resolve_type_vars_with_obligations(expected);
+    pub fn demand_coerce_diag(
+        &self,
+        expr: &hir::Expr,
+        checked_ty: Ty<'tcx>,
+        expected: Ty<'tcx>,
+        allow_two_phase: AllowTwoPhase,
+    ) -> (Ty<'tcx>, Option<DiagnosticBuilder<'tcx>>) {
+        let expected = self.resolve_vars_with_obligations(expected);
 
         let e = match self.try_coerce(expr, checked_ty, expected, allow_two_phase) {
             Ok(ty) => return (ty, None),
             Err(e) => e
         };
 
+        let expr = expr.peel_drop_temps();
         let cause = self.misc(expr.span);
-        let expr_ty = self.resolve_type_vars_with_obligations(checked_ty);
+        let expr_ty = self.resolve_vars_with_obligations(checked_ty);
         let mut err = self.report_mismatched_types(&cause, expected, expr_ty, e);
 
         if self.is_assign_to_bool(expr, expected) {
@@ -125,15 +127,32 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             return (expected, None)
         }
 
+        self.annotate_expected_due_to_let_ty(&mut err, expr);
         self.suggest_compatible_variants(&mut err, expr, expected, expr_ty);
         self.suggest_ref_or_into(&mut err, expr, expected, expr_ty);
+        self.suggest_boxing_when_appropriate(&mut err, expr, expected, expr_ty);
+        self.suggest_missing_await(&mut err, expr, expected, expr_ty);
 
         (expected, Some(err))
     }
 
+    fn annotate_expected_due_to_let_ty(&self, err: &mut DiagnosticBuilder<'_>, expr: &hir::Expr) {
+        let parent = self.tcx.hir().get_parent_node(expr.hir_id);
+        if let Some(hir::Node::Local(hir::Local {
+            ty: Some(ty),
+            init: Some(init),
+            ..
+        })) = self.tcx.hir().find(parent) {
+            if init.hir_id == expr.hir_id {
+                // Point at `let` assignment type.
+                err.span_label(ty.span, "expected due to this");
+            }
+        }
+    }
+
     /// Returns whether the expected type is `bool` and the expression is `x = y`.
     pub fn is_assign_to_bool(&self, expr: &hir::Expr, expected: Ty<'tcx>) -> bool {
-        if let hir::ExprKind::Assign(..) = expr.node {
+        if let hir::ExprKind::Assign(..) = expr.kind {
             return expected == self.tcx.types.bool;
         }
         false
@@ -148,7 +167,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
         expected: Ty<'tcx>,
         expr_ty: Ty<'tcx>,
     ) {
-        if let ty::Adt(expected_adt, substs) = expected.sty {
+        if let ty::Adt(expected_adt, substs) = expected.kind {
             if !expected_adt.is_enum() {
                 return;
             }
@@ -169,17 +188,22 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 }).peekable();
 
             if compatible_variants.peek().is_some() {
-                let expr_text = print::to_string(print::NO_ANN, |s| s.print_expr(expr));
+                let expr_text = self.tcx.sess
+                    .source_map()
+                    .span_to_snippet(expr.span)
+                    .unwrap_or_else(|_| {
+                        print::to_string(print::NO_ANN, |s| s.print_expr(expr))
+                    });
                 let suggestions = compatible_variants
                     .map(|v| format!("{}({})", v, expr_text));
-                let msg = "try using a variant of the expected type";
+                let msg = "try using a variant of the expected enum";
                 err.span_suggestions(expr.span, msg, suggestions, Applicability::MaybeIncorrect);
             }
         }
     }
 
     pub fn get_conversion_methods(&self, span: Span, expected: Ty<'tcx>, checked_ty: Ty<'tcx>)
-                              -> Vec<AssociatedItem> {
+                              -> Vec<AssocItem> {
         let mut methods = self.probe_for_return_type(span,
                                                      probe::Mode::MethodCall,
                                                      expected,
@@ -205,9 +229,9 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     }
 
     // This function checks if the method isn't static and takes other arguments than `self`.
-    fn has_no_input_arg(&self, method: &AssociatedItem) -> bool {
+    fn has_no_input_arg(&self, method: &AssocItem) -> bool {
         match method.kind {
-            ty::AssociatedKind::Method => {
+            ty::AssocKind::Method => {
                 self.tcx.fn_sig(method.def_id).inputs().skip_binder().len() == 1
             }
             _ => false,
@@ -222,65 +246,85 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     /// fn takes_ref(_: &Foo) {}
     /// let ref opt = Some(Foo);
     ///
-    /// opt.map(|arg| takes_ref(arg));
+    /// opt.map(|param| takes_ref(param));
     /// ```
-    /// Suggest using `opt.as_ref().map(|arg| takes_ref(arg));` instead.
+    /// Suggest using `opt.as_ref().map(|param| takes_ref(param));` instead.
     ///
     /// It only checks for `Option` and `Result` and won't work with
     /// ```
-    /// opt.map(|arg| { takes_ref(arg) });
+    /// opt.map(|param| { takes_ref(param) });
     /// ```
     fn can_use_as_ref(
         &self,
         expr: &hir::Expr,
     ) -> Option<(Span, &'static str, String)> {
-        if let hir::ExprKind::Path(hir::QPath::Resolved(_, ref path)) = expr.node {
-            if let hir::def::Res::Local(id) = path.res {
-                let parent = self.tcx.hir().get_parent_node_by_hir_id(id);
-                if let Some(Node::Expr(hir::Expr {
-                    hir_id,
-                    node: hir::ExprKind::Closure(_, decl, ..),
-                    ..
-                })) = self.tcx.hir().find_by_hir_id(parent) {
-                    let parent = self.tcx.hir().get_parent_node_by_hir_id(*hir_id);
-                    if let (Some(Node::Expr(hir::Expr {
-                        node: hir::ExprKind::MethodCall(path, span, expr),
-                        ..
-                    })), 1) = (self.tcx.hir().find_by_hir_id(parent), decl.inputs.len()) {
-                        let self_ty = self.tables.borrow().node_type(expr[0].hir_id);
-                        let self_ty = format!("{:?}", self_ty);
-                        let name = path.ident.as_str();
-                        let is_as_ref_able = (
-                            self_ty.starts_with("&std::option::Option") ||
-                            self_ty.starts_with("&std::result::Result") ||
-                            self_ty.starts_with("std::option::Option") ||
-                            self_ty.starts_with("std::result::Result")
-                        ) && (name == "map" || name == "and_then");
-                        match (is_as_ref_able, self.sess().source_map().span_to_snippet(*span)) {
-                            (true, Ok(src)) => {
-                                return Some((*span, "consider using `as_ref` instead",
-                                             format!("as_ref().{}", src)));
-                            },
-                            _ => ()
-                        }
-                    }
-                }
-            }
+        let path = match expr.kind {
+            hir::ExprKind::Path(hir::QPath::Resolved(_, ref path)) => path,
+            _ => return None
+        };
+
+        let local_id = match path.res {
+            hir::def::Res::Local(id) => id,
+            _ => return None
+        };
+
+        let local_parent = self.tcx.hir().get_parent_node(local_id);
+        let param_hir_id = match self.tcx.hir().find(local_parent) {
+            Some(Node::Param(hir::Param { hir_id, .. })) => hir_id,
+            _ => return None
+        };
+
+        let param_parent = self.tcx.hir().get_parent_node(*param_hir_id);
+        let (expr_hir_id, closure_fn_decl) = match self.tcx.hir().find(param_parent) {
+            Some(Node::Expr(
+                hir::Expr { hir_id, kind: hir::ExprKind::Closure(_, decl, ..), .. }
+            )) => (hir_id, decl),
+            _ => return None
+        };
+
+        let expr_parent = self.tcx.hir().get_parent_node(*expr_hir_id);
+        let hir = self.tcx.hir().find(expr_parent);
+        let closure_params_len = closure_fn_decl.inputs.len();
+        let (method_path, method_span, method_expr) = match (hir, closure_params_len) {
+            (Some(Node::Expr(
+                hir::Expr { kind: hir::ExprKind::MethodCall(path, span, expr), .. }
+            )), 1) => (path, span, expr),
+            _ => return None
+        };
+
+        let self_ty = self.tables.borrow().node_type(method_expr[0].hir_id);
+        let self_ty = format!("{:?}", self_ty);
+        let name = method_path.ident.as_str();
+        let is_as_ref_able = (
+            self_ty.starts_with("&std::option::Option") ||
+            self_ty.starts_with("&std::result::Result") ||
+            self_ty.starts_with("std::option::Option") ||
+            self_ty.starts_with("std::result::Result")
+        ) && (name == "map" || name == "and_then");
+        match (is_as_ref_able, self.sess().source_map().span_to_snippet(*method_span)) {
+            (true, Ok(src)) => {
+                let suggestion = format!("as_ref().{}", src);
+                Some((*method_span, "consider using `as_ref` instead", suggestion))
+            },
+            _ => None
         }
-        None
     }
 
-    fn is_hir_id_from_struct_pattern_shorthand_field(&self, hir_id: hir::HirId, sp: Span) -> bool {
+    crate fn is_hir_id_from_struct_pattern_shorthand_field(
+        &self,
+        hir_id: hir::HirId,
+        sp: Span,
+    ) -> bool {
         let cm = self.sess().source_map();
-        let parent_id = self.tcx.hir().get_parent_node_by_hir_id(hir_id);
-        if let Some(parent) = self.tcx.hir().find_by_hir_id(parent_id) {
+        let parent_id = self.tcx.hir().get_parent_node(hir_id);
+        if let Some(parent) = self.tcx.hir().find(parent_id) {
             // Account for fields
             if let Node::Expr(hir::Expr {
-                node: hir::ExprKind::Struct(_, fields, ..), ..
+                kind: hir::ExprKind::Struct(_, fields, ..), ..
             }) = parent {
                 if let Ok(src) = cm.span_to_snippet(sp) {
                     for field in fields {
-                        if field.ident.as_str() == src.as_str() && field.is_shorthand {
+                        if field.ident.as_str() == src && field.is_shorthand {
                             return true;
                         }
                     }
@@ -306,11 +350,12 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
     /// In addition of this check, it also checks between references mutability state. If the
     /// expected is mutable but the provided isn't, maybe we could just say "Hey, try with
     /// `&mut`!".
-    pub fn check_ref(&self,
-                 expr: &hir::Expr,
-                 checked_ty: Ty<'tcx>,
-                 expected: Ty<'tcx>)
-                 -> Option<(Span, &'static str, String)> {
+    pub fn check_ref(
+        &self,
+        expr: &hir::Expr,
+        checked_ty: Ty<'tcx>,
+        expected: Ty<'tcx>,
+    ) -> Option<(Span, &'static str, String)> {
         let cm = self.sess().source_map();
         let sp = expr.span;
         if !cm.span_to_filename(sp).is_real() {
@@ -324,15 +369,18 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             sp,
         );
 
-        // Check the `expn_info()` to see if this is a macro; if so, it's hard to
-        // extract the text and make a good suggestion, so don't bother.
-        let is_macro = sp.ctxt().outer().expn_info().is_some();
+        // If the span is from a macro, then it's hard to extract the text
+        // and make a good suggestion, so don't bother.
+        let is_macro = sp.from_expansion() && sp.desugaring_kind().is_none();
 
-        match (&expr.node, &expected.sty, &checked_ty.sty) {
-            (_, &ty::Ref(_, exp, _), &ty::Ref(_, check, _)) => match (&exp.sty, &check.sty) {
+        // `ExprKind::DropTemps` is semantically irrelevant for these suggestions.
+        let expr = expr.peel_drop_temps();
+
+        match (&expr.kind, &expected.kind, &checked_ty.kind) {
+            (_, &ty::Ref(_, exp, _), &ty::Ref(_, check, _)) => match (&exp.kind, &check.kind) {
                 (&ty::Str, &ty::Array(arr, _)) |
                 (&ty::Str, &ty::Slice(arr)) if arr == self.tcx.types.u8 => {
-                    if let hir::ExprKind::Lit(_) = expr.node {
+                    if let hir::ExprKind::Lit(_) = expr.kind {
                         if let Ok(src) = cm.span_to_snippet(sp) {
                             if src.starts_with("b\"") {
                                 return Some((sp,
@@ -344,7 +392,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 },
                 (&ty::Array(arr, _), &ty::Str) |
                 (&ty::Slice(arr), &ty::Str) if arr == self.tcx.types.u8 => {
-                    if let hir::ExprKind::Lit(_) = expr.node {
+                    if let hir::ExprKind::Lit(_) = expr.kind {
                         if let Ok(src) = cm.span_to_snippet(sp) {
                             if src.starts_with("\"") {
                                 return Some((sp,
@@ -366,16 +414,32 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 // bar(&x); // error, expected &mut
                 // ```
                 let ref_ty = match mutability {
-                    hir::Mutability::MutMutable => {
+                    hir::Mutability::Mutable => {
                         self.tcx.mk_mut_ref(self.tcx.mk_region(ty::ReStatic), checked_ty)
                     }
-                    hir::Mutability::MutImmutable => {
+                    hir::Mutability::Immutable => {
                         self.tcx.mk_imm_ref(self.tcx.mk_region(ty::ReStatic), checked_ty)
                     }
                 };
                 if self.can_coerce(ref_ty, expected) {
-                    if let Ok(src) = cm.span_to_snippet(sp) {
-                        let needs_parens = match expr.node {
+                    let mut sugg_sp = sp;
+                    if let hir::ExprKind::MethodCall(segment, _sp, args) = &expr.kind {
+                        let clone_trait = self.tcx.lang_items().clone_trait().unwrap();
+                        if let ([arg], Some(true), sym::clone) = (
+                            &args[..],
+                            self.tables.borrow().type_dependent_def_id(expr.hir_id).map(|did| {
+                                let ai = self.tcx.associated_item(did);
+                                ai.container == ty::TraitContainer(clone_trait)
+                            }),
+                            segment.ident.name,
+                        ) {
+                            // If this expression had a clone call when suggesting borrowing
+                            // we want to suggest removing it because it'd now be unecessary.
+                            sugg_sp = arg.span;
+                        }
+                    }
+                    if let Ok(src) = cm.span_to_snippet(sugg_sp) {
+                        let needs_parens = match expr.kind {
                             // parenthesize if needed (Issue #46756)
                             hir::ExprKind::Cast(_, _) |
                             hir::ExprKind::Binary(_, _, _) => true,
@@ -397,13 +461,37 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                         } else {
                             String::new()
                         };
+                        if let Some(hir::Node::Expr(hir::Expr {
+                            kind: hir::ExprKind::Assign(left_expr, _),
+                            ..
+                        })) = self.tcx.hir().find(
+                            self.tcx.hir().get_parent_node(expr.hir_id),
+                        ) {
+                            if mutability == hir::Mutability::Mutable {
+                                // Found the following case:
+                                // fn foo(opt: &mut Option<String>){ opt = None }
+                                //                                   ---   ^^^^
+                                //                                   |     |
+                                //    consider dereferencing here: `*opt`  |
+                                // expected mutable reference, found enum `Option`
+                                if let Ok(src) = cm.span_to_snippet(left_expr.span) {
+                                    return Some((
+                                        left_expr.span,
+                                        "consider dereferencing here to assign to the mutable \
+                                         borrowed piece of memory",
+                                        format!("*{}", src),
+                                    ));
+                                }
+                            }
+                        }
+
                         return Some(match mutability {
-                            hir::Mutability::MutMutable => (
+                            hir::Mutability::Mutable => (
                                 sp,
                                 "consider mutably borrowing here",
                                 format!("{}&mut {}", field_name, sugg_expr),
                             ),
-                            hir::Mutability::MutImmutable => (
+                            hir::Mutability::Immutable => (
                                 sp,
                                 "consider borrowing here",
                                 format!("{}&{}", field_name, sugg_expr),
@@ -412,7 +500,11 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                     }
                 }
             },
-            (hir::ExprKind::AddrOf(_, ref expr), _, &ty::Ref(_, checked, _)) if {
+            (
+                hir::ExprKind::AddrOf(hir::BorrowKind::Ref, _, ref expr),
+                _,
+                &ty::Ref(_, checked, _)
+            ) if {
                 self.infcx.can_sub(self.param_env, checked, &expected).is_ok() && !is_macro
             } => {
                 // We have `&T`, check if what was expected was `T`. If so,
@@ -481,14 +573,18 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
 
     pub fn check_for_cast(
         &self,
-        err: &mut DiagnosticBuilder<'tcx>,
+        err: &mut DiagnosticBuilder<'_>,
         expr: &hir::Expr,
         checked_ty: Ty<'tcx>,
         expected_ty: Ty<'tcx>,
     ) -> bool {
-        if self.tcx.hir().is_const_scope(expr.hir_id) {
+        if self.tcx.hir().is_const_context(expr.hir_id) {
             // Shouldn't suggest `.into()` on `const`s.
             // FIXME(estebank): modify once we decide to suggest `as` casts
+            return false;
+        }
+        if !self.tcx.sess.source_map().span_to_filename(expr.span).is_real() {
+            // Ignore if span is from within a macro.
             return false;
         }
 
@@ -504,9 +600,9 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
 
         let mut prefix = String::new();
         if let Some(hir::Node::Expr(hir::Expr {
-            node: hir::ExprKind::Struct(_, fields, _),
+            kind: hir::ExprKind::Struct(_, fields, _),
             ..
-        })) = self.tcx.hir().find_by_hir_id(self.tcx.hir().get_parent_node_by_hir_id(expr.hir_id)) {
+        })) = self.tcx.hir().find(self.tcx.hir().get_parent_node(expr.hir_id)) {
             // `expr` is a literal field for a struct, only suggest if appropriate
             for field in fields {
                 if field.expr.hir_id == expr.hir_id && field.is_shorthand {
@@ -518,6 +614,30 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
             if &prefix == "" {
                 // Likely a field was meant, but this field wasn't found. Do not suggest anything.
                 return false;
+            }
+        }
+        if let hir::ExprKind::Call(path, args) = &expr.kind {
+            if let (
+                hir::ExprKind::Path(hir::QPath::TypeRelative(base_ty, path_segment)),
+                1,
+            ) = (&path.kind, args.len()) {
+                // `expr` is a conversion like `u32::from(val)`, do not suggest anything (#63697).
+                if let (
+                    hir::TyKind::Path(hir::QPath::Resolved(None, base_ty_path)),
+                    sym::from,
+                ) = (&base_ty.kind, path_segment.ident.name) {
+                    if let Some(ident) = &base_ty_path.segments.iter().map(|s| s.ident).next() {
+                        match ident.name {
+                            sym::i128 | sym::i64 | sym::i32 | sym::i16 | sym::i8 |
+                            sym::u128 | sym::u64 | sym::u32 | sym::u16 | sym::u8 |
+                            sym::isize | sym::usize
+                            if base_ty_path.segments.len() == 1 => {
+                                return false;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
             }
         }
 
@@ -559,8 +679,8 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 "{}{}{}{}",
                 if needs_paren { "(" } else { "" },
                 if let (ty::Int(_), ty::Float(_)) | (ty::Uint(_), ty::Float(_)) = (
-                    &expected_ty.sty,
-                    &checked_ty.sty,
+                    &expected_ty.kind,
+                    &checked_ty.kind,
                 ) {
                     // Remove fractional part from literal, for example `42.0f32` into `42`
                     let src = src.trim_end_matches(&checked_ty.to_string());
@@ -572,7 +692,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 if needs_paren { ")" } else { "" },
             );
             let literal_is_ty_suffixed = |expr: &hir::Expr| {
-                if let hir::ExprKind::Lit(lit) = &expr.node {
+                if let hir::ExprKind::Lit(lit) = &expr.kind {
                     lit.node.is_suffixed()
                 } else {
                     false
@@ -604,7 +724,7 @@ impl<'a, 'gcx, 'tcx> FnCtxt<'a, 'gcx, 'tcx> {
                 );
             };
 
-            match (&expected_ty.sty, &checked_ty.sty) {
+            match (&expected_ty.kind, &checked_ty.kind) {
                 (&ty::Int(ref exp), &ty::Int(ref found)) => {
                     let is_fallible = match (found.bit_width(), exp.bit_width()) {
                         (Some(found), Some(exp)) if found > exp => true,

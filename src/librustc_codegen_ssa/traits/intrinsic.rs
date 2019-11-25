@@ -1,7 +1,7 @@
 use super::BackendTypes;
 use crate::mir::operand::OperandRef;
-use rustc::ty::Ty;
-use rustc_target::abi::call::FnType;
+use rustc::ty::{self, Ty};
+use rustc_target::abi::call::FnAbi;
 use syntax_pos::Span;
 
 pub trait IntrinsicCallMethods<'tcx>: BackendTypes {
@@ -10,8 +10,8 @@ pub trait IntrinsicCallMethods<'tcx>: BackendTypes {
     /// add them to librustc_codegen_llvm/context.rs
     fn codegen_intrinsic_call(
         &mut self,
-        callee_ty: Ty<'tcx>,
-        fn_ty: &FnType<'tcx, Ty<'tcx>>,
+        instance: ty::Instance<'tcx>,
+        fn_abi: &FnAbi<'tcx, Ty<'tcx>>,
         args: &[OperandRef<'tcx, Self::Value>],
         llresult: Self::Value,
         span: Span,
@@ -20,10 +20,11 @@ pub trait IntrinsicCallMethods<'tcx>: BackendTypes {
     fn abort(&mut self);
     fn assume(&mut self, val: Self::Value);
     fn expect(&mut self, cond: Self::Value, expected: bool) -> Self::Value;
-    /// Trait method used to inject `va_start` on the "spoofed" `VaList` in
+    fn sideeffect(&mut self);
+    /// Trait method used to inject `va_start` on the "spoofed" `VaListImpl` in
     /// Rust defined C-variadic functions.
     fn va_start(&mut self, val: Self::Value) -> Self::Value;
-    /// Trait method used to inject `va_end` on the "spoofed" `VaList` before
+    /// Trait method used to inject `va_end` on the "spoofed" `VaListImpl` before
     /// Rust defined C-variadic functions return.
     fn va_end(&mut self, val: Self::Value) -> Self::Value;
 }

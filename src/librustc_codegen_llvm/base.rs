@@ -22,9 +22,8 @@ use crate::metadata;
 use crate::builder::Builder;
 use crate::common;
 use crate::context::CodegenCx;
-use crate::monomorphize::partitioning::CodegenUnitExt;
 use rustc::dep_graph;
-use rustc::mir::mono::{Linkage, Visibility, Stats};
+use rustc::mir::mono::{Linkage, Visibility};
 use rustc::middle::cstore::{EncodedMetadata};
 use rustc::ty::TyCtxt;
 use rustc::middle::exported_symbols;
@@ -37,15 +36,15 @@ use rustc_codegen_ssa::back::write::submit_codegened_module_to_llvm;
 
 use std::ffi::CString;
 use std::time::Instant;
-use syntax_pos::symbol::InternedString;
+use syntax_pos::symbol::Symbol;
 use rustc::hir::CodegenFnAttrs;
 
 use crate::value::Value;
 
-pub fn write_compressed_metadata<'a, 'gcx>(
-    tcx: TyCtxt<'a, 'gcx, 'gcx>,
+pub fn write_compressed_metadata<'tcx>(
+    tcx: TyCtxt<'tcx>,
     metadata: &EncodedMetadata,
-    llvm_module: &mut ModuleLlvm
+    llvm_module: &mut ModuleLlvm,
 ) {
     use std::io::Write;
     use flate2::Compression;
@@ -104,36 +103,40 @@ pub fn iter_globals(llmod: &'ll llvm::Module) -> ValueIter<'ll> {
     }
 }
 
-pub fn compile_codegen_unit<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                  cgu_name: InternedString)
-                                  -> Stats {
+pub fn compile_codegen_unit(
+    tcx: TyCtxt<'tcx>,
+    cgu_name: Symbol,
+    tx_to_llvm_workers: &std::sync::mpsc::Sender<Box<dyn std::any::Any + Send>>,
+) {
+    let prof_timer = tcx.prof.generic_activity("codegen_module");
     let start_time = Instant::now();
 
     let dep_node = tcx.codegen_unit(cgu_name).codegen_dep_node(tcx);
-    let ((stats, module), _) = tcx.dep_graph.with_task(dep_node,
-                                                       tcx,
-                                                       cgu_name,
-                                                       module_codegen,
-                                                       dep_graph::hash_result);
+    let (module, _) = tcx.dep_graph.with_task(
+        dep_node,
+        tcx,
+        cgu_name,
+        module_codegen,
+        dep_graph::hash_result,
+    );
     let time_to_codegen = start_time.elapsed();
+    drop(prof_timer);
 
     // We assume that the cost to run LLVM on a CGU is proportional to
     // the time we needed for codegenning it.
     let cost = time_to_codegen.as_secs() * 1_000_000_000 +
                time_to_codegen.subsec_nanos() as u64;
 
-    submit_codegened_module_to_llvm(&LlvmCodegenBackend(()), tcx, module, cost);
-    return stats;
+    submit_codegened_module_to_llvm(&LlvmCodegenBackend(()), tx_to_llvm_workers, module, cost);
 
-    fn module_codegen<'ll, 'tcx>(
-        tcx: TyCtxt<'ll, 'tcx, 'tcx>,
-        cgu_name: InternedString)
-        -> (Stats, ModuleCodegen<ModuleLlvm>)
-    {
+    fn module_codegen(
+        tcx: TyCtxt<'_>,
+        cgu_name: Symbol,
+    ) -> ModuleCodegen<ModuleLlvm> {
         let cgu = tcx.codegen_unit(cgu_name);
         // Instantiate monomorphizations without filling out definitions yet...
         let llvm_module = ModuleLlvm::new(tcx, &cgu_name.as_str());
-        let stats = {
+        {
             let cx = CodegenCx::new(tcx, cgu, &llvm_module);
             let mono_items = cx.codegen_unit
                                .items_in_deterministic_order(cx.tcx);
@@ -169,15 +172,13 @@ pub fn compile_codegen_unit<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             if cx.sess().opts.debuginfo != DebugInfo::None {
                 cx.debuginfo_finalize();
             }
+        }
 
-            cx.consume_stats().into_inner()
-        };
-
-        (stats, ModuleCodegen {
+        ModuleCodegen {
             name: cgu_name.to_string(),
             module_llvm: llvm_module,
             kind: ModuleKind::Regular,
-        })
+        }
     }
 }
 

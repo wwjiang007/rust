@@ -2,11 +2,11 @@
 
 use crate::hir::def_id::DefId;
 use crate::infer::canonical::Canonical;
-use crate::ty::{self, Lift, List, Ty, TyCtxt, InferConst, ParamConst};
+use crate::ty::{self, Lift, List, Ty, TyCtxt, ParamConst};
 use crate::ty::fold::{TypeFoldable, TypeFolder, TypeVisitor};
-use crate::mir::interpret::ConstValue;
+use crate::ty::sty::{ClosureSubsts, GeneratorSubsts};
 
-use serialize::{self, Encodable, Encoder, Decodable, Decoder};
+use rustc_serialize::{self, Encodable, Encoder, Decodable, Decoder};
 use syntax_pos::{Span, DUMMY_SP};
 use smallvec::SmallVec;
 use rustc_macros::HashStable;
@@ -20,11 +20,11 @@ use std::num::NonZeroUsize;
 
 /// An entity in the Rust type system, which can be one of
 /// several kinds (types, lifetimes, and consts).
-/// To reduce memory usage, a `Kind` is a interned pointer,
+/// To reduce memory usage, a `GenericArg` is a interned pointer,
 /// with the lowest 2 bits being reserved for a tag to
 /// indicate the type (`Ty`, `Region`, or `Const`) it points to.
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
-pub struct Kind<'tcx> {
+pub struct GenericArg<'tcx> {
     ptr: NonZeroUsize,
     marker: PhantomData<(Ty<'tcx>, ty::Region<'tcx>, &'tcx ty::Const<'tcx>)>
 }
@@ -35,33 +35,33 @@ const REGION_TAG: usize = 0b01;
 const CONST_TAG: usize = 0b10;
 
 #[derive(Debug, RustcEncodable, RustcDecodable, PartialEq, Eq, PartialOrd, Ord, HashStable)]
-pub enum UnpackedKind<'tcx> {
+pub enum GenericArgKind<'tcx> {
     Lifetime(ty::Region<'tcx>),
     Type(Ty<'tcx>),
     Const(&'tcx ty::Const<'tcx>),
 }
 
-impl<'tcx> UnpackedKind<'tcx> {
-    fn pack(self) -> Kind<'tcx> {
+impl<'tcx> GenericArgKind<'tcx> {
+    fn pack(self) -> GenericArg<'tcx> {
         let (tag, ptr) = match self {
-            UnpackedKind::Lifetime(lt) => {
+            GenericArgKind::Lifetime(lt) => {
                 // Ensure we can use the tag bits.
                 assert_eq!(mem::align_of_val(lt) & TAG_MASK, 0);
                 (REGION_TAG, lt as *const _ as usize)
             }
-            UnpackedKind::Type(ty) => {
+            GenericArgKind::Type(ty) => {
                 // Ensure we can use the tag bits.
                 assert_eq!(mem::align_of_val(ty) & TAG_MASK, 0);
                 (TYPE_TAG, ty as *const _ as usize)
             }
-            UnpackedKind::Const(ct) => {
+            GenericArgKind::Const(ct) => {
                 // Ensure we can use the tag bits.
                 assert_eq!(mem::align_of_val(ct) & TAG_MASK, 0);
                 (CONST_TAG, ct as *const _ as usize)
             }
         };
 
-        Kind {
+        GenericArg {
             ptr: unsafe {
                 NonZeroUsize::new_unchecked(ptr | tag)
             },
@@ -70,121 +70,139 @@ impl<'tcx> UnpackedKind<'tcx> {
     }
 }
 
-impl fmt::Debug for Kind<'tcx> {
+impl fmt::Debug for GenericArg<'tcx> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.unpack() {
-            UnpackedKind::Lifetime(lt) => lt.fmt(f),
-            UnpackedKind::Type(ty) => ty.fmt(f),
-            UnpackedKind::Const(ct) => ct.fmt(f),
+            GenericArgKind::Lifetime(lt) => lt.fmt(f),
+            GenericArgKind::Type(ty) => ty.fmt(f),
+            GenericArgKind::Const(ct) => ct.fmt(f),
         }
     }
 }
 
-impl<'tcx> Ord for Kind<'tcx> {
-    fn cmp(&self, other: &Kind<'_>) -> Ordering {
+impl<'tcx> Ord for GenericArg<'tcx> {
+    fn cmp(&self, other: &GenericArg<'_>) -> Ordering {
         self.unpack().cmp(&other.unpack())
     }
 }
 
-impl<'tcx> PartialOrd for Kind<'tcx> {
-    fn partial_cmp(&self, other: &Kind<'_>) -> Option<Ordering> {
+impl<'tcx> PartialOrd for GenericArg<'tcx> {
+    fn partial_cmp(&self, other: &GenericArg<'_>) -> Option<Ordering> {
         Some(self.cmp(&other))
     }
 }
 
-impl<'tcx> From<ty::Region<'tcx>> for Kind<'tcx> {
-    fn from(r: ty::Region<'tcx>) -> Kind<'tcx> {
-        UnpackedKind::Lifetime(r).pack()
+impl<'tcx> From<ty::Region<'tcx>> for GenericArg<'tcx> {
+    fn from(r: ty::Region<'tcx>) -> GenericArg<'tcx> {
+        GenericArgKind::Lifetime(r).pack()
     }
 }
 
-impl<'tcx> From<Ty<'tcx>> for Kind<'tcx> {
-    fn from(ty: Ty<'tcx>) -> Kind<'tcx> {
-        UnpackedKind::Type(ty).pack()
+impl<'tcx> From<Ty<'tcx>> for GenericArg<'tcx> {
+    fn from(ty: Ty<'tcx>) -> GenericArg<'tcx> {
+        GenericArgKind::Type(ty).pack()
     }
 }
 
-impl<'tcx> From<&'tcx ty::Const<'tcx>> for Kind<'tcx> {
-    fn from(c: &'tcx ty::Const<'tcx>) -> Kind<'tcx> {
-        UnpackedKind::Const(c).pack()
+impl<'tcx> From<&'tcx ty::Const<'tcx>> for GenericArg<'tcx> {
+    fn from(c: &'tcx ty::Const<'tcx>) -> GenericArg<'tcx> {
+        GenericArgKind::Const(c).pack()
     }
 }
 
-impl<'tcx> Kind<'tcx> {
+impl<'tcx> GenericArg<'tcx> {
     #[inline]
-    pub fn unpack(self) -> UnpackedKind<'tcx> {
+    pub fn unpack(self) -> GenericArgKind<'tcx> {
         let ptr = self.ptr.get();
         unsafe {
             match ptr & TAG_MASK {
-                REGION_TAG => UnpackedKind::Lifetime(&*((ptr & !TAG_MASK) as *const _)),
-                TYPE_TAG => UnpackedKind::Type(&*((ptr & !TAG_MASK) as *const _)),
-                CONST_TAG => UnpackedKind::Const(&*((ptr & !TAG_MASK) as *const _)),
+                REGION_TAG => GenericArgKind::Lifetime(&*((ptr & !TAG_MASK) as *const _)),
+                TYPE_TAG => GenericArgKind::Type(&*((ptr & !TAG_MASK) as *const _)),
+                CONST_TAG => GenericArgKind::Const(&*((ptr & !TAG_MASK) as *const _)),
                 _ => intrinsics::unreachable()
             }
         }
     }
 
-    /// Unpack the `Kind` as a type when it is known certainly to be a type.
+    /// Unpack the `GenericArg` as a type when it is known certainly to be a type.
     /// This is true in cases where `Substs` is used in places where the kinds are known
     /// to be limited (e.g. in tuples, where the only parameters are type parameters).
     pub fn expect_ty(self) -> Ty<'tcx> {
         match self.unpack() {
-            UnpackedKind::Type(ty) => ty,
+            GenericArgKind::Type(ty) => ty,
             _ => bug!("expected a type, but found another kind"),
         }
     }
 }
 
-impl<'a, 'tcx> Lift<'tcx> for Kind<'a> {
-    type Lifted = Kind<'tcx>;
+impl<'a, 'tcx> Lift<'tcx> for GenericArg<'a> {
+    type Lifted = GenericArg<'tcx>;
 
-    fn lift_to_tcx<'cx, 'gcx>(&self, tcx: TyCtxt<'cx, 'gcx, 'tcx>) -> Option<Self::Lifted> {
+    fn lift_to_tcx(&self, tcx: TyCtxt<'tcx>) -> Option<Self::Lifted> {
         match self.unpack() {
-            UnpackedKind::Lifetime(lt) => tcx.lift(&lt).map(|lt| lt.into()),
-            UnpackedKind::Type(ty) => tcx.lift(&ty).map(|ty| ty.into()),
-            UnpackedKind::Const(ct) => tcx.lift(&ct).map(|ct| ct.into()),
+            GenericArgKind::Lifetime(lt) => tcx.lift(&lt).map(|lt| lt.into()),
+            GenericArgKind::Type(ty) => tcx.lift(&ty).map(|ty| ty.into()),
+            GenericArgKind::Const(ct) => tcx.lift(&ct).map(|ct| ct.into()),
         }
     }
 }
 
-impl<'tcx> TypeFoldable<'tcx> for Kind<'tcx> {
-    fn super_fold_with<'gcx: 'tcx, F: TypeFolder<'gcx, 'tcx>>(&self, folder: &mut F) -> Self {
+impl<'tcx> TypeFoldable<'tcx> for GenericArg<'tcx> {
+    fn super_fold_with<F: TypeFolder<'tcx>>(&self, folder: &mut F) -> Self {
         match self.unpack() {
-            UnpackedKind::Lifetime(lt) => lt.fold_with(folder).into(),
-            UnpackedKind::Type(ty) => ty.fold_with(folder).into(),
-            UnpackedKind::Const(ct) => ct.fold_with(folder).into(),
+            GenericArgKind::Lifetime(lt) => lt.fold_with(folder).into(),
+            GenericArgKind::Type(ty) => ty.fold_with(folder).into(),
+            GenericArgKind::Const(ct) => ct.fold_with(folder).into(),
         }
     }
 
     fn super_visit_with<V: TypeVisitor<'tcx>>(&self, visitor: &mut V) -> bool {
         match self.unpack() {
-            UnpackedKind::Lifetime(lt) => lt.visit_with(visitor),
-            UnpackedKind::Type(ty) => ty.visit_with(visitor),
-            UnpackedKind::Const(ct) => ct.visit_with(visitor),
+            GenericArgKind::Lifetime(lt) => lt.visit_with(visitor),
+            GenericArgKind::Type(ty) => ty.visit_with(visitor),
+            GenericArgKind::Const(ct) => ct.visit_with(visitor),
         }
     }
 }
 
-impl<'tcx> Encodable for Kind<'tcx> {
+impl<'tcx> Encodable for GenericArg<'tcx> {
     fn encode<E: Encoder>(&self, e: &mut E) -> Result<(), E::Error> {
         self.unpack().encode(e)
     }
 }
 
-impl<'tcx> Decodable for Kind<'tcx> {
-    fn decode<D: Decoder>(d: &mut D) -> Result<Kind<'tcx>, D::Error> {
-        Ok(UnpackedKind::decode(d)?.pack())
+impl<'tcx> Decodable for GenericArg<'tcx> {
+    fn decode<D: Decoder>(d: &mut D) -> Result<GenericArg<'tcx>, D::Error> {
+        Ok(GenericArgKind::decode(d)?.pack())
     }
 }
 
 /// A substitution mapping generic parameters to new values.
-pub type InternalSubsts<'tcx> = List<Kind<'tcx>>;
+pub type InternalSubsts<'tcx> = List<GenericArg<'tcx>>;
 
 pub type SubstsRef<'tcx> = &'tcx InternalSubsts<'tcx>;
 
-impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
+impl<'a, 'tcx> InternalSubsts<'tcx> {
+    /// Interpret these substitutions as the substitutions of a closure type.
+    /// Closure substitutions have a particular structure controlled by the
+    /// compiler that encodes information like the signature and closure kind;
+    /// see `ty::ClosureSubsts` struct for more comments.
+    pub fn as_closure(&'a self) -> ClosureSubsts<'a> {
+        ClosureSubsts {
+            substs: self,
+        }
+    }
+
+    /// Interpret these substitutions as the substitutions of a generator type.
+    /// Closure substitutions have a particular structure controlled by the
+    /// compiler that encodes information like the signature and generator kind;
+    /// see `ty::GeneratorSubsts` struct for more comments.
+    pub fn as_generator(&'tcx self) -> GeneratorSubsts<'tcx> {
+        GeneratorSubsts { substs: self }
+    }
+
     /// Creates a `InternalSubsts` that maps each generic parameter to itself.
-    pub fn identity_for_item(tcx: TyCtxt<'a, 'gcx, 'tcx>, def_id: DefId) -> SubstsRef<'tcx> {
+    pub fn identity_for_item(tcx: TyCtxt<'tcx>, def_id: DefId) -> SubstsRef<'tcx> {
         Self::for_item(tcx, def_id, |param, _| {
             tcx.mk_param_from_def(param)
         })
@@ -194,10 +212,7 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
     /// var bound at index `0`. For types, we use a `BoundVar` index equal to
     /// the type parameter index. For regions, we use the `BoundRegion::BrNamed`
     /// variant (which has a `DefId`).
-    pub fn bound_vars_for_item(
-        tcx: TyCtxt<'a, 'gcx, 'tcx>,
-        def_id: DefId
-    ) -> SubstsRef<'tcx> {
+    pub fn bound_vars_for_item(tcx: TyCtxt<'tcx>, def_id: DefId) -> SubstsRef<'tcx> {
         Self::for_item(tcx, def_id, |param, _| {
             match param.kind {
                 ty::GenericParamDefKind::Type { .. } => {
@@ -218,9 +233,7 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
 
                 ty::GenericParamDefKind::Const => {
                     tcx.mk_const(ty::Const {
-                        val: ConstValue::Infer(
-                            InferConst::Canonical(ty::INNERMOST, ty::BoundVar::from(param.index))
-                        ),
+                        val: ty::ConstKind::Bound(ty::INNERMOST, ty::BoundVar::from(param.index)),
                         ty: tcx.type_of(def_id),
                     }).into()
                 }
@@ -233,11 +246,9 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
     /// The closures get to observe the `InternalSubsts` as they're
     /// being built, which can be used to correctly
     /// substitute defaults of generic parameters.
-    pub fn for_item<F>(tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                       def_id: DefId,
-                       mut mk_kind: F)
-                       -> SubstsRef<'tcx>
-    where F: FnMut(&ty::GenericParamDef, &[Kind<'tcx>]) -> Kind<'tcx>
+    pub fn for_item<F>(tcx: TyCtxt<'tcx>, def_id: DefId, mut mk_kind: F) -> SubstsRef<'tcx>
+    where
+        F: FnMut(&ty::GenericParamDef, &[GenericArg<'tcx>]) -> GenericArg<'tcx>,
     {
         let defs = tcx.generics_of(def_id);
         let count = defs.count();
@@ -246,12 +257,9 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
         tcx.intern_substs(&substs)
     }
 
-    pub fn extend_to<F>(&self,
-                        tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                        def_id: DefId,
-                        mut mk_kind: F)
-                        -> SubstsRef<'tcx>
-    where F: FnMut(&ty::GenericParamDef, &[Kind<'tcx>]) -> Kind<'tcx>
+    pub fn extend_to<F>(&self, tcx: TyCtxt<'tcx>, def_id: DefId, mut mk_kind: F) -> SubstsRef<'tcx>
+    where
+        F: FnMut(&ty::GenericParamDef, &[GenericArg<'tcx>]) -> GenericArg<'tcx>,
     {
         Self::for_item(tcx, def_id, |param, substs| {
             self.get(param.index as usize)
@@ -260,11 +268,13 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
         })
     }
 
-    fn fill_item<F>(substs: &mut SmallVec<[Kind<'tcx>; 8]>,
-                    tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                    defs: &ty::Generics,
-                    mk_kind: &mut F)
-    where F: FnMut(&ty::GenericParamDef, &[Kind<'tcx>]) -> Kind<'tcx>
+    fn fill_item<F>(
+        substs: &mut SmallVec<[GenericArg<'tcx>; 8]>,
+        tcx: TyCtxt<'tcx>,
+        defs: &ty::Generics,
+        mk_kind: &mut F,
+    ) where
+        F: FnMut(&ty::GenericParamDef, &[GenericArg<'tcx>]) -> GenericArg<'tcx>,
     {
         if let Some(def_id) = defs.parent {
             let parent_defs = tcx.generics_of(def_id);
@@ -273,10 +283,10 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
         Self::fill_single(substs, defs, mk_kind)
     }
 
-    fn fill_single<F>(substs: &mut SmallVec<[Kind<'tcx>; 8]>,
+    fn fill_single<F>(substs: &mut SmallVec<[GenericArg<'tcx>; 8]>,
                       defs: &ty::Generics,
                       mk_kind: &mut F)
-    where F: FnMut(&ty::GenericParamDef, &[Kind<'tcx>]) -> Kind<'tcx>
+    where F: FnMut(&ty::GenericParamDef, &[GenericArg<'tcx>]) -> GenericArg<'tcx>
     {
         substs.reserve(defs.params.len());
         for param in &defs.params {
@@ -293,7 +303,7 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
     #[inline]
     pub fn types(&'a self) -> impl DoubleEndedIterator<Item = Ty<'tcx>> + 'a {
         self.iter().filter_map(|k| {
-            if let UnpackedKind::Type(ty) = k.unpack() {
+            if let GenericArgKind::Type(ty) = k.unpack() {
                 Some(ty)
             } else {
                 None
@@ -304,7 +314,7 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
     #[inline]
     pub fn regions(&'a self) -> impl DoubleEndedIterator<Item = ty::Region<'tcx>> + 'a {
         self.iter().filter_map(|k| {
-            if let UnpackedKind::Lifetime(lt) = k.unpack() {
+            if let GenericArgKind::Lifetime(lt) = k.unpack() {
                 Some(lt)
             } else {
                 None
@@ -315,7 +325,7 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
     #[inline]
     pub fn consts(&'a self) -> impl DoubleEndedIterator<Item = &'tcx ty::Const<'tcx>> + 'a {
         self.iter().filter_map(|k| {
-            if let UnpackedKind::Const(ct) = k.unpack() {
+            if let GenericArgKind::Const(ct) = k.unpack() {
                 Some(ct)
             } else {
                 None
@@ -326,10 +336,10 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
     #[inline]
     pub fn non_erasable_generics(
         &'a self
-    ) -> impl DoubleEndedIterator<Item = UnpackedKind<'tcx>> + 'a {
+    ) -> impl DoubleEndedIterator<Item = GenericArgKind<'tcx>> + 'a {
         self.iter().filter_map(|k| {
             match k.unpack() {
-                UnpackedKind::Lifetime(_) => None,
+                GenericArgKind::Lifetime(_) => None,
                 generic => Some(generic),
             }
         })
@@ -337,7 +347,7 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
 
     #[inline]
     pub fn type_at(&self, i: usize) -> Ty<'tcx> {
-        if let UnpackedKind::Type(ty) = self[i].unpack() {
+        if let GenericArgKind::Type(ty) = self[i].unpack() {
             ty
         } else {
             bug!("expected type for param #{} in {:?}", i, self);
@@ -346,7 +356,7 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
 
     #[inline]
     pub fn region_at(&self, i: usize) -> ty::Region<'tcx> {
-        if let UnpackedKind::Lifetime(lt) = self[i].unpack() {
+        if let GenericArgKind::Lifetime(lt) = self[i].unpack() {
             lt
         } else {
             bug!("expected region for param #{} in {:?}", i, self);
@@ -355,7 +365,7 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
 
     #[inline]
     pub fn const_at(&self, i: usize) -> &'tcx ty::Const<'tcx> {
-        if let UnpackedKind::Const(ct) = self[i].unpack() {
+        if let GenericArgKind::Const(ct) = self[i].unpack() {
             ct
         } else {
             bug!("expected const for param #{} in {:?}", i, self);
@@ -363,7 +373,7 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
     }
 
     #[inline]
-    pub fn type_for_def(&self, def: &ty::GenericParamDef) -> Kind<'tcx> {
+    pub fn type_for_def(&self, def: &ty::GenericParamDef) -> GenericArg<'tcx> {
         self.type_at(def.index as usize).into()
     }
 
@@ -372,30 +382,58 @@ impl<'a, 'gcx, 'tcx> InternalSubsts<'tcx> {
     /// in a different item, with `target_substs` as the base for
     /// the target impl/trait, with the source child-specific
     /// parameters (e.g., method parameters) on top of that base.
-    pub fn rebase_onto(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                       source_ancestor: DefId,
-                       target_substs: SubstsRef<'tcx>)
-                       -> SubstsRef<'tcx> {
+    pub fn rebase_onto(
+        &self,
+        tcx: TyCtxt<'tcx>,
+        source_ancestor: DefId,
+        target_substs: SubstsRef<'tcx>,
+    ) -> SubstsRef<'tcx> {
         let defs = tcx.generics_of(source_ancestor);
         tcx.mk_substs(target_substs.iter().chain(&self[defs.params.len()..]).cloned())
     }
 
-    pub fn truncate_to(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>, generics: &ty::Generics)
-                       -> SubstsRef<'tcx> {
+    pub fn truncate_to(&self, tcx: TyCtxt<'tcx>, generics: &ty::Generics) -> SubstsRef<'tcx> {
         tcx.mk_substs(self.iter().take(generics.count()).cloned())
     }
 }
 
 impl<'tcx> TypeFoldable<'tcx> for SubstsRef<'tcx> {
-    fn super_fold_with<'gcx: 'tcx, F: TypeFolder<'gcx, 'tcx>>(&self, folder: &mut F) -> Self {
-        let params: SmallVec<[_; 8]> = self.iter().map(|k| k.fold_with(folder)).collect();
-
-        // If folding doesn't change the substs, it's faster to avoid
-        // calling `mk_substs` and instead reuse the existing substs.
-        if params[..] == self[..] {
-            self
-        } else {
-            folder.tcx().intern_substs(&params)
+    fn super_fold_with<F: TypeFolder<'tcx>>(&self, folder: &mut F) -> Self {
+        // This code is hot enough that it's worth specializing for the most
+        // common length lists, to avoid the overhead of `SmallVec` creation.
+        // The match arms are in order of frequency. The 1, 2, and 0 cases are
+        // typically hit in 90--99.99% of cases. When folding doesn't change
+        // the substs, it's faster to reuse the existing substs rather than
+        // calling `intern_substs`.
+        match self.len() {
+            1 => {
+                let param0 = self[0].fold_with(folder);
+                if param0 == self[0] {
+                    self
+                } else {
+                    folder.tcx().intern_substs(&[param0])
+                }
+            }
+            2 => {
+                let param0 = self[0].fold_with(folder);
+                let param1 = self[1].fold_with(folder);
+                if param0 == self[0] && param1 == self[1] {
+                    self
+                } else {
+                    folder.tcx().intern_substs(&[param0, param1])
+                }
+            }
+            0 => {
+                self
+            }
+            _ => {
+                let params: SmallVec<[_; 8]> = self.iter().map(|k| k.fold_with(folder)).collect();
+                if params[..] == self[..] {
+                    self
+                } else {
+                    folder.tcx().intern_substs(&params)
+                }
+            }
         }
     }
 
@@ -404,7 +442,7 @@ impl<'tcx> TypeFoldable<'tcx> for SubstsRef<'tcx> {
     }
 }
 
-impl<'tcx> serialize::UseSpecializedDecodable for SubstsRef<'tcx> {}
+impl<'tcx> rustc_serialize::UseSpecializedDecodable for SubstsRef<'tcx> {}
 
 ///////////////////////////////////////////////////////////////////////////
 // Public trait `Subst`
@@ -414,23 +452,25 @@ impl<'tcx> serialize::UseSpecializedDecodable for SubstsRef<'tcx> {}
 // there is more information available (for better errors).
 
 pub trait Subst<'tcx>: Sized {
-    fn subst<'a, 'gcx>(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                       substs: &[Kind<'tcx>]) -> Self {
+    fn subst(&self, tcx: TyCtxt<'tcx>, substs: &[GenericArg<'tcx>]) -> Self {
         self.subst_spanned(tcx, substs, None)
     }
 
-    fn subst_spanned<'a, 'gcx>(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                               substs: &[Kind<'tcx>],
-                               span: Option<Span>)
-                               -> Self;
+    fn subst_spanned(
+        &self,
+        tcx: TyCtxt<'tcx>,
+        substs: &[GenericArg<'tcx>],
+        span: Option<Span>,
+    ) -> Self;
 }
 
-impl<'tcx, T:TypeFoldable<'tcx>> Subst<'tcx> for T {
-    fn subst_spanned<'a, 'gcx>(&self, tcx: TyCtxt<'a, 'gcx, 'tcx>,
-                               substs: &[Kind<'tcx>],
-                               span: Option<Span>)
-                               -> T
-    {
+impl<'tcx, T: TypeFoldable<'tcx>> Subst<'tcx> for T {
+    fn subst_spanned(
+        &self,
+        tcx: TyCtxt<'tcx>,
+        substs: &[GenericArg<'tcx>],
+        span: Option<Span>,
+    ) -> T {
         let mut folder = SubstFolder { tcx,
                                        substs,
                                        span,
@@ -444,9 +484,9 @@ impl<'tcx, T:TypeFoldable<'tcx>> Subst<'tcx> for T {
 ///////////////////////////////////////////////////////////////////////////
 // The actual substitution engine itself is a type folder.
 
-struct SubstFolder<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
-    tcx: TyCtxt<'a, 'gcx, 'tcx>,
-    substs: &'a [Kind<'tcx>],
+struct SubstFolder<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
+    substs: &'a [GenericArg<'tcx>],
 
     /// The location for which the substitution is performed, if available.
     span: Option<Span>,
@@ -461,8 +501,8 @@ struct SubstFolder<'a, 'gcx: 'a+'tcx, 'tcx: 'a> {
     binders_passed: u32,
 }
 
-impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for SubstFolder<'a, 'gcx, 'tcx> {
-    fn tcx<'b>(&'b self) -> TyCtxt<'b, 'gcx, 'tcx> { self.tcx }
+impl<'a, 'tcx> TypeFolder<'tcx> for SubstFolder<'a, 'tcx> {
+    fn tcx<'b>(&'b self) -> TyCtxt<'tcx> { self.tcx }
 
     fn fold_binder<T: TypeFoldable<'tcx>>(&mut self, t: &ty::Binder<T>) -> ty::Binder<T> {
         self.binders_passed += 1;
@@ -479,21 +519,22 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for SubstFolder<'a, 'gcx, 'tcx> {
         // the specialized routine `ty::replace_late_regions()`.
         match *r {
             ty::ReEarlyBound(data) => {
-                let r = self.substs.get(data.index as usize).map(|k| k.unpack());
-                match r {
-                    Some(UnpackedKind::Lifetime(lt)) => {
+                let rk = self.substs.get(data.index as usize).map(|k| k.unpack());
+                match rk {
+                    Some(GenericArgKind::Lifetime(lt)) => {
                         self.shift_region_through_binders(lt)
                     }
                     _ => {
                         let span = self.span.unwrap_or(DUMMY_SP);
-                        span_bug!(
-                            span,
+                        let msg = format!(
                             "Region parameter out of range \
                              when substituting in region {} (root type={:?}) \
                              (index={})",
                             data.name,
                             self.root_ty,
                             data.index);
+                        self.tcx.sess.delay_span_bug(span, &msg);
+                        r
                     }
                 }
             }
@@ -513,7 +554,7 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for SubstFolder<'a, 'gcx, 'tcx> {
         }
         self.ty_stack_depth += 1;
 
-        let t1 = match t.sty {
+        let t1 = match t.kind {
             ty::Param(p) => {
                 self.ty_for_param(p, t)
             }
@@ -536,7 +577,7 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for SubstFolder<'a, 'gcx, 'tcx> {
             return c;
         }
 
-        if let ConstValue::Param(p) = c.val {
+        if let ty::ConstKind::Param(p) = c.val {
             self.const_for_param(p, c)
         } else {
             c.super_fold_with(self)
@@ -544,12 +585,12 @@ impl<'a, 'gcx, 'tcx> TypeFolder<'gcx, 'tcx> for SubstFolder<'a, 'gcx, 'tcx> {
     }
 }
 
-impl<'a, 'gcx, 'tcx> SubstFolder<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> SubstFolder<'a, 'tcx> {
     fn ty_for_param(&self, p: ty::ParamTy, source_ty: Ty<'tcx>) -> Ty<'tcx> {
         // Look up the type in the substitutions. It really should be in there.
         let opt_ty = self.substs.get(p.index as usize).map(|k| k.unpack());
         let ty = match opt_ty {
-            Some(UnpackedKind::Type(ty)) => ty,
+            Some(GenericArgKind::Type(ty)) => ty,
             Some(kind) => {
                 let span = self.span.unwrap_or(DUMMY_SP);
                 span_bug!(
@@ -590,7 +631,7 @@ impl<'a, 'gcx, 'tcx> SubstFolder<'a, 'gcx, 'tcx> {
         // Look up the const in the substitutions. It really should be in there.
         let opt_ct = self.substs.get(p.index as usize).map(|k| k.unpack());
         let ct = match opt_ct {
-            Some(UnpackedKind::Const(ct)) => ct,
+            Some(GenericArgKind::Const(ct)) => ct,
             Some(kind) => {
                 let span = self.span.unwrap_or(DUMMY_SP);
                 span_bug!(
@@ -689,7 +730,8 @@ pub type CanonicalUserSubsts<'tcx> = Canonical<'tcx, UserSubsts<'tcx>>;
 
 /// Stores the user-given substs to reach some fully qualified path
 /// (e.g., `<T>::Item` or `<T as Trait>::Item`).
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(HashStable, TypeFoldable, Lift)]
 pub struct UserSubsts<'tcx> {
     /// The substitutions for the item as given by the user.
     pub substs: SubstsRef<'tcx>,
@@ -697,21 +739,6 @@ pub struct UserSubsts<'tcx> {
     /// The self type, in the case of a `<T>::Item` path (when applied
     /// to an inherent impl). See `UserSelfTy` below.
     pub user_self_ty: Option<UserSelfTy<'tcx>>,
-}
-
-BraceStructTypeFoldableImpl! {
-    impl<'tcx> TypeFoldable<'tcx> for UserSubsts<'tcx> {
-        substs,
-        user_self_ty,
-    }
-}
-
-BraceStructLiftImpl! {
-    impl<'a, 'tcx> Lift<'tcx> for UserSubsts<'a> {
-        type Lifted = UserSubsts<'tcx>;
-        substs,
-        user_self_ty,
-    }
 }
 
 /// Specifies the user-given self type. In the case of a path that
@@ -730,23 +757,9 @@ BraceStructLiftImpl! {
 /// the impl (with the substs from `UserSubsts`) and apply those to
 /// the self type, giving `Foo<?A>`. Finally, we unify that with
 /// the self type here, which contains `?A` to be `&'static u32`
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable, HashStable)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
+#[derive(HashStable, TypeFoldable, Lift)]
 pub struct UserSelfTy<'tcx> {
     pub impl_def_id: DefId,
     pub self_ty: Ty<'tcx>,
-}
-
-BraceStructTypeFoldableImpl! {
-    impl<'tcx> TypeFoldable<'tcx> for UserSelfTy<'tcx> {
-        impl_def_id,
-        self_ty,
-    }
-}
-
-BraceStructLiftImpl! {
-    impl<'a, 'tcx> Lift<'tcx> for UserSelfTy<'a> {
-        type Lifted = UserSelfTy<'tcx>;
-        impl_def_id,
-        self_ty,
-    }
 }

@@ -7,9 +7,8 @@ use super::{HigherRankedType, InferCtxt, PlaceholderMap};
 use crate::infer::CombinedSnapshot;
 use crate::ty::relate::{Relate, RelateResult, TypeRelation};
 use crate::ty::{self, Binder, TypeFoldable};
-use crate::mir::interpret::ConstValue;
 
-impl<'a, 'gcx, 'tcx> CombineFields<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> CombineFields<'a, 'tcx> {
     pub fn higher_ranked_sub<T>(
         &mut self,
         a: &Binder<T>,
@@ -60,7 +59,7 @@ impl<'a, 'gcx, 'tcx> CombineFields<'a, 'gcx, 'tcx> {
     }
 }
 
-impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
+impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
     /// Replaces all regions (resp. types) bound by `binder` with placeholder
     /// regions (resp. types) and return a map indicating which bound-region
     /// placeholder region. This is the first step of checking subtyping
@@ -103,7 +102,7 @@ impl<'a, 'gcx, 'tcx> InferCtxt<'a, 'gcx, 'tcx> {
         let fld_c = |bound_var: ty::BoundVar, ty| {
             self.tcx.mk_const(
                 ty::Const {
-                    val: ConstValue::Placeholder(ty::PlaceholderConst {
+                    val: ty::ConstKind::Placeholder(ty::PlaceholderConst {
                         universe: next_universe,
                         name: bound_var,
                     }),

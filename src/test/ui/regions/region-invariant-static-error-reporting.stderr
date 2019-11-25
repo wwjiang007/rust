@@ -11,9 +11,9 @@ LL | |         mk_static()
 LL | |     };
    | |_____- if and else have incompatible types
    |
-   = note: expected type `Invariant<'a>`
-              found type `Invariant<'static>`
-note: the lifetime 'a as defined on the function body at 13:10...
+   = note: expected struct `Invariant<'a>`
+              found struct `Invariant<'static>`
+note: the lifetime `'a` as defined on the function body at 13:10...
   --> $DIR/region-invariant-static-error-reporting.rs:13:10
    |
 LL | fn unify<'a>(x: Option<Invariant<'a>>, f: fn(Invariant<'a>)) {

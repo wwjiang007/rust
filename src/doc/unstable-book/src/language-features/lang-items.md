@@ -192,7 +192,7 @@ such as "```undefined reference to `__rust_probestack'```". Using this crate
 also requires enabling the library feature `compiler_builtins_lib`. You can read
 more about this [here][compiler-builtins-lib].
 
-[compiler-builtins-lib]: library-features/compiler-builtins-lib.html
+[compiler-builtins-lib]: ../library-features/compiler-builtins-lib.md
 
 ## More about the language items
 
@@ -249,11 +249,11 @@ the source code.
 - Runtime
   - `start`: `libstd/rt.rs`
   - `eh_personality`: `libpanic_unwind/emcc.rs` (EMCC)
-  - `eh_personality`: `libpanic_unwind/seh64_gnu.rs` (SEH64 GNU)
+  - `eh_personality`: `libpanic_unwind/gcc.rs` (GNU)
   - `eh_personality`: `libpanic_unwind/seh.rs` (SEH)
-  - `eh_unwind_resume`: `libpanic_unwind/seh64_gnu.rs` (SEH64 GNU)
   - `eh_unwind_resume`: `libpanic_unwind/gcc.rs` (GCC)
-  - `msvc_try_filter`: `libpanic_unwind/seh.rs` (SEH)
+  - `eh_catch_typeinfo`: `libpanic_unwind/seh.rs` (SEH)
+  - `eh_catch_typeinfo`: `libpanic_unwind/emcc.rs` (EMCC)
   - `panic`: `libcore/panicking.rs`
   - `panic_bounds_check`: `libcore/panicking.rs`
   - `panic_impl`: `libcore/panicking.rs`

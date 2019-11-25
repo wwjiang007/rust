@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 #![allow(unused)]
 
 macro_rules! column {

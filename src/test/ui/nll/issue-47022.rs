@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 
 struct LoadedObject {
     bodies: Vec<Body>,

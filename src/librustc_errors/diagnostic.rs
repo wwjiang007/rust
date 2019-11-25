@@ -6,7 +6,7 @@ use crate::Applicability;
 use crate::Level;
 use crate::snippet::Style;
 use std::fmt;
-use syntax_pos::{MultiSpan, Span};
+use syntax_pos::{MultiSpan, Span, DUMMY_SP};
 
 #[must_use]
 #[derive(Clone, Debug, PartialEq, Hash, RustcEncodable, RustcDecodable)]
@@ -17,6 +17,11 @@ pub struct Diagnostic {
     pub span: MultiSpan,
     pub children: Vec<SubDiagnostic>,
     pub suggestions: Vec<CodeSuggestion>,
+
+    /// This is not used for highlighting or rendering any error message.  Rather, it can be used
+    /// as a sort key to sort a buffer of diagnostics.  By default, it is the primary span of
+    /// `span` if there is one.  Otherwise, it is `DUMMY_SP`.
+    pub sort_span: Span,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash, RustcEncodable, RustcDecodable)]
@@ -34,7 +39,7 @@ pub struct SubDiagnostic {
     pub render_span: Option<MultiSpan>,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct DiagnosticStyledString(pub Vec<StringPart>);
 
 impl DiagnosticStyledString {
@@ -60,7 +65,7 @@ impl DiagnosticStyledString {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum StringPart {
     Normal(String),
     Highlighted(String),
@@ -87,6 +92,7 @@ impl Diagnostic {
             span: MultiSpan::new(),
             children: vec![],
             suggestions: vec![],
+            sort_span: DUMMY_SP,
         }
     }
 
@@ -94,7 +100,6 @@ impl Diagnostic {
         match self.level {
             Level::Bug |
             Level::Fatal |
-            Level::PhaseFatal |
             Level::Error |
             Level::FailureNote => {
                 true
@@ -119,7 +124,15 @@ impl Diagnostic {
         self.level == Level::Cancelled
     }
 
+    /// Set the sorting span.
+    pub fn set_sort_span(&mut self, sp: Span) {
+        self.sort_span = sp;
+    }
+
     /// Adds a span/label to be included in the resulting snippet.
+    /// This label will be shown together with the original span/label used when creating the
+    /// diagnostic, *not* a span added by one of the `span_*` methods.
+    ///
     /// This is pushed onto the `MultiSpan` that was created when the
     /// diagnostic was first built. If you don't call this function at
     /// all, and you just supplied a `Span` to create the diagnostic,
@@ -141,39 +154,77 @@ impl Diagnostic {
         self
     }
 
-    pub fn note_expected_found(&mut self,
-                               label: &dyn fmt::Display,
-                               expected: DiagnosticStyledString,
-                               found: DiagnosticStyledString)
-                               -> &mut Self
-    {
-        self.note_expected_found_extra(label, expected, found, &"", &"")
+    pub fn note_expected_found(
+        &mut self,
+        expected_label: &dyn fmt::Display,
+        expected: DiagnosticStyledString,
+        found_label: &dyn fmt::Display,
+        found: DiagnosticStyledString,
+    ) -> &mut Self {
+        self.note_expected_found_extra(expected_label, expected, found_label, found, &"", &"")
     }
 
-    pub fn note_expected_found_extra(&mut self,
-                                     label: &dyn fmt::Display,
-                                     expected: DiagnosticStyledString,
-                                     found: DiagnosticStyledString,
-                                     expected_extra: &dyn fmt::Display,
-                                     found_extra: &dyn fmt::Display)
-                                     -> &mut Self
-    {
-        let mut msg: Vec<_> = vec![(format!("expected {} `", label), Style::NoStyle)];
+    pub fn note_unsuccessfull_coercion(
+        &mut self,
+        expected: DiagnosticStyledString,
+        found: DiagnosticStyledString,
+    ) -> &mut Self {
+        let mut msg: Vec<_> =
+            vec![(format!("required when trying to coerce from type `"),
+                  Style::NoStyle)];
         msg.extend(expected.0.iter()
                    .map(|x| match *x {
                        StringPart::Normal(ref s) => (s.to_owned(), Style::NoStyle),
                        StringPart::Highlighted(ref s) => (s.to_owned(), Style::Highlight),
                    }));
-        msg.push((format!("`{}\n", expected_extra), Style::NoStyle));
-        msg.push((format!("   found {} `", label), Style::NoStyle));
+        msg.push((format!("` to type '"), Style::NoStyle));
         msg.extend(found.0.iter()
                    .map(|x| match *x {
                        StringPart::Normal(ref s) => (s.to_owned(), Style::NoStyle),
                        StringPart::Highlighted(ref s) => (s.to_owned(), Style::Highlight),
                    }));
-        msg.push((format!("`{}", found_extra), Style::NoStyle));
+        msg.push((format!("`"), Style::NoStyle));
 
         // For now, just attach these as notes
+        self.highlighted_note(msg);
+        self
+    }
+
+    pub fn note_expected_found_extra(
+        &mut self,
+        expected_label: &dyn fmt::Display,
+        expected: DiagnosticStyledString,
+        found_label: &dyn fmt::Display,
+        found: DiagnosticStyledString,
+        expected_extra: &dyn fmt::Display,
+        found_extra: &dyn fmt::Display,
+    ) -> &mut Self {
+        let expected_label = format!("expected {}", expected_label);
+        let found_label = format!("found {}", found_label);
+        let (found_padding, expected_padding) = if expected_label.len() > found_label.len() {
+            (expected_label.len() - found_label.len(), 0)
+        } else {
+            (0, found_label.len() - expected_label.len())
+        };
+        let mut msg: Vec<_> = vec![(
+            format!("{}{} `", " ".repeat(expected_padding), expected_label),
+            Style::NoStyle,
+        )];
+        msg.extend(expected.0.iter()
+            .map(|x| match *x {
+                StringPart::Normal(ref s) => (s.to_owned(), Style::NoStyle),
+                StringPart::Highlighted(ref s) => (s.to_owned(), Style::Highlight),
+            }));
+        msg.push((format!("`{}\n", expected_extra), Style::NoStyle));
+        msg.push((format!("{}{} `", " ".repeat(found_padding), found_label), Style::NoStyle));
+        msg.extend(found.0.iter()
+            .map(|x| match *x {
+                StringPart::Normal(ref s) => (s.to_owned(), Style::NoStyle),
+                StringPart::Highlighted(ref s) => (s.to_owned(), Style::Highlight),
+            }));
+        msg.push((format!("`{}", found_extra), Style::NoStyle));
+
+        // For now, just attach these as notes.
         self.highlighted_note(msg);
         self
     }
@@ -196,6 +247,7 @@ impl Diagnostic {
         self
     }
 
+    /// Prints the span with a note above it.
     pub fn span_note<S: Into<MultiSpan>>(&mut self,
                                          sp: S,
                                          msg: &str)
@@ -209,6 +261,7 @@ impl Diagnostic {
         self
     }
 
+    /// Prints the span with a warn above it.
     pub fn span_warn<S: Into<MultiSpan>>(&mut self,
                                          sp: S,
                                          msg: &str)
@@ -222,6 +275,7 @@ impl Diagnostic {
         self
     }
 
+    /// Prints the span with some help above it.
     pub fn span_help<S: Into<MultiSpan>>(&mut self,
                                          sp: S,
                                          msg: &str)
@@ -293,9 +347,31 @@ impl Diagnostic {
     /// * may contain a name of a function, variable, or type, but not whole expressions
     ///
     /// See `CodeSuggestion` for more information.
-    pub fn span_suggestion(&mut self, sp: Span, msg: &str,
-                                       suggestion: String,
-                                       applicability: Applicability) -> &mut Self {
+    pub fn span_suggestion(
+        &mut self,
+        sp: Span,
+        msg: &str,
+        suggestion: String,
+        applicability: Applicability,
+    ) -> &mut Self {
+        self.span_suggestion_with_style(
+            sp,
+            msg,
+            suggestion,
+            applicability,
+            SuggestionStyle::ShowCode,
+        );
+        self
+    }
+
+    pub fn span_suggestion_with_style(
+        &mut self,
+        sp: Span,
+        msg: &str,
+        suggestion: String,
+        applicability: Applicability,
+        style: SuggestionStyle,
+    ) -> &mut Self {
         self.suggestions.push(CodeSuggestion {
             substitutions: vec![Substitution {
                 parts: vec![SubstitutionPart {
@@ -304,16 +380,37 @@ impl Diagnostic {
                 }],
             }],
             msg: msg.to_owned(),
-            style: SuggestionStyle::ShowCode,
+            style,
             applicability,
         });
         self
     }
 
+    pub fn span_suggestion_verbose(
+        &mut self,
+        sp: Span,
+        msg: &str,
+        suggestion: String,
+        applicability: Applicability,
+    ) -> &mut Self {
+        self.span_suggestion_with_style(
+            sp,
+            msg,
+            suggestion,
+            applicability,
+            SuggestionStyle::ShowAlways,
+        );
+        self
+    }
+
     /// Prints out a message with multiple suggested edits of the code.
-    pub fn span_suggestions(&mut self, sp: Span, msg: &str,
-        suggestions: impl Iterator<Item = String>, applicability: Applicability) -> &mut Self
-    {
+    pub fn span_suggestions(
+        &mut self,
+        sp: Span,
+        msg: &str,
+        suggestions: impl Iterator<Item = String>,
+        applicability: Applicability,
+    ) -> &mut Self {
         self.suggestions.push(CodeSuggestion {
             substitutions: suggestions.map(|snippet| Substitution {
                 parts: vec![SubstitutionPart {
@@ -335,17 +432,13 @@ impl Diagnostic {
     pub fn span_suggestion_short(
         &mut self, sp: Span, msg: &str, suggestion: String, applicability: Applicability
     ) -> &mut Self {
-        self.suggestions.push(CodeSuggestion {
-            substitutions: vec![Substitution {
-                parts: vec![SubstitutionPart {
-                    snippet: suggestion,
-                    span: sp,
-                }],
-            }],
-            msg: msg.to_owned(),
-            style: SuggestionStyle::HideCodeInline,
+        self.span_suggestion_with_style(
+            sp,
+            msg,
+            suggestion,
             applicability,
-        });
+            SuggestionStyle::HideCodeInline,
+        );
         self
     }
 
@@ -358,17 +451,13 @@ impl Diagnostic {
     pub fn span_suggestion_hidden(
         &mut self, sp: Span, msg: &str, suggestion: String, applicability: Applicability
     ) -> &mut Self {
-        self.suggestions.push(CodeSuggestion {
-            substitutions: vec![Substitution {
-                parts: vec![SubstitutionPart {
-                    snippet: suggestion,
-                    span: sp,
-                }],
-            }],
-            msg: msg.to_owned(),
-            style: SuggestionStyle::HideCodeAlways,
+        self.span_suggestion_with_style(
+            sp,
+            msg,
+            suggestion,
             applicability,
-        });
+            SuggestionStyle::HideCodeAlways,
+        );
         self
     }
 
@@ -379,22 +468,21 @@ impl Diagnostic {
     pub fn tool_only_span_suggestion(
         &mut self, sp: Span, msg: &str, suggestion: String, applicability: Applicability
     ) -> &mut Self {
-        self.suggestions.push(CodeSuggestion {
-            substitutions: vec![Substitution {
-                parts: vec![SubstitutionPart {
-                    snippet: suggestion,
-                    span: sp,
-                }],
-            }],
-            msg: msg.to_owned(),
-            style: SuggestionStyle::CompletelyHidden,
-            applicability: applicability,
-        });
+        self.span_suggestion_with_style(
+            sp,
+            msg,
+            suggestion,
+            applicability,
+            SuggestionStyle::CompletelyHidden,
+        );
         self
     }
 
     pub fn set_span<S: Into<MultiSpan>>(&mut self, sp: S) -> &mut Self {
         self.span = sp.into();
+        if let Some(span) = self.span.primary_span() {
+            self.sort_span = span;
+        }
         self
     }
 

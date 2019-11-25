@@ -4,11 +4,11 @@
 #![feature(box_syntax)]
 
 #[macro_use] extern crate rustc;
-extern crate rustc_plugin;
+extern crate rustc_driver;
 extern crate syntax;
 
-use rustc::lint::{LateContext, LintContext, LintPass, LateLintPass, LateLintPassObject, LintArray};
-use rustc_plugin::Registry;
+use rustc::lint::{LateContext, LintContext, LintPass, LateLintPass, LintArray};
+use rustc_driver::plugin::Registry;
 use rustc::hir;
 use syntax::attr;
 use syntax::symbol::Symbol;
@@ -32,5 +32,6 @@ impl<'a, 'tcx> LateLintPass<'a, 'tcx> for Pass {
 
 #[plugin_registrar]
 pub fn plugin_registrar(reg: &mut Registry) {
-    reg.register_late_lint_pass(box Pass);
+    reg.lint_store.register_lints(&[&CRATE_NOT_OKAY]);
+    reg.lint_store.register_late_pass(|| box Pass);
 }

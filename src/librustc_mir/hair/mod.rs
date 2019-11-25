@@ -20,8 +20,8 @@ pub mod cx;
 mod constant;
 
 pub mod pattern;
-pub use self::pattern::{BindingMode, Pattern, PatternKind, PatternRange, FieldPattern};
-pub(crate) use self::pattern::PatternTypeProjection;
+pub use self::pattern::{BindingMode, Pat, PatKind, PatRange, FieldPat};
+pub(crate) use self::pattern::PatTyProj;
 
 mod util;
 
@@ -29,15 +29,6 @@ mod util;
 pub enum LintLevel {
     Inherited,
     Explicit(hir::HirId)
-}
-
-impl LintLevel {
-    pub fn is_explicit(self) -> bool {
-        match self {
-            LintLevel::Inherited => false,
-            LintLevel::Explicit(_) => true
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -65,13 +56,9 @@ pub enum StmtRef<'tcx> {
 }
 
 #[derive(Clone, Debug)]
-pub struct StatementSpan(pub Span);
-
-#[derive(Clone, Debug)]
 pub struct Stmt<'tcx> {
     pub kind: StmtKind<'tcx>,
     pub opt_destruction_scope: Option<region::Scope>,
-    pub span: StatementSpan,
 }
 
 #[derive(Clone, Debug)]
@@ -96,7 +83,7 @@ pub enum StmtKind<'tcx> {
         /// `let <PAT> = ...`
         ///
         /// if a type is included, it is added as an ascription pattern
-        pattern: Pattern<'tcx>,
+        pattern: Pat<'tcx>,
 
         /// let pat: ty = <INIT> ...
         initializer: Option<ExprRef<'tcx>>,
@@ -105,6 +92,10 @@ pub enum StmtKind<'tcx> {
         lint_level: LintLevel,
     },
 }
+
+// `Expr` is used a lot. Make sure it doesn't unintentionally get bigger.
+#[cfg(target_arch = "x86_64")]
+rustc_data_structures::static_assert_size!(Expr<'_>, 168);
 
 /// The Hair trait implementor lowers their expressions (`&'tcx H::Expr`)
 /// into instances of this `Expr` enum. This lowering can be done
@@ -186,7 +177,6 @@ pub enum ExprKind<'tcx> {
         source: ExprRef<'tcx>,
     },
     Loop {
-        condition: Option<ExprRef<'tcx>>,
         body: ExprRef<'tcx>,
     },
     Match {
@@ -218,9 +208,6 @@ pub enum ExprKind<'tcx> {
     },
     /// first argument, used for self in a closure
     SelfRef,
-    StaticRef {
-        id: DefId,
-    },
     Borrow {
         borrow_kind: BorrowKind,
         arg: ExprRef<'tcx>,
@@ -271,14 +258,22 @@ pub enum ExprKind<'tcx> {
         closure_id: DefId,
         substs: UpvarSubsts<'tcx>,
         upvars: Vec<ExprRef<'tcx>>,
-        movability: Option<hir::GeneratorMovability>,
+        movability: Option<hir::Movability>,
     },
     Literal {
         literal: &'tcx Const<'tcx>,
         user_ty: Option<Canonical<'tcx, UserType<'tcx>>>,
     },
+    /// A literal containing the address of a `static`.
+    ///
+    /// This is only distinguished from `Literal` so that we can register some
+    /// info for diagnostics.
+    StaticRef {
+        literal: &'tcx Const<'tcx>,
+        def_id: DefId,
+    },
     InlineAsm {
-        asm: &'tcx hir::InlineAsm,
+        asm: &'tcx hir::InlineAsmInner,
         outputs: Vec<ExprRef<'tcx>>,
         inputs: Vec<ExprRef<'tcx>>
     },
@@ -307,10 +302,23 @@ pub struct FruInfo<'tcx> {
 
 #[derive(Clone, Debug)]
 pub struct Arm<'tcx> {
-    pub patterns: Vec<Pattern<'tcx>>,
+    pub pattern: Pat<'tcx>,
     pub guard: Option<Guard<'tcx>>,
     pub body: ExprRef<'tcx>,
     pub lint_level: LintLevel,
+    pub scope: region::Scope,
+    pub span: Span,
+}
+
+impl Arm<'tcx> {
+    // HACK(or_patterns; Centril | dlrobertson): Remove this and
+    // correctly handle each case in which this method is used.
+    pub fn top_pats_hack(&self) -> &[Pat<'tcx>] {
+        match &*self.pattern.kind {
+            PatKind::Or { pats } => pats,
+            _ => std::slice::from_ref(&self.pattern),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -351,13 +359,13 @@ impl<'tcx> ExprRef<'tcx> {
 pub trait Mirror<'tcx> {
     type Output;
 
-    fn make_mirror<'a, 'gcx>(self, cx: &mut Cx<'a, 'gcx, 'tcx>) -> Self::Output;
+    fn make_mirror(self, cx: &mut Cx<'_, 'tcx>) -> Self::Output;
 }
 
 impl<'tcx> Mirror<'tcx> for Expr<'tcx> {
     type Output = Expr<'tcx>;
 
-    fn make_mirror<'a, 'gcx>(self, _: &mut Cx<'a, 'gcx, 'tcx>) -> Expr<'tcx> {
+    fn make_mirror(self, _: &mut Cx<'_, 'tcx>) -> Expr<'tcx> {
         self
     }
 }
@@ -365,7 +373,7 @@ impl<'tcx> Mirror<'tcx> for Expr<'tcx> {
 impl<'tcx> Mirror<'tcx> for ExprRef<'tcx> {
     type Output = Expr<'tcx>;
 
-    fn make_mirror<'a, 'gcx>(self, hir: &mut Cx<'a, 'gcx, 'tcx>) -> Expr<'tcx> {
+    fn make_mirror(self, hir: &mut Cx<'a, 'tcx>) -> Expr<'tcx> {
         match self {
             ExprRef::Hair(h) => h.make_mirror(hir),
             ExprRef::Mirror(m) => *m,
@@ -376,7 +384,7 @@ impl<'tcx> Mirror<'tcx> for ExprRef<'tcx> {
 impl<'tcx> Mirror<'tcx> for Stmt<'tcx> {
     type Output = Stmt<'tcx>;
 
-    fn make_mirror<'a, 'gcx>(self, _: &mut Cx<'a, 'gcx, 'tcx>) -> Stmt<'tcx> {
+    fn make_mirror(self, _: &mut Cx<'_, 'tcx>) -> Stmt<'tcx> {
         self
     }
 }
@@ -384,7 +392,7 @@ impl<'tcx> Mirror<'tcx> for Stmt<'tcx> {
 impl<'tcx> Mirror<'tcx> for StmtRef<'tcx> {
     type Output = Stmt<'tcx>;
 
-    fn make_mirror<'a, 'gcx>(self, _: &mut Cx<'a, 'gcx, 'tcx>) -> Stmt<'tcx> {
+    fn make_mirror(self, _: &mut Cx<'_, 'tcx>) -> Stmt<'tcx> {
         match self {
             StmtRef::Mirror(m) => *m,
         }
@@ -394,7 +402,7 @@ impl<'tcx> Mirror<'tcx> for StmtRef<'tcx> {
 impl<'tcx> Mirror<'tcx> for Block<'tcx> {
     type Output = Block<'tcx>;
 
-    fn make_mirror<'a, 'gcx>(self, _: &mut Cx<'a, 'gcx, 'tcx>) -> Block<'tcx> {
+    fn make_mirror(self, _: &mut Cx<'_, 'tcx>) -> Block<'tcx> {
         self
     }
 }

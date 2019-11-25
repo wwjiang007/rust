@@ -8,10 +8,11 @@ use rustc_data_structures::fx::FxHashSet;
 // any caching, i.e., calling the function twice with the same type will also do
 // the work twice. The `qualified` parameter only affects the first level of the
 // type name, further levels (i.e., type parameters) are always fully qualified.
-pub fn compute_debuginfo_type_name<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                             t: Ty<'tcx>,
-                                             qualified: bool)
-                                             -> String {
+pub fn compute_debuginfo_type_name<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    t: Ty<'tcx>,
+    qualified: bool,
+) -> String {
     let mut result = String::with_capacity(64);
     let mut visited = FxHashSet::default();
     push_debuginfo_type_name(tcx, t, qualified, &mut result, &mut visited);
@@ -20,24 +21,25 @@ pub fn compute_debuginfo_type_name<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 
 // Pushes the name of the type as it should be stored in debuginfo on the
 // `output` String. See also compute_debuginfo_type_name().
-pub fn push_debuginfo_type_name<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                          t: Ty<'tcx>,
-                                          qualified: bool,
-                                          output: &mut String,
-                                          visited: &mut FxHashSet<Ty<'tcx>>) {
-
+pub fn push_debuginfo_type_name<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    t: Ty<'tcx>,
+    qualified: bool,
+    output: &mut String,
+    visited: &mut FxHashSet<Ty<'tcx>>,
+) {
     // When targeting MSVC, emit C++ style type names for compatibility with
     // .natvis visualizers (and perhaps other existing native debuggers?)
     let cpp_like_names = tcx.sess.target.target.options.is_like_msvc;
 
-    match t.sty {
+    match t.kind {
         ty::Bool => output.push_str("bool"),
         ty::Char => output.push_str("char"),
         ty::Str => output.push_str("str"),
         ty::Never => output.push_str("!"),
-        ty::Int(int_ty) => output.push_str(int_ty.ty_to_string()),
-        ty::Uint(uint_ty) => output.push_str(uint_ty.ty_to_string()),
-        ty::Float(float_ty) => output.push_str(float_ty.ty_to_string()),
+        ty::Int(int_ty) => output.push_str(int_ty.name_str()),
+        ty::Uint(uint_ty) => output.push_str(uint_ty.name_str()),
+        ty::Float(float_ty) => output.push_str(float_ty.name_str()),
         ty::Foreign(def_id) => push_item_name(tcx, def_id, qualified, output),
         ty::Adt(def, substs) => {
             push_item_name(tcx, def.did, qualified, output);
@@ -60,8 +62,8 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
                 output.push('*');
             }
             match mutbl {
-                hir::MutImmutable => output.push_str("const "),
-                hir::MutMutable => output.push_str("mut "),
+                hir::Mutability::Immutable => output.push_str("const "),
+                hir::Mutability::Mutable => output.push_str("mut "),
             }
 
             push_debuginfo_type_name(tcx, inner_type, true, output, visited);
@@ -74,9 +76,7 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             if !cpp_like_names {
                 output.push('&');
             }
-            if mutbl == hir::MutMutable {
-                output.push_str("mut ");
-            }
+            output.push_str(mutbl.prefix_str());
 
             push_debuginfo_type_name(tcx, inner_type, true, output, visited);
 
@@ -87,7 +87,7 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         ty::Array(inner_type, len) => {
             output.push('[');
             push_debuginfo_type_name(tcx, inner_type, true, output, visited);
-            output.push_str(&format!("; {}", len.unwrap_usize(tcx)));
+            output.push_str(&format!("; {}", len.eval_usize(tcx, ty::ParamEnv::reveal_all())));
             output.push(']');
         },
         ty::Slice(inner_type) => {
@@ -138,9 +138,7 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
 
 
             let sig = t.fn_sig(tcx);
-            if sig.unsafety() == hir::Unsafety::Unsafe {
-                output.push_str("unsafe ");
-            }
+            output.push_str(sig.unsafety().prefix_str());
 
             let abi = sig.abi();
             if abi != rustc_target::spec::abi::Abi::Rust {
@@ -188,11 +186,17 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
             // processing
             visited.remove(t);
         },
-        ty::Closure(..) => {
-            output.push_str("closure");
+        ty::Closure(def_id, ..) => {
+            output.push_str(&format!(
+                "closure-{}",
+                tcx.def_key(def_id).disambiguated_data.disambiguator
+            ));
         }
-        ty::Generator(..) => {
-            output.push_str("generator");
+        ty::Generator(def_id, ..) => {
+            output.push_str(&format!(
+                "generator-{}",
+                tcx.def_key(def_id).disambiguated_data.disambiguator
+            ));
         }
         ty::Error |
         ty::Infer(_) |
@@ -208,15 +212,12 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
         }
     }
 
-    fn push_item_name(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                      def_id: DefId,
-                      qualified: bool,
-                      output: &mut String) {
+    fn push_item_name(tcx: TyCtxt<'tcx>, def_id: DefId, qualified: bool, output: &mut String) {
         if qualified {
             output.push_str(&tcx.crate_name(def_id.krate).as_str());
             for path_element in tcx.def_path(def_id).data {
                 output.push_str("::");
-                output.push_str(&path_element.data.as_interned_str().as_str());
+                output.push_str(&path_element.data.as_symbol().as_str());
             }
         } else {
             output.push_str(&tcx.item_name(def_id).as_str());
@@ -228,10 +229,12 @@ pub fn push_debuginfo_type_name<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
     // reconstructed for items from non-local crates. For local crates, this
     // would be possible but with inlining and LTO we have to use the least
     // common denominator - otherwise we would run into conflicts.
-    fn push_type_params<'a, 'tcx>(tcx: TyCtxt<'a, 'tcx, 'tcx>,
-                                  substs: SubstsRef<'tcx>,
-                                  output: &mut String,
-                                  visited: &mut FxHashSet<Ty<'tcx>>) {
+    fn push_type_params<'tcx>(
+        tcx: TyCtxt<'tcx>,
+        substs: SubstsRef<'tcx>,
+        output: &mut String,
+        visited: &mut FxHashSet<Ty<'tcx>>,
+    ) {
         if substs.types().next().is_none() {
             return;
         }

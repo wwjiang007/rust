@@ -1,4 +1,4 @@
-error[E0596]: cannot borrow data in a `&` reference as mutable
+error[E0596]: cannot borrow data in an index of `std::collections::HashMap<&str, std::string::String>` as mutable
   --> $DIR/index-mut-help.rs:11:5
    |
 LL |     map["peter"].clear();
@@ -6,13 +6,15 @@ LL |     map["peter"].clear();
    |
    = help: trait `IndexMut` is required to modify indexed content, but it is not implemented for `std::collections::HashMap<&str, std::string::String>`
 
-error[E0594]: cannot assign to data in a `&` reference
+error[E0594]: cannot assign to data in an index of `std::collections::HashMap<&str, std::string::String>`
   --> $DIR/index-mut-help.rs:12:5
    |
 LL |     map["peter"] = "0".to_string();
    |     ^^^^^^^^^^^^ cannot assign
+   |
+   = help: trait `IndexMut` is required to modify indexed content, but it is not implemented for `std::collections::HashMap<&str, std::string::String>`
 
-error[E0596]: cannot borrow data in a `&` reference as mutable
+error[E0596]: cannot borrow data in an index of `std::collections::HashMap<&str, std::string::String>` as mutable
   --> $DIR/index-mut-help.rs:13:13
    |
 LL |     let _ = &mut map["peter"];
@@ -22,4 +24,5 @@ LL |     let _ = &mut map["peter"];
 
 error: aborting due to 3 previous errors
 
-For more information about this error, try `rustc --explain E0596`.
+Some errors have detailed explanations: E0594, E0596.
+For more information about an error, try `rustc --explain E0594`.

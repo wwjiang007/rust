@@ -1,4 +1,4 @@
-use syntax::symbol::InternedString;
+use syntax::symbol::Symbol;
 use syntax_pos::Span;
 use crate::ty::{self, Ty, TyVid};
 
@@ -37,25 +37,28 @@ pub struct TypeVariableTable<'tcx> {
     sub_relations: ut::UnificationTable<ut::InPlace<ty::TyVid>>,
 }
 
+#[derive(Copy, Clone, Debug)]
+pub struct TypeVariableOrigin {
+    pub kind: TypeVariableOriginKind,
+    pub span: Span,
+}
+
 /// Reasons to create a type inference variable
 #[derive(Copy, Clone, Debug)]
-pub enum TypeVariableOrigin {
-    MiscVariable(Span),
-    NormalizeProjectionType(Span),
-    TypeInference(Span),
-    TypeParameterDefinition(Span, InternedString),
+pub enum TypeVariableOriginKind {
+    MiscVariable,
+    NormalizeProjectionType,
+    TypeInference,
+    TypeParameterDefinition(Symbol),
 
-    /// one of the upvars or closure kind parameters in a `ClosureSubsts`
-    /// (before it has been determined)
-    ClosureSynthetic(Span),
-    SubstitutionPlaceholder(Span),
-    AutoDeref(Span),
-    AdjustmentType(Span),
-    DivergingStmt(Span),
-    DivergingBlockExpr(Span),
-    DivergingFn(Span),
-    LatticeVariable(Span),
-    Generalized(ty::TyVid),
+    /// One of the upvars or closure kind parameters in a `ClosureSubsts`
+    /// (before it has been determined).
+    ClosureSynthetic,
+    SubstitutionPlaceholder,
+    AutoDeref,
+    AdjustmentType,
+    DivergingFn,
+    LatticeVariable,
 }
 
 struct TypeVariableData {
@@ -112,7 +115,7 @@ impl<'tcx> TypeVariableTable<'tcx> {
     ///
     /// Note that this function does not return care whether
     /// `vid` has been unified with something else or not.
-    pub fn var_diverges<'a>(&'a self, vid: ty::TyVid) -> bool {
+    pub fn var_diverges(&self, vid: ty::TyVid) -> bool {
         self.values.get(vid.index as usize).diverging
     }
 
@@ -231,14 +234,20 @@ impl<'tcx> TypeVariableTable<'tcx> {
     /// Retrieves the type to which `vid` has been instantiated, if
     /// any.
     pub fn probe(&mut self, vid: ty::TyVid) -> TypeVariableValue<'tcx> {
-        self.eq_relations.probe_value(vid)
+        self.inlined_probe(vid)
+    }
+
+    /// An always-inlined variant of `probe`, for very hot call sites.
+    #[inline(always)]
+    pub fn inlined_probe(&mut self, vid: ty::TyVid) -> TypeVariableValue<'tcx> {
+        self.eq_relations.inlined_probe_value(vid)
     }
 
     /// If `t` is a type-inference variable, and it has been
     /// instantiated, then return the with which it was
     /// instantiated. Otherwise, returns `t`.
     pub fn replace_if_possible(&mut self, t: Ty<'tcx>) -> Ty<'tcx> {
-        match t.sty {
+        match t.kind {
             ty::Infer(ty::TyVar(v)) => {
                 match self.probe(v) {
                     TypeVariableValue::Unknown { .. } => t,

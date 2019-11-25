@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 
 #![deny(unused_mut)]
 

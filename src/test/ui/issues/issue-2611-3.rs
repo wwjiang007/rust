@@ -1,4 +1,4 @@
-// compile-pass
+// check-pass
 #![allow(dead_code)]
 // Tests that impls are allowed to have looser, more permissive bounds
 // than the traits require.

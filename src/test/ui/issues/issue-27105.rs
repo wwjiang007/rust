@@ -1,9 +1,9 @@
-// compile-pass
+// check-pass
 use std::cell::RefCell;
 use std::rc::Rc;
 
 pub struct Callbacks {
-    callbacks: Vec<Rc<RefCell<FnMut(i32)>>>,
+    callbacks: Vec<Rc<RefCell<dyn FnMut(i32)>>>,
 }
 
 impl Callbacks {
