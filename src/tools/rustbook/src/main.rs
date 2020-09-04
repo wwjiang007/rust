@@ -8,11 +8,6 @@ use clap::{App, AppSettings, ArgMatches, SubCommand};
 use mdbook::errors::Result as Result3;
 use mdbook::MDBook;
 
-#[cfg(feature = "linkcheck")]
-use failure::Error;
-#[cfg(feature = "linkcheck")]
-use mdbook::renderer::RenderContext;
-
 fn main() {
     let d_message = "-d, --dest-dir=[dest-dir]
 'The output directory for your book{n}(Defaults to ./book when omitted)'";
@@ -31,8 +26,8 @@ fn main() {
                 .arg_from_usage(dir_message),
         )
         .subcommand(
-            SubCommand::with_name("linkcheck")
-                .about("Run linkcheck with mdBook 3")
+            SubCommand::with_name("test")
+                .about("Tests that a book's Rust code samples compile")
                 .arg_from_usage(dir_message),
         )
         .get_matches();
@@ -41,52 +36,22 @@ fn main() {
     match matches.subcommand() {
         ("build", Some(sub_matches)) => {
             if let Err(e) = build(sub_matches) {
-                eprintln!("Error: {}", e);
-
-                for cause in e.iter().skip(1) {
-                    eprintln!("\tCaused By: {}", cause);
-                }
-
-                ::std::process::exit(101);
+                handle_error(e);
             }
         }
-        ("linkcheck", Some(sub_matches)) => {
-            #[cfg(feature = "linkcheck")]
-            {
-                if let Err(err) = linkcheck(sub_matches) {
-                    eprintln!("Error: {}", err);
-                    std::process::exit(101);
-                }
-            }
-
-            #[cfg(not(feature = "linkcheck"))]
-            {
-                // This avoids the `unused_binding` lint.
-                println!(
-                    "mdbook-linkcheck is disabled, but arguments were passed: {:?}",
-                    sub_matches
-                );
+        ("test", Some(sub_matches)) => {
+            if let Err(e) = test(sub_matches) {
+                handle_error(e);
             }
         }
         (_, _) => unreachable!(),
     };
 }
 
-#[cfg(feature = "linkcheck")]
-pub fn linkcheck(args: &ArgMatches<'_>) -> Result<(), Error> {
-    let book_dir = get_book_dir(args);
-    let book = MDBook::load(&book_dir).unwrap();
-    let cfg = book.config;
-    let render_ctx = RenderContext::new(&book_dir, book.book, cfg, &book_dir);
-    let cache_file = render_ctx.destination.join("cache.json");
-    let color = codespan_reporting::term::termcolor::ColorChoice::Auto;
-    mdbook_linkcheck::run(&cache_file, color, &render_ctx)
-}
-
 // Build command implementation
 pub fn build(args: &ArgMatches<'_>) -> Result3<()> {
     let book_dir = get_book_dir(args);
-    let mut book = MDBook::load(&book_dir)?;
+    let mut book = load_book(&book_dir)?;
 
     // Set this to allow us to catch bugs in advance.
     book.config.build.create_missing = false;
@@ -100,6 +65,12 @@ pub fn build(args: &ArgMatches<'_>) -> Result3<()> {
     Ok(())
 }
 
+fn test(args: &ArgMatches<'_>) -> Result3<()> {
+    let book_dir = get_book_dir(args);
+    let mut book = load_book(&book_dir)?;
+    book.test(vec![])
+}
+
 fn get_book_dir(args: &ArgMatches<'_>) -> PathBuf {
     if let Some(dir) = args.value_of("dir") {
         // Check if path is relative from current dir, or absolute...
@@ -108,4 +79,20 @@ fn get_book_dir(args: &ArgMatches<'_>) -> PathBuf {
     } else {
         env::current_dir().unwrap()
     }
+}
+
+fn load_book(book_dir: &Path) -> Result3<MDBook> {
+    let mut book = MDBook::load(book_dir)?;
+    book.config.set("output.html.input-404", "").unwrap();
+    Ok(book)
+}
+
+fn handle_error(error: mdbook::errors::Error) -> ! {
+    eprintln!("Error: {}", error);
+
+    for cause in error.chain().skip(1) {
+        eprintln!("\tCaused By: {}", cause);
+    }
+
+    ::std::process::exit(101);
 }

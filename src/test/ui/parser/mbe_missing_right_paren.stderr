@@ -1,10 +1,10 @@
-error: this file contains an un-closed delimiter
+error: this file contains an unclosed delimiter
   --> $DIR/mbe_missing_right_paren.rs:3:19
    |
 LL | macro_rules! abc(ؼ
    |                 - ^
    |                 |
-   |                 un-closed delimiter
+   |                 unclosed delimiter
 
 error: macros that expand to items must be delimited with braces or followed by a semicolon
   --> $DIR/mbe_missing_right_paren.rs:3:17
@@ -14,18 +14,18 @@ LL | macro_rules! abc(ؼ
    |
 help: change the delimiters to curly braces
    |
-LL | macro_rules! abc{ؼ}
-   |                 ^ ^
+LL | macro_rules! abc { /* items */ }
+   |                  ^^^^^^^^^^^^^^^
 help: add a semicolon
    |
 LL | macro_rules! abc(ؼ;
    |                   ^
 
 error: unexpected end of macro invocation
-  --> $DIR/mbe_missing_right_paren.rs:3:1
+  --> $DIR/mbe_missing_right_paren.rs:3:19
    |
 LL | macro_rules! abc(ؼ
-   | ^^^^^^^^^^^^^^^^^^ missing tokens in macro arguments
+   |                   ^ missing tokens in macro arguments
 
 error: aborting due to 3 previous errors
 

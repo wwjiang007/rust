@@ -1,3 +1,14 @@
+#####################################
+##    READ BEFORE CHANGING THIS    ##
+#####################################
+
+# We're in the process of evaluating GitHub Actions as a possible replacement
+# for Azure Pipelines, and at the moment the configuration is duplicated
+# between the two CI providers. Be sure to also change the configuration in
+# src/ci/github-actions when changing this file.
+
+#####################################
+
 # FIXME(linux): need to configure core dumps, enable them, and then dump
 # backtraces on failure from all core dumps:
 #
@@ -28,6 +39,12 @@ steps:
 - checkout: self
   fetchDepth: 2
 
+- bash: src/ci/scripts/setup-environment.sh
+  displayName: Setup environment
+
+- bash: src/ci/scripts/clean-disk.sh
+  displayName: Clean disk
+
 - bash: src/ci/scripts/should-skip-this.sh
   displayName: Decide whether to run this job
 
@@ -38,39 +55,19 @@ steps:
   displayName: Show the current environment
 
 - bash: src/ci/scripts/install-sccache.sh
-  env:
-    AGENT_OS: $(Agent.OS)
   displayName: Install sccache
   condition: and(succeeded(), not(variables.SKIP_JOB))
 
 - bash: src/ci/scripts/install-clang.sh
-  env:
-    AGENT_OS: $(Agent.OS)
   displayName: Install clang
   condition: and(succeeded(), not(variables.SKIP_JOB))
 
-- bash: src/ci/scripts/switch-xcode.sh
-  env:
-    AGENT_OS: $(Agent.OS)
-  displayName: Switch to Xcode 9.3
-  condition: and(succeeded(), not(variables.SKIP_JOB))
-
 - bash: src/ci/scripts/install-wix.sh
-  env:
-    AGENT_OS: $(Agent.OS)
   displayName: Install wix
   condition: and(succeeded(), not(variables.SKIP_JOB))
 
-- bash: src/ci/scripts/install-innosetup.sh
-  env:
-    AGENT_OS: $(Agent.OS)
-  displayName: Install InnoSetup
-  condition: and(succeeded(), not(variables.SKIP_JOB))
-
-- bash: src/ci/scripts/windows-symlink-build-dir.sh
-  env:
-    AGENT_OS: $(Agent.OS)
-  displayName: Ensure the build happens on C:\ instead of D:\
+- bash: src/ci/scripts/symlink-build-dir.sh
+  displayName: Ensure the build happens on a partition with enough space
   condition: and(succeeded(), not(variables.SKIP_JOB))
 
 - bash: src/ci/scripts/disable-git-crlf-conversion.sh
@@ -78,35 +75,18 @@ steps:
   condition: and(succeeded(), not(variables.SKIP_JOB))
 
 - bash: src/ci/scripts/install-msys2.sh
-  env:
-    AGENT_OS: $(Agent.OS)
-    SYSTEM_WORKFOLDER: $(System.Workfolder)
   displayName: Install msys2
   condition: and(succeeded(), not(variables.SKIP_JOB))
 
-- bash: src/ci/scripts/install-msys2-packages.sh
-  env:
-    AGENT_OS: $(Agent.OS)
-    SYSTEM_WORKFOLDER: $(System.Workfolder)
-  displayName: Install msys2 packages
-  condition: and(succeeded(), not(variables.SKIP_JOB))
-
 - bash: src/ci/scripts/install-mingw.sh
-  env:
-    AGENT_OS: $(Agent.OS)
-    SYSTEM_WORKFOLDER: $(System.Workfolder)
   displayName: Install MinGW
   condition: and(succeeded(), not(variables.SKIP_JOB))
 
 - bash: src/ci/scripts/install-ninja.sh
-  env:
-    AGENT_OS: $(Agent.OS)
   displayName: Install ninja
   condition: and(succeeded(), not(variables.SKIP_JOB))
 
 - bash: src/ci/scripts/enable-docker-ipv6.sh
-  env:
-    AGENT_OS: $(Agent.OS)
   displayName: Enable IPv6 on Docker
   condition: and(succeeded(), not(variables.SKIP_JOB))
 
@@ -120,22 +100,16 @@ steps:
   condition: and(succeeded(), not(variables.SKIP_JOB))
 
 - bash: src/ci/scripts/checkout-submodules.sh
-  env:
-    AGENT_OS: $(Agent.OS)
   displayName: Checkout submodules
   condition: and(succeeded(), not(variables.SKIP_JOB))
 
 - bash: src/ci/scripts/verify-line-endings.sh
-  env:
-    AGENT_OS: $(Agent.OS)
   displayName: Verify line endings
   condition: and(succeeded(), not(variables.SKIP_JOB))
 
 # Ensure the `aws` CLI is installed so we can deploy later on, cache docker
 # images, etc.
 - bash: src/ci/scripts/install-awscli.sh
-  env:
-    AGENT_OS: $(Agent.OS)
   condition: and(succeeded(), not(variables.SKIP_JOB))
   displayName: Install awscli
 

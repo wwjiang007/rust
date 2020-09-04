@@ -1,8 +1,9 @@
 // run-pass
 
-#![feature(overlapping_marker_traits)]
-#![feature(specialization)]
+#![feature(marker_trait_attr)]
+#![feature(specialization)] //~ WARN the feature `specialization` is incomplete
 
+#[marker]
 trait MyMarker {}
 
 impl<T> MyMarker for T {}

@@ -6,6 +6,7 @@
 // ignore-powerpc
 // ignore-powerpc64
 // ignore-powerpc64le
+// ignore-riscv64 see codegen/riscv-abi
 // ignore-s390x
 // ignore-sparc
 // ignore-sparc64
@@ -13,7 +14,7 @@
 // ignore-x86_64
 // See repr-transparent.rs
 
-#![feature(transparent_enums, transparent_unions)]
+#![feature(transparent_unions)]
 
 #![crate_type="lib"]
 

@@ -1,16 +1,16 @@
-// This test depends on a patch that was committed to upstream LLVM
-// before 7.0, then backported to the Rust LLVM fork.  It tests that
-// optimized enum debug info accurately reflects the enum layout.
+// This tests that optimized enum debug info accurately reflects the enum layout.
+// This is ignored for the fallback mode on MSVC due to problems with PDB.
 
 // ignore-tidy-linelength
-// ignore-windows
-// min-system-llvm-version 8.0
+// ignore-msvc
 
 // compile-flags: -g -C no-prepopulate-passes
 
 // CHECK: {{.*}}DICompositeType{{.*}}tag: DW_TAG_variant_part,{{.*}}size: 32,{{.*}}
 // CHECK: {{.*}}DIDerivedType{{.*}}tag: DW_TAG_member,{{.*}}name: "Placeholder",{{.*}}extraData: i64 4294967295{{[,)].*}}
 // CHECK: {{.*}}DIDerivedType{{.*}}tag: DW_TAG_member,{{.*}}name: "Error",{{.*}}extraData: i64 0{{[,)].*}}
+
+#![feature(never_type)]
 
 #[derive(Copy, Clone)]
 pub struct Entity {

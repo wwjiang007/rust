@@ -35,9 +35,9 @@ struct RustArchiveIterator {
 };
 
 enum class LLVMRustArchiveKind {
-  Other,
   GNU,
   BSD,
+  DARWIN,
   COFF,
 };
 
@@ -47,6 +47,8 @@ static Archive::Kind fromRust(LLVMRustArchiveKind Kind) {
     return Archive::K_GNU;
   case LLVMRustArchiveKind::BSD:
     return Archive::K_BSD;
+  case LLVMRustArchiveKind::DARWIN:
+    return Archive::K_DARWIN;
   case LLVMRustArchiveKind::COFF:
     return Archive::K_COFF;
   default:
@@ -89,7 +91,11 @@ extern "C" void LLVMRustDestroyArchive(LLVMRustArchiveRef RustArchive) {
 extern "C" LLVMRustArchiveIteratorRef
 LLVMRustArchiveIteratorNew(LLVMRustArchiveRef RustArchive) {
   Archive *Archive = RustArchive->getBinary();
+#if LLVM_VERSION_GE(10, 0)
+  std::unique_ptr<Error> Err = std::make_unique<Error>(Error::success());
+#else
   std::unique_ptr<Error> Err = llvm::make_unique<Error>(Error::success());
+#endif
   auto Cur = Archive->child_begin(*Err);
   if (*Err) {
     LLVMRustSetLastError(toString(std::move(*Err)).c_str());

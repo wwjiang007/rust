@@ -7,10 +7,8 @@ LL |         self.a();
 note: first, the lifetime cannot outlive the anonymous lifetime #1 defined on the method body at 3:5...
   --> $DIR/issue-16683.rs:3:5
    |
-LL | /     fn b(&self) {
-LL | |         self.a();
-LL | |     }
-   | |_____^
+LL |     fn b(&self) {
+   |     ^^^^^^^^^^^
 note: ...so that reference does not outlive borrowed content
   --> $DIR/issue-16683.rs:4:9
    |
@@ -21,9 +19,13 @@ note: but, the lifetime must be valid for the lifetime `'a` as defined on the tr
    |
 LL | trait T<'a> {
    |         ^^
-   = note: ...so that the types are compatible:
-           expected &'a Self
-              found &Self
+note: ...so that the types are compatible
+  --> $DIR/issue-16683.rs:4:14
+   |
+LL |         self.a();
+   |              ^
+   = note: expected `&'a Self`
+              found `&Self`
 
 error: aborting due to previous error
 

@@ -1,11 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-## This script publishes the new "current" toolstate in the toolstate repo (not to be
-## confused with publishing the test results, which happens in
-## `src/ci/docker/x86_64-gnu-tools/checktools.sh`).
-## It is set as callback for `src/ci/docker/x86_64-gnu-tools/repo.sh` by the CI scripts
-## when a new commit lands on `master` (i.e., after it passed all checks on `auto`).
+# This script computes the new "current" toolstate for the toolstate repo (not to be
+# confused with publishing the test results, which happens in `src/bootstrap/toolstate.rs`).
+# It gets called from `src/ci/publish_toolstate.sh` when a new commit lands on `master`
+# (i.e., after it passed all checks on `auto`).
 
 from __future__ import print_function
 
@@ -26,27 +25,32 @@ except ImportError:
 # read privileges on it). CI will fail otherwise.
 MAINTAINERS = {
     'miri': {'oli-obk', 'RalfJung', 'eddyb'},
-    'clippy-driver': {
-        'Manishearth', 'llogiq', 'mcarton', 'oli-obk', 'phansch', 'flip1995',
-        'yaahc',
-    },
     'rls': {'Xanewok'},
-    'rustfmt': {'topecongiro'},
+    'rustfmt': {'topecongiro', 'calebcartwright'},
     'book': {'carols10cents', 'steveklabnik'},
     'nomicon': {'frewsxcv', 'Gankra'},
     'reference': {'steveklabnik', 'Havvy', 'matthewjasper', 'ehuss'},
     'rust-by-example': {'steveklabnik', 'marioidival'},
-    'embedded-book': {
-        'adamgreig', 'andre-richter', 'jamesmunns', 'korken89',
-        'ryankurte', 'thejpster', 'therealprof',
-    },
-    'edition-guide': {'ehuss', 'Centril', 'steveklabnik'},
-    'rustc-guide': {'mark-i-m', 'spastorino', 'amanjeev', 'JohnTitor'},
+    'embedded-book': {'adamgreig', 'andre-richter', 'jamesmunns', 'therealprof'},
+    'edition-guide': {'ehuss', 'steveklabnik'},
+    'rustc-dev-guide': {'mark-i-m', 'spastorino', 'amanjeev', 'JohnTitor'},
+}
+
+LABELS = {
+    'miri': ['A-miri', 'C-bug'],
+    'rls': ['A-rls', 'C-bug'],
+    'rustfmt': ['A-rustfmt', 'C-bug'],
+    'book': ['C-bug'],
+    'nomicon': ['C-bug'],
+    'reference': ['C-bug'],
+    'rust-by-example': ['C-bug'],
+    'embedded-book': ['C-bug'],
+    'edition-guide': ['C-bug'],
+    'rustc-dev-guide': ['C-bug'],
 }
 
 REPOS = {
     'miri': 'https://github.com/rust-lang/miri',
-    'clippy-driver': 'https://github.com/rust-lang/rust-clippy',
     'rls': 'https://github.com/rust-lang/rls',
     'rustfmt': 'https://github.com/rust-lang/rustfmt',
     'book': 'https://github.com/rust-lang/book',
@@ -55,9 +59,16 @@ REPOS = {
     'rust-by-example': 'https://github.com/rust-lang/rust-by-example',
     'embedded-book': 'https://github.com/rust-embedded/book',
     'edition-guide': 'https://github.com/rust-lang/edition-guide',
-    'rustc-guide': 'https://github.com/rust-lang/rustc-guide',
+    'rustc-dev-guide': 'https://github.com/rust-lang/rustc-dev-guide',
 }
 
+def load_json_from_response(resp):
+    content = resp.read()
+    if isinstance(content, bytes):
+        content = content.decode('utf-8')
+    else:
+        print("Refusing to decode " + str(type(content)) + " to str")
+    return json.loads(content)
 
 def validate_maintainers(repo, github_token):
     '''Ensure all maintainers are assignable on a GitHub repo'''
@@ -72,7 +83,7 @@ def validate_maintainers(repo, github_token):
             # Properly load nested teams.
             'Accept': 'application/vnd.github.hellcat-preview+json',
         }))
-        assignable.extend(user['login'] for user in json.load(response))
+        assignable.extend(user['login'] for user in load_json_from_response(response))
         # Load the next page if available
         url = None
         link_header = response.headers.get('Link')
@@ -103,6 +114,7 @@ def validate_maintainers(repo, github_token):
         print("The build will fail due to this.")
         exit(1)
 
+
 def read_current_status(current_commit, path):
     '''Reads build status of `current_commit` from content of `history/*.tsv`
     '''
@@ -113,13 +125,16 @@ def read_current_status(current_commit, path):
                 return json.loads(status)
     return {}
 
+
 def gh_url():
     return os.environ['TOOLSTATE_ISSUES_API_URL']
+
 
 def maybe_delink(message):
     if os.environ.get('TOOLSTATE_SKIP_MENTIONS') is not None:
         return message.replace("@", "")
     return message
+
 
 def issue(
     tool,
@@ -127,7 +142,7 @@ def issue(
     assignees,
     relevant_pr_number,
     relevant_pr_user,
-    pr_reviewer,
+    labels,
 ):
     # Open an issue about the toolstate failure.
     if status == 'test-fail':
@@ -143,15 +158,15 @@ def issue(
         cc @{}, do you think you would have time to do the follow-up work?
         If so, that would be great!
 
-        cc @{}, the PR reviewer, and nominating for compiler team prioritization.
+        And nominating for compiler team prioritization.
 
         ''').format(
             relevant_pr_number, tool, status_description,
-            REPOS.get(tool), relevant_pr_user, pr_reviewer
+            REPOS.get(tool), relevant_pr_user
         )),
         'title': '`{}` no longer builds after {}'.format(tool, relevant_pr_number),
         'assignees': list(assignees),
-        'labels': ['T-compiler', 'I-nominated'],
+        'labels': labels,
     })
     print("Creating issue:\n{}".format(request))
     response = urllib2.urlopen(urllib2.Request(
@@ -164,6 +179,7 @@ def issue(
     ))
     response.read()
 
+
 def update_latest(
     current_commit,
     relevant_pr_number,
@@ -174,7 +190,7 @@ def update_latest(
 ):
     '''Updates `_data/latest.json` to match build result of the given commit.
     '''
-    with open('_data/latest.json', 'rb+') as f:
+    with open('_data/latest.json', 'r+') as f:
         latest = json.load(f, object_pairs_hook=collections.OrderedDict)
 
         current_status = {
@@ -194,26 +210,26 @@ def update_latest(
         for status in latest:
             tool = status['tool']
             changed = False
-            create_issue_for_status = None # set to the status that caused the issue
+            create_issue_for_status = None  # set to the status that caused the issue
 
             for os, s in current_status.items():
                 old = status[os]
                 new = s.get(tool, old)
                 status[os] = new
-                maintainers = ' '.join('@'+name for name in MAINTAINERS[tool])
+                maintainers = ' '.join('@'+name for name in MAINTAINERS.get(tool, ()))
                 # comparing the strings, but they are ordered appropriately:
                 # "test-pass" > "test-fail" > "build-fail"
                 if new > old:
                     # things got fixed or at least the status quo improved
                     changed = True
-                    message += '🎉 {} on {}: {} → {} (cc {}, @rust-lang/infra).\n' \
+                    message += '🎉 {} on {}: {} → {} (cc {}).\n' \
                         .format(tool, os, old, new, maintainers)
                 elif new < old:
                     # tests or builds are failing and were not failing before
                     changed = True
                     title = '💔 {} on {}: {} → {}' \
                         .format(tool, os, old, new)
-                    message += '{} (cc {}, @rust-lang/infra).\n' \
+                    message += '{} (cc {}).\n' \
                         .format(title, maintainers)
                     # See if we need to create an issue.
                     if tool == 'miri':
@@ -231,7 +247,7 @@ def update_latest(
                 try:
                     issue(
                         tool, create_issue_for_status, MAINTAINERS.get(tool, ''),
-                        relevant_pr_number, relevant_pr_user, pr_reviewer,
+                        relevant_pr_number, relevant_pr_user, LABELS.get(tool, ''),
                     )
                 except urllib2.HTTPError as e:
                     # network errors will simply end up not creating an issue, but that's better
@@ -259,7 +275,12 @@ def update_latest(
         return message
 
 
-if __name__ == '__main__':
+# Warning: Do not try to add a function containing the body of this try block.
+# There are variables declared within that are implicitly global; it is unknown
+# which ones precisely but at least this is true for `github_token`.
+try:
+    if __name__ != '__main__':
+        exit(0)
     repo = os.environ.get('TOOLSTATE_VALIDATE_MAINTAINERS_REPO')
     if repo:
         github_token = os.environ.get('TOOLSTATE_REPO_ACCESS_TOKEN')
@@ -326,3 +347,6 @@ if __name__ == '__main__':
         }
     ))
     response.read()
+except urllib2.HTTPError as e:
+    print("HTTPError: %s\n%s" % (e, e.read()))
+    raise

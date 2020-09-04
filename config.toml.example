@@ -14,6 +14,12 @@
 # =============================================================================
 [llvm]
 
+# Indicates whether LLVM rebuild should be skipped when running bootstrap. If
+# this is `false` then the compiler's LLVM will be rebuilt whenever the built
+# version doesn't have the correct hash. If it is `true` then LLVM will never
+# be rebuilt. The default value is `false`.
+#skip-rebuild = false
+
 # Indicates whether the LLVM build is a Release or Debug build
 #optimize = true
 
@@ -43,10 +49,8 @@
 # dynamic version to be available.
 #static-libstdcpp = false
 
-# Tell the LLVM build system to use Ninja instead of the platform default for
-# the generated build system. This can sometimes be faster than make, for
-# example.
-#ninja = false
+# Whether to use Ninja to build LLVM. This runs much faster than make.
+#ninja = true
 
 # LLVM targets to build support for.
 # Note: this is NOT related to Rust compilation targets. However, as Rust is
@@ -63,7 +67,7 @@
 # the same format as above, but since these targets are experimental, they are
 # not built by default and the experimental Rust compilation targets that depend
 # on them will not work unless the user opts in to building them.
-#experimental-targets = ""
+#experimental-targets = "AVR"
 
 # Cap the number of parallel linker invocations when compiling LLVM.
 # This can be useful when building LLVM with debug info, which significantly
@@ -78,8 +82,9 @@
 #link-shared = false
 
 # When building llvm, this configures what is being appended to the version.
-# If absent, we let the version as-is.
-#version-suffix = "-rust"
+# The default is "-rust-$version-$channel", except for dev channel where rustc
+# version number is omitted. To use LLVM version as is, provide an empty string.
+#version-suffix = "-rust-dev"
 
 # On MSVC you can compile LLVM with clang-cl, but the test suite doesn't pass
 # with clang-cl, so this is special in that it only compiles LLVM with clang-cl
@@ -111,18 +116,28 @@
 # nightlies are already produced for. The current platform must be able to run
 # binaries of this build triple and the nightly will be used to bootstrap the
 # first compiler.
-#build = "x86_64-unknown-linux-gnu"    # defaults to your host platform
+#
+# Defaults to host platform
+#build = "x86_64-unknown-linux-gnu"
 
 # In addition to the build triple, other triples to produce full compiler
 # toolchains for. Each of these triples will be bootstrapped from the build
 # triple and then will continue to bootstrap themselves. This platform must
 # currently be able to run all of the triples provided here.
-#host = ["x86_64-unknown-linux-gnu"]   # defaults to just the build triple
+#
+# Defaults to just the build triple
+#host = ["x86_64-unknown-linux-gnu"]
 
 # In addition to all host triples, other triples to produce the standard library
 # for. Each host triple will be used to produce a copy of the standard library
 # for each target triple.
-#target = ["x86_64-unknown-linux-gnu"] # defaults to just the build triple
+#
+# Defaults to just the build triple
+#target = ["x86_64-unknown-linux-gnu"]
+
+# Use this directory to store build artifacts.
+# You can use "$ROOT" to indicate the root of the git repository.
+#build-dir = "build"
 
 # Instead of downloading the src/stage0.txt version of Cargo specified, use
 # this Cargo binary instead to build all Rust code
@@ -131,6 +146,10 @@
 # Instead of downloading the src/stage0.txt version of the compiler
 # specified, use this rustc binary instead as the stage0 snapshot compiler.
 #rustc = "/path/to/bin/rustc"
+
+# Instead of download the src/stage0.txt version of rustfmt specified,
+# use this rustfmt binary instead as the stage0 snapshot rustfmt.
+#rustfmt = "/path/to/bin/rustfmt"
 
 # Flag to specify whether any documentation is built. If false, rustdoc and
 # friends will still be compiled but they will not be used to generate any
@@ -158,11 +177,9 @@
 
 # Python interpreter to use for various tasks throughout the build, notably
 # rustdoc tests, the lldb python interpreter, and some dist bits and pieces.
-# Note that Python 2 is currently required.
 #
-# Defaults to python2.7, then python2. If neither executable can be found, then
-# it defaults to the Python interpreter used to execute x.py.
-#python = "python2.7"
+# Defaults to the Python interpreter used to execute x.py
+#python = "python"
 
 # Force Cargo to check that Cargo.lock describes the precise dependency
 # set that all the Cargo.toml files create, instead of updating it.
@@ -171,21 +188,23 @@
 # Indicate whether the vendored sources are used for Rust dependencies or not
 #vendor = false
 
-# Typically the build system will build the rust compiler twice. The second
+# Typically the build system will build the Rust compiler twice. The second
 # compiler, however, will simply use its own libraries to link against. If you
 # would rather to perform a full bootstrap, compiling the compiler three times,
 # then you can set this option to true. You shouldn't ever need to set this
 # option to true.
 #full-bootstrap = false
 
-# Enable a build of the extended rust tool set which is not only the compiler
+# Enable a build of the extended Rust tool set which is not only the compiler
 # but also tools such as Cargo. This will also produce "combined installers"
 # which are used to install Rust and Cargo together. This is disabled by
-# default.
+# default. The `tools` option (immediately below) specifies which tools should
+# be built if `extended = true`.
 #extended = false
 
-# Installs chosen set of extended tools if enabled. By default builds all.
-# If chosen tool failed to build the installation fails.
+# Installs chosen set of extended tools if `extended = true`. By default builds all.
+# If chosen tool failed to build the installation fails. If `extended = false`, this
+# option is ignored.
 #tools = ["cargo", "rls", "clippy", "rustfmt", "analysis", "src"]
 
 # Verbosity level: 0 == not verbose, 1 == verbose, 2 == very verbose
@@ -194,7 +213,8 @@
 # Build the sanitizer runtimes
 #sanitizers = false
 
-# Build the profiler runtime
+# Build the profiler runtime (required when compiling with options that depend
+# on this runtime, such as `-C profile-generate` or `-Z instrument-coverage`).
 #profiler = false
 
 # Indicates whether the native libraries linked into Cargo will be statically
@@ -296,26 +316,49 @@
 #codegen-units-std = 1
 
 # Whether or not debug assertions are enabled for the compiler and standard
-# library.
+# library. Debug assertions control the maximum log level used by rustc. When
+# enabled calls to `trace!` and `debug!` macros are preserved in the compiled
+# binary, otherwise they are omitted.
+#
+# Defaults to rust.debug value
 #debug-assertions = false
+
+# Whether or not debug assertions are enabled for the standard library.
+# Overrides the `debug-assertions` option, if defined.
+#
+# Defaults to rust.debug-assertions value
+#debug-assertions-std = false
 
 # Debuginfo level for most of Rust code, corresponds to the `-C debuginfo=N` option of `rustc`.
 # `0` - no debug info
-# `1` - line tables only
+# `1` - line tables only - sufficient to generate backtraces that include line
+#       information and inlined functions, set breakpoints at source code
+#       locations, and step through execution in a debugger.
 # `2` - full debug info with variable and type information
-# Can be overriden for specific subsets of Rust code (rustc, std or tools).
+# Can be overridden for specific subsets of Rust code (rustc, std or tools).
 # Debuginfo for tests run with compiletest is not controlled by this option
 # and needs to be enabled separately with `debuginfo-level-tests`.
-#debuginfo-level = if debug { 2 } else { 0 }
+#
+# Note that debuginfo-level = 2 generates several gigabytes of debuginfo
+# and will slow down the linking process significantly.
+#
+# Defaults to 1 if debug is true
+#debuginfo-level = 0
 
 # Debuginfo level for the compiler.
-#debuginfo-level-rustc = debuginfo-level
+#
+# Defaults to rust.debuginfo-level value
+#debuginfo-level-rustc = 0
 
 # Debuginfo level for the standard library.
-#debuginfo-level-std = debuginfo-level
+#
+# Defaults to rust.debuginfo-level value
+#debuginfo-level-std = 0
 
 # Debuginfo level for the tools.
-#debuginfo-level-tools = debuginfo-level
+#
+# Defaults to rust.debuginfo-level value
+#debuginfo-level-tools = 0
 
 # Debuginfo level for the test suites run with compiletest.
 # FIXME(#61117): Some tests fail when this option is enabled.
@@ -340,7 +383,7 @@
 # nightly features
 #channel = "dev"
 
-# The root location of the MUSL installation directory.
+# The root location of the musl installation directory.
 #musl-root = "..."
 
 # By default the `rustc` executable is built with `-Wl,-rpath` flags on Unix
@@ -349,8 +392,7 @@
 # desired in distributions, for example.
 #rpath = true
 
-# Emits extraneous output from tests to ensure that failures of the test
-# harness are debuggable just from logfiles.
+# Emits extra output from tests so test failures are debuggable just from logfiles.
 #verbose-tests = false
 
 # Flag indicating whether tests are compiled with optimizations (the -O flag).
@@ -379,20 +421,22 @@
 # and currently the only standard option supported is `"llvm"`
 #codegen-backends = ["llvm"]
 
-# This is the name of the directory in which codegen backends will get installed
-#codegen-backends-dir = "codegen-backends"
-
 # Indicates whether LLD will be compiled and made available in the sysroot for
 # rustc to execute.
 #lld = false
 
+# Indicates whether LLD will be used to link Rust crates during bootstrap on
+# supported platforms. The LLD from the bootstrap distribution will be used
+# and not the LLD compiled during the bootstrap.
+#
+# LLD will not be used if we're cross linking or running tests.
+#
+# Explicitly setting the linker for a target will override this option when targeting MSVC.
+#use-lld = false
+
 # Indicates whether some LLVM tools, like llvm-objdump, will be made available in the
 # sysroot.
 #llvm-tools = false
-
-# Indicates whether LLDB will be made available in the sysroot.
-# This is only built if LLVM is also being built.
-#lldb = false
 
 # Whether to deny warnings in crates
 #deny-warnings = true
@@ -403,8 +447,14 @@
 # Whether to verify generated LLVM IR
 #verify-llvm-ir = false
 
-# Map all debuginfo paths for libstd and crates to `/rust/$sha/$crate/...`,
-# generally only set for releases
+# Compile the compiler with a non-default ThinLTO import limit. This import
+# limit controls the maximum size of functions imported by ThinLTO. Decreasing
+# will make code compile faster at the expense of lower runtime performance.
+# If `incremental` is set to true above, the import limit will default to 10
+# instead of LLVM's default of 100.
+#thin-lto-import-instr-limit = 100
+
+# Map debuginfo paths to `/rust/$sha/...`, generally only set for releases
 #remap-debuginfo = false
 
 # Link the compiler against `jemalloc`, where on Linux and OSX it should
@@ -418,6 +468,14 @@
 
 # Use LLVM libunwind as the implementation for Rust's unwinder.
 #llvm-libunwind = false
+
+# Enable Windows Control Flow Guard checks in the standard library.
+# This only applies from stage 1 onwards, and only for Windows targets.
+#control-flow-guard = false
+
+# Enable symbol-mangling-version v0. This can be helpful when profiling rustc,
+# as generics will be preserved in symbols (rather than erased into opaque T).
+#new-symbol-mangling = false
 
 # =============================================================================
 # Options for specific targets
@@ -447,6 +505,7 @@
 # Linker to be used to link Rust code. Note that the
 # default value is platform specific, and if not specified it may also depend on
 # what platform is crossing to what platform.
+# Setting this will override the `use-lld` option for Rust code when targeting MSVC.
 #linker = "cc"
 
 # Path to the `llvm-config` binary of the installation of a custom LLVM to link
@@ -469,11 +528,14 @@
 # only use static libraries. If unset, the target's default linkage is used.
 #crt-static = false
 
-# The root location of the MUSL installation directory. The library directory
+# The root location of the musl installation directory. The library directory
 # will also need to contain libunwind.a for an unwinding implementation. Note
-# that this option only makes sense for MUSL targets that produce statically
+# that this option only makes sense for musl targets that produce statically
 # linked binaries
 #musl-root = "..."
+
+# The full path to the musl libdir.
+#musl-libdir = musl-root/lib
 
 # The root location of the `wasm32-wasi` sysroot.
 #wasi-root = "..."

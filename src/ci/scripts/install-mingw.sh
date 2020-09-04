@@ -51,8 +51,9 @@ if isWindows; then
 
     if [[ "${CUSTOM_MINGW-0}" -ne 1 ]]; then
         pacman -S --noconfirm --needed mingw-w64-$arch-toolchain mingw-w64-$arch-cmake \
-            mingw-w64-$arch-gcc mingw-w64-$arch-python2
-        ciCommandAddPath "${SYSTEM_WORKFOLDER}/msys2/mingw${bits}/bin"
+            mingw-w64-$arch-gcc \
+            mingw-w64-$arch-python # the python package is actually for python3
+        ciCommandAddPath "$(ciCheckoutPath)/msys2/mingw${bits}/bin"
     else
         mingw_dir="mingw${bits}"
 

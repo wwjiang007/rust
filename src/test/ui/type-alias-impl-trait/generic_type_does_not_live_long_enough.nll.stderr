@@ -11,9 +11,12 @@ LL |     let z: i32 = x;
    |            ---   ^ expected `i32`, found opaque type
    |            |
    |            expected due to this
+...
+LL | type WrongGeneric<T> = impl 'static;
+   |                        ------------ the found opaque type
    |
    = note:     expected type `i32`
-           found opaque type `WrongGeneric::<&{integer}>`
+           found opaque type `impl Sized`
 
 error: aborting due to 2 previous errors
 

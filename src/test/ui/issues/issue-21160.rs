@@ -1,4 +1,3 @@
-// ignore-x86 FIXME: missing sysroot spans (#53081)
 struct Bar;
 
 impl Bar {
@@ -7,6 +6,6 @@ impl Bar {
 
 #[derive(Hash)]
 struct Foo(Bar);
-//~^ error: `Bar: std::hash::Hash` is not satisfied
+//~^ error: `Bar: Hash` is not satisfied
 
 fn main() {}

@@ -1,5 +1,3 @@
-#![feature(slice_patterns)]
-
 fn main() {
     let s: &[bool] = &[true; 0];
     let s1: &[bool; 1] = &[false; 1];
@@ -81,5 +79,27 @@ fn main() {
         [_] => {}
         [_, _] => {}
         [false, .., false] => {}
+    }
+
+    const CONST: &[bool] = &[true];
+    match s {
+    //~^ ERROR `&[..]` not covered
+        CONST => {}
+    }
+    match s {
+    //~^ ERROR `&[true]` not covered
+        [] => {},
+        [false] => {},
+        CONST => {},
+        [_, _, ..] => {}
+    }
+    const CONST1: &[bool; 1] = &[true];
+    match s1 {
+    //~^ ERROR `&[false]` not covered
+        CONST1 => {}
+    }
+    match s1 {
+        CONST1 => {}
+        [false] => {}
     }
 }

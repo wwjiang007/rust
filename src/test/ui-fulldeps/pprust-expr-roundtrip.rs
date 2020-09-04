@@ -19,20 +19,23 @@
 
 #![feature(rustc_private)]
 
+extern crate rustc_ast_pretty;
 extern crate rustc_data_structures;
-extern crate syntax;
-extern crate syntax_expand;
+extern crate rustc_ast;
 extern crate rustc_parse;
+extern crate rustc_session;
+extern crate rustc_span;
 
+use rustc_ast_pretty::pprust;
 use rustc_data_structures::thin_vec::ThinVec;
 use rustc_parse::new_parser_from_source_str;
-use syntax::ast::*;
-use syntax::sess::ParseSess;
-use syntax::source_map::{Spanned, DUMMY_SP, FileName};
-use syntax::source_map::FilePathMapping;
-use syntax::mut_visit::{self, MutVisitor, visit_clobber};
-use syntax::print::pprust;
-use syntax::ptr::P;
+use rustc_session::parse::ParseSess;
+use rustc_span::source_map::{Spanned, DUMMY_SP, FileName};
+use rustc_span::source_map::FilePathMapping;
+use rustc_span::symbol::Ident;
+use rustc_ast::*;
+use rustc_ast::mut_visit::{self, MutVisitor, visit_clobber};
+use rustc_ast::ptr::P;
 
 fn parse_expr(ps: &ParseSess, src: &str) -> Option<P<Expr>> {
     let src_as_string = src.to_string();
@@ -53,6 +56,7 @@ fn expr(kind: ExprKind) -> P<Expr> {
         kind,
         span: DUMMY_SP,
         attrs: ThinVec::new(),
+        tokens: None
     })
 }
 
@@ -80,9 +84,9 @@ fn iter_exprs(depth: usize, f: &mut dyn FnMut(P<Expr>)) {
             2 => {
                 let seg = PathSegment::from_ident(Ident::from_str("x"));
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::MethodCall(
-                            seg.clone(), vec![e, make_x()])));
+                            seg.clone(), vec![e, make_x()], DUMMY_SP)));
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::MethodCall(
-                            seg.clone(), vec![make_x(), e])));
+                            seg.clone(), vec![make_x(), e], DUMMY_SP)));
             },
             3..=8 => {
                 let op = Spanned {
@@ -115,19 +119,19 @@ fn iter_exprs(depth: usize, f: &mut dyn FnMut(P<Expr>)) {
             11 => {
                 let decl = P(FnDecl {
                     inputs: vec![],
-                    output: FunctionRetTy::Default(DUMMY_SP),
+                    output: FnRetTy::Default(DUMMY_SP),
                 });
                 iter_exprs(depth - 1, &mut |e| g(
                         ExprKind::Closure(CaptureBy::Value,
-                                          IsAsync::NotAsync,
+                                          Async::No,
                                           Movability::Movable,
                                           decl.clone(),
                                           e,
                                           DUMMY_SP)));
             },
             12 => {
-                iter_exprs(depth - 1, &mut |e| g(ExprKind::Assign(e, make_x())));
-                iter_exprs(depth - 1, &mut |e| g(ExprKind::Assign(make_x(), e)));
+                iter_exprs(depth - 1, &mut |e| g(ExprKind::Assign(e, make_x(), DUMMY_SP)));
+                iter_exprs(depth - 1, &mut |e| g(ExprKind::Assign(make_x(), e, DUMMY_SP)));
             },
             13 => {
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::Field(e, Ident::from_str("f"))));
@@ -141,7 +145,7 @@ fn iter_exprs(depth: usize, f: &mut dyn FnMut(P<Expr>)) {
             15 => {
                 iter_exprs(
                     depth - 1,
-                    &mut |e| g(ExprKind::AddrOf(BorrowKind::Ref, Mutability::Immutable, e)),
+                    &mut |e| g(ExprKind::AddrOf(BorrowKind::Ref, Mutability::Not, e)),
                 );
             },
             16 => {
@@ -160,6 +164,7 @@ fn iter_exprs(depth: usize, f: &mut dyn FnMut(P<Expr>)) {
                     id: DUMMY_NODE_ID,
                     kind: PatKind::Wild,
                     span: DUMMY_SP,
+                    tokens: None,
                 });
                 iter_exprs(depth - 1, &mut |e| g(ExprKind::Let(pat.clone(), e)))
             },
@@ -197,13 +202,14 @@ impl MutVisitor for AddParens {
                 kind: ExprKind::Paren(e),
                 span: DUMMY_SP,
                 attrs: ThinVec::new(),
+                tokens: None
             })
         });
     }
 }
 
 fn main() {
-    syntax::with_default_globals(|| run());
+    rustc_span::with_default_session_globals(|| run());
 }
 
 fn run() {

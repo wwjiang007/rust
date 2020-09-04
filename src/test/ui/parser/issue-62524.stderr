@@ -1,13 +1,13 @@
-error: this file contains an un-closed delimiter
-  --> $DIR/issue-62524.rs:4:3
+error: this file contains an unclosed delimiter
+  --> $DIR/issue-62524.rs:6:3
    |
 LL | y![
-   |   - un-closed delimiter
+   |   - unclosed delimiter
 LL | Ϥ,
    |   ^
 
 error: macros that expand to items must be delimited with braces or followed by a semicolon
-  --> $DIR/issue-62524.rs:3:3
+  --> $DIR/issue-62524.rs:5:3
    |
 LL |   y![
    |  ___^
@@ -16,16 +16,15 @@ LL | | Ϥ,
    |
 help: change the delimiters to curly braces
    |
-LL | y!{
-LL | Ϥ}
-   |
+LL | y! { /* items */ }
+   |    ^^^^^^^^^^^^^^^
 help: add a semicolon
    |
 LL | Ϥ,;
    |   ^
 
 error: cannot find macro `y` in this scope
-  --> $DIR/issue-62524.rs:3:1
+  --> $DIR/issue-62524.rs:5:1
    |
 LL | y![
    | ^
