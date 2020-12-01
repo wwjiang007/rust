@@ -156,20 +156,20 @@ impl TargetDataLayout {
             Endian::Little => "little",
             Endian::Big => "big",
         };
-        if endian_str != target.target_endian {
+        if endian_str != target.endian {
             return Err(format!(
                 "inconsistent target specification: \"data-layout\" claims \
                                 architecture is {}-endian, while \"target-endian\" is `{}`",
-                endian_str, target.target_endian
+                endian_str, target.endian
             ));
         }
 
-        if dl.pointer_size.bits().to_string() != target.target_pointer_width {
+        if dl.pointer_size.bits() != target.pointer_width.into() {
             return Err(format!(
                 "inconsistent target specification: \"data-layout\" claims \
                                 pointers are {}-bit, while \"target-pointer-width\" is `{}`",
                 dl.pointer_size.bits(),
-                target.target_pointer_width
+                target.pointer_width
             ));
         }
 
@@ -305,6 +305,35 @@ impl Size {
 
         let bytes = self.bytes().checked_mul(count)?;
         if bytes < dl.obj_size_bound() { Some(Size::from_bytes(bytes)) } else { None }
+    }
+
+    /// Truncates `value` to `self` bits and then sign-extends it to 128 bits
+    /// (i.e., if it is negative, fill with 1's on the left).
+    #[inline]
+    pub fn sign_extend(self, value: u128) -> u128 {
+        let size = self.bits();
+        if size == 0 {
+            // Truncated until nothing is left.
+            return 0;
+        }
+        // Sign-extend it.
+        let shift = 128 - size;
+        // Shift the unsigned value to the left, then shift back to the right as signed
+        // (essentially fills with sign bit on the left).
+        (((value << shift) as i128) >> shift) as u128
+    }
+
+    /// Truncates `value` to `self` bits.
+    #[inline]
+    pub fn truncate(self, value: u128) -> u128 {
+        let size = self.bits();
+        if size == 0 {
+            // Truncated until nothing is left.
+            return 0;
+        }
+        let shift = 128 - size;
+        // Truncate (shift left to drop out leftover values, shift right to fill with zeroes).
+        (value << shift) >> shift
     }
 }
 
@@ -557,17 +586,11 @@ impl Primitive {
     }
 
     pub fn is_float(self) -> bool {
-        match self {
-            F32 | F64 => true,
-            _ => false,
-        }
+        matches!(self, F32 | F64)
     }
 
     pub fn is_int(self) -> bool {
-        match self {
-            Int(..) => true,
-            _ => false,
-        }
+        matches!(self, Int(..))
     }
 }
 
@@ -794,18 +817,12 @@ impl Abi {
 
     /// Returns `true` if this is an uninhabited type
     pub fn is_uninhabited(&self) -> bool {
-        match *self {
-            Abi::Uninhabited => true,
-            _ => false,
-        }
+        matches!(*self, Abi::Uninhabited)
     }
 
     /// Returns `true` is this is a scalar type
     pub fn is_scalar(&self) -> bool {
-        match *self {
-            Abi::Scalar(_) => true,
-            _ => false,
-        }
+        matches!(*self, Abi::Scalar(_))
     }
 }
 
@@ -1135,16 +1152,31 @@ impl<'a, Ty> TyAndLayout<'a, Ty> {
             Abi::Scalar(s) => scalar_allows_raw_init(s),
             Abi::ScalarPair(s1, s2) => scalar_allows_raw_init(s1) && scalar_allows_raw_init(s2),
             Abi::Vector { element: s, count } => *count == 0 || scalar_allows_raw_init(s),
-            Abi::Aggregate { .. } => true, // Cannot be excluded *right now*.
+            Abi::Aggregate { .. } => true, // Fields are checked below.
         };
         if !valid {
             // This is definitely not okay.
-            trace!("might_permit_raw_init({:?}, zero={}): not valid", self.layout, zero);
             return Ok(false);
         }
 
-        // If we have not found an error yet, we need to recursively descend.
-        // FIXME(#66151): For now, we are conservative and do not do this.
+        // If we have not found an error yet, we need to recursively descend into fields.
+        match &self.fields {
+            FieldsShape::Primitive | FieldsShape::Union { .. } => {}
+            FieldsShape::Array { .. } => {
+                // FIXME(#66151): For now, we are conservative and do not check arrays.
+            }
+            FieldsShape::Arbitrary { offsets, .. } => {
+                for idx in 0..offsets.len() {
+                    let field = self.field(cx, idx).to_result()?;
+                    if !field.might_permit_raw_init(cx, zero)? {
+                        // We found a field that is unhappy with this kind of initialization.
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+
+        // FIXME(#66151): For now, we are conservative and do not check `self.variants`.
         Ok(true)
     }
 }

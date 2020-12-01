@@ -31,6 +31,24 @@ pub fn method_context(cx: &LateContext<'_>, id: hir::HirId) -> MethodLateContext
 }
 
 declare_lint! {
+    /// The `non_camel_case_types` lint detects types, variants, traits and
+    /// type parameters that don't have camel case names.
+    ///
+    /// ### Example
+    ///
+    /// ```rust
+    /// struct my_struct;
+    /// ```
+    ///
+    /// {{produces}}
+    ///
+    /// ### Explanation
+    ///
+    /// The preferred style for these identifiers is to use "camel case", such
+    /// as `MyStruct`, where the first letter should not be lowercase, and
+    /// should not use underscores between letters. Underscores are allowed at
+    /// the beginning and end of the identifier, as well as between
+    /// non-letters (such as `X86_64`).
     pub NON_CAMEL_CASE_TYPES,
     Warn,
     "types, variants, traits and type parameters should have camel case names"
@@ -52,9 +70,9 @@ fn is_camel_case(name: &str) -> bool {
     // ones (some scripts don't have a concept of upper/lowercase)
     !name.chars().next().unwrap().is_lowercase()
         && !name.contains("__")
-        && !name.chars().collect::<Vec<_>>().windows(2).any(|pair| {
+        && !name.chars().collect::<Vec<_>>().array_windows().any(|&[fst, snd]| {
             // contains a capitalisable character followed by, or preceded by, an underscore
-            char_has_case(pair[0]) && pair[1] == '_' || char_has_case(pair[1]) && pair[0] == '_'
+            char_has_case(fst) && snd == '_' || char_has_case(snd) && fst == '_'
         })
 }
 
@@ -76,9 +94,9 @@ fn to_camel_case(s: &str) -> String {
                 }
 
                 if new_word {
-                    camel_cased_component.push_str(&c.to_uppercase().to_string());
+                    camel_cased_component.extend(c.to_uppercase());
                 } else {
-                    camel_cased_component.push_str(&c.to_lowercase().to_string());
+                    camel_cased_component.extend(c.to_lowercase());
                 }
 
                 prev_is_lower_case = c.is_lowercase();
@@ -109,14 +127,20 @@ impl NonCamelCaseTypes {
         if !is_camel_case(name) {
             cx.struct_span_lint(NON_CAMEL_CASE_TYPES, ident.span, |lint| {
                 let msg = format!("{} `{}` should have an upper camel case name", sort, name);
-                lint.build(&msg)
-                    .span_suggestion(
+                let mut err = lint.build(&msg);
+                let cc = to_camel_case(name);
+                // We cannot provide meaningful suggestions
+                // if the characters are in the category of "Lowercase Letter".
+                if name.to_string() != cc {
+                    err.span_suggestion(
                         ident.span,
                         "convert the identifier to upper camel case",
                         to_camel_case(name),
                         Applicability::MaybeIncorrect,
-                    )
-                    .emit()
+                    );
+                }
+
+                err.emit();
             })
         }
     }
@@ -161,6 +185,22 @@ impl EarlyLintPass for NonCamelCaseTypes {
 }
 
 declare_lint! {
+    /// The `non_snake_case` lint detects variables, methods, functions,
+    /// lifetime parameters and modules that don't have snake case names.
+    ///
+    /// ### Example
+    ///
+    /// ```rust
+    /// let MY_VALUE = 5;
+    /// ```
+    ///
+    /// {{produces}}
+    ///
+    /// ### Explanation
+    ///
+    /// The preferred style for these identifiers is to use "snake case",
+    /// where all the characters are in lowercase, with words separated with a
+    /// single underscore, such as `my_value`.
     pub NON_SNAKE_CASE,
     Warn,
     "variables, methods, functions, lifetime parameters and modules should have snake case names"
@@ -229,17 +269,21 @@ impl NonSnakeCase {
                 let sc = NonSnakeCase::to_snake_case(name);
                 let msg = format!("{} `{}` should have a snake case name", sort, name);
                 let mut err = lint.build(&msg);
-                // We have a valid span in almost all cases, but we don't have one when linting a crate
-                // name provided via the command line.
-                if !ident.span.is_dummy() {
-                    err.span_suggestion(
-                        ident.span,
-                        "convert the identifier to snake case",
-                        sc,
-                        Applicability::MaybeIncorrect,
-                    );
-                } else {
-                    err.help(&format!("convert the identifier to snake case: `{}`", sc));
+                // We cannot provide meaningful suggestions
+                // if the characters are in the category of "Uppercase Letter".
+                if name.to_string() != sc {
+                    // We have a valid span in almost all cases, but we don't have one when linting a crate
+                    // name provided via the command line.
+                    if !ident.span.is_dummy() {
+                        err.span_suggestion(
+                            ident.span,
+                            "convert the identifier to snake case",
+                            sc,
+                            Applicability::MaybeIncorrect,
+                        );
+                    } else {
+                        err.help(&format!("convert the identifier to snake case: `{}`", sc));
+                    }
                 }
 
                 err.emit();
@@ -286,7 +330,7 @@ impl<'tcx> LateLintPass<'tcx> for NonSnakeCase {
                                             .with_hi(lit.span.hi() - BytePos(right as u32)),
                                     )
                                 })
-                                .unwrap_or_else(|| lit.span);
+                                .unwrap_or(lit.span);
 
                             Some(Ident::new(name, sp))
                         } else {
@@ -379,6 +423,21 @@ impl<'tcx> LateLintPass<'tcx> for NonSnakeCase {
 }
 
 declare_lint! {
+    /// The `non_upper_case_globals` lint detects static items that don't have
+    /// uppercase identifiers.
+    ///
+    /// ### Example
+    ///
+    /// ```rust
+    /// static max_points: i32 = 5;
+    /// ```
+    ///
+    /// {{produces}}
+    ///
+    /// ### Explanation
+    ///
+    /// The preferred style is for static item names to use all uppercase
+    /// letters such as `MAX_POINTS`.
     pub NON_UPPER_CASE_GLOBALS,
     Warn,
     "static constants should have uppercase identifiers"
@@ -392,14 +451,20 @@ impl NonUpperCaseGlobals {
         if name.chars().any(|c| c.is_lowercase()) {
             cx.struct_span_lint(NON_UPPER_CASE_GLOBALS, ident.span, |lint| {
                 let uc = NonSnakeCase::to_snake_case(&name).to_uppercase();
-                lint.build(&format!("{} `{}` should have an upper case name", sort, name))
-                    .span_suggestion(
+                let mut err =
+                    lint.build(&format!("{} `{}` should have an upper case name", sort, name));
+                // We cannot provide meaningful suggestions
+                // if the characters are in the category of "Lowercase Letter".
+                if name.to_string() != uc {
+                    err.span_suggestion(
                         ident.span,
                         "convert the identifier to upper case",
                         uc,
                         Applicability::MaybeIncorrect,
-                    )
-                    .emit();
+                    );
+                }
+
+                err.emit();
             })
         }
     }

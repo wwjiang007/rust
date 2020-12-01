@@ -93,15 +93,33 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
         let effective_field_align = self.align.restrict_for_offset(offset);
 
         let mut simple = || {
-            // Unions and newtypes only use an offset of 0.
-            let llval = if offset.bytes() == 0 {
-                self.llval
-            } else if let Abi::ScalarPair(ref a, ref b) = self.layout.abi {
-                // Offsets have to match either first or second field.
-                assert_eq!(offset, a.value.size(bx.cx()).align_to(b.value.align(bx.cx()).abi));
-                bx.struct_gep(self.llval, 1)
-            } else {
-                bx.struct_gep(self.llval, bx.cx().backend_field_index(self.layout, ix))
+            let llval = match self.layout.abi {
+                _ if offset.bytes() == 0 => {
+                    // Unions and newtypes only use an offset of 0.
+                    // Also handles the first field of Scalar, ScalarPair, and Vector layouts.
+                    self.llval
+                }
+                Abi::ScalarPair(ref a, ref b)
+                    if offset == a.value.size(bx.cx()).align_to(b.value.align(bx.cx()).abi) =>
+                {
+                    // Offset matches second field.
+                    bx.struct_gep(self.llval, 1)
+                }
+                Abi::Scalar(_) | Abi::ScalarPair(..) | Abi::Vector { .. } if field.is_zst() => {
+                    // ZST fields are not included in Scalar, ScalarPair, and Vector layouts, so manually offset the pointer.
+                    let byte_ptr = bx.pointercast(self.llval, bx.cx().type_i8p());
+                    bx.gep(byte_ptr, &[bx.const_usize(offset.bytes())])
+                }
+                Abi::Scalar(_) | Abi::ScalarPair(..) => {
+                    // All fields of Scalar and ScalarPair layouts must have been handled by this point.
+                    // Vector layouts have additional fields for each element of the vector, so don't panic in that case.
+                    bug!(
+                        "offset of non-ZST field `{:?}` does not match layout `{:#?}`",
+                        field,
+                        self.layout
+                    );
+                }
+                _ => bx.struct_gep(self.llval, bx.cx().backend_field_index(self.layout, ix)),
             };
             PlaceRef {
                 // HACK(eddyb): have to bitcast pointers until LLVM removes pointee types.
@@ -116,7 +134,7 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
         //   * no metadata available - just log the case
         //   * known alignment - sized types, `[T]`, `str` or a foreign type
         //   * packed struct - there is no alignment padding
-        match field.ty.kind {
+        match field.ty.kind() {
             _ if self.llextra.is_none() => {
                 debug!(
                     "unsized field `{}`, of `{:?}` has no metadata for adjustment",
@@ -328,8 +346,8 @@ impl<'a, 'tcx, V: CodegenObject> PlaceRef<'tcx, V> {
                 ..
             } => {
                 if variant_index != dataful_variant {
-                    if bx.cx().sess().target.target.arch == "arm"
-                        || bx.cx().sess().target.target.arch == "aarch64"
+                    if bx.cx().sess().target.arch == "arm"
+                        || bx.cx().sess().target.arch == "aarch64"
                     {
                         // FIXME(#34427): as workaround for LLVM bug on ARM,
                         // use memset of 0 before assigning niche value.
@@ -467,7 +485,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                             cg_base.project_index(bx, bx.cx().const_usize(from as u64));
                         let projected_ty =
                             PlaceTy::from_ty(cg_base.layout.ty).projection_ty(tcx, elem).ty;
-                        subslice.layout = bx.cx().layout_of(self.monomorphize(&projected_ty));
+                        subslice.layout = bx.cx().layout_of(self.monomorphize(projected_ty));
 
                         if subslice.layout.is_unsized() {
                             assert!(from_end, "slice subslices should be `from_end`");
@@ -497,6 +515,6 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
     pub fn monomorphized_place_ty(&self, place_ref: mir::PlaceRef<'tcx>) -> Ty<'tcx> {
         let tcx = self.cx.tcx();
         let place_ty = mir::Place::ty_from(place_ref.local, place_ref.projection, self.mir, tcx);
-        self.monomorphize(&place_ty.ty)
+        self.monomorphize(place_ty.ty)
     }
 }

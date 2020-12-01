@@ -2,6 +2,7 @@
 //!
 //! See the `Qualif` trait for more info.
 
+use rustc_errors::ErrorReported;
 use rustc_middle::mir::*;
 use rustc_middle::ty::{self, subst::SubstsRef, AdtDef, Ty};
 use rustc_span::DUMMY_SP;
@@ -9,11 +10,16 @@ use rustc_trait_selection::traits;
 
 use super::ConstCx;
 
-pub fn in_any_value_of_ty(cx: &ConstCx<'_, 'tcx>, ty: Ty<'tcx>) -> ConstQualifs {
+pub fn in_any_value_of_ty(
+    cx: &ConstCx<'_, 'tcx>,
+    ty: Ty<'tcx>,
+    error_occured: Option<ErrorReported>,
+) -> ConstQualifs {
     ConstQualifs {
         has_mut_interior: HasMutInterior::in_any_value_of_ty(cx, ty),
         needs_drop: NeedsDrop::in_any_value_of_ty(cx, ty),
         custom_eq: CustomEq::in_any_value_of_ty(cx, ty),
+        error_occured,
     }
 }
 
@@ -126,7 +132,7 @@ impl Qualif for CustomEq {
         // because that component may be part of an enum variant (e.g.,
         // `Option::<NonStructuralMatchTy>::Some`), in which case some values of this type may be
         // structural-match (`Option::None`).
-        let id = cx.tcx.hir().local_def_id_to_hir_id(cx.def_id);
+        let id = cx.tcx.hir().local_def_id_to_hir_id(cx.def_id());
         traits::search_for_structural_match_violation(id, cx.body.span, cx.tcx, ty).is_some()
     }
 
@@ -170,7 +176,7 @@ where
             // Special-case reborrows to be more like a copy of the reference.
             if let &[ref proj_base @ .., ProjectionElem::Deref] = place.projection.as_ref() {
                 let base_ty = Place::ty_from(place.local, proj_base, cx.body, cx.tcx).ty;
-                if let ty::Ref(..) = base_ty.kind {
+                if let ty::Ref(..) = base_ty.kind() {
                     return in_place::<Q, _>(
                         cx,
                         in_local,

@@ -2,11 +2,11 @@
 //!
 //! [rustc dev guide]: https://rustc-dev-guide.rust-lang.org/traits/resolution.html
 
-#[allow(dead_code)]
 pub mod auto_trait;
 mod chalk_fulfill;
 pub mod codegen;
 mod coherence;
+mod const_evaluatable;
 mod engine;
 pub mod error_reporting;
 mod fulfill;
@@ -65,7 +65,8 @@ pub use self::util::{
     get_vtable_index_of_object_method, impl_item_is_final, predicate_for_trait_def, upcast_choices,
 };
 pub use self::util::{
-    supertrait_def_ids, supertraits, transitive_bounds, SupertraitDefIds, Supertraits,
+    supertrait_def_ids, supertraits, transitive_bounds, transitive_bounds_that_define_assoc_type,
+    SupertraitDefIds, Supertraits,
 };
 
 pub use self::chalk_fulfill::FulfillmentContext as ChalkFulfillmentContext;
@@ -97,13 +98,13 @@ impl Default for SkipLeakCheck {
 /// The mode that trait queries run in.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum TraitQueryMode {
-    // Standard/un-canonicalized queries get accurate
-    // spans etc. passed in and hence can do reasonable
-    // error reporting on their own.
+    /// Standard/un-canonicalized queries get accurate
+    /// spans etc. passed in and hence can do reasonable
+    /// error reporting on their own.
     Standard,
-    // Canonicalized queries get dummy spans and hence
-    // must generally propagate errors to
-    // pre-canonicalization callsites.
+    /// Canonicalized queries get dummy spans and hence
+    /// must generally propagate errors to
+    /// pre-canonicalization callsites.
     Canonical,
 }
 
@@ -223,7 +224,7 @@ fn do_normalize_predicates<'tcx>(
         // we move over to lazy normalization *anyway*.
         let fulfill_cx = FulfillmentContext::new_ignoring_regions();
         let predicates =
-            match fully_normalize(&infcx, fulfill_cx, cause, elaborated_env, &predicates) {
+            match fully_normalize(&infcx, fulfill_cx, cause, elaborated_env, predicates) {
                 Ok(predicates) => predicates,
                 Err(errors) => {
                     infcx.report_fulfillment_errors(&errors, None, false);
@@ -243,7 +244,7 @@ fn do_normalize_predicates<'tcx>(
             RegionckMode::default(),
         );
 
-        let predicates = match infcx.fully_resolve(&predicates) {
+        let predicates = match infcx.fully_resolve(predicates) {
             Ok(predicates) => predicates,
             Err(fixup_err) => {
                 // If we encounter a fixup error, it means that some type
@@ -301,11 +302,8 @@ pub fn normalize_param_env_or_error<'tcx>(
 
     debug!("normalize_param_env_or_error: elaborated-predicates={:?}", predicates);
 
-    let elaborated_env = ty::ParamEnv::new(
-        tcx.intern_predicates(&predicates),
-        unnormalized_env.reveal(),
-        unnormalized_env.def_id,
-    );
+    let elaborated_env =
+        ty::ParamEnv::new(tcx.intern_predicates(&predicates), unnormalized_env.reveal());
 
     // HACK: we are trying to normalize the param-env inside *itself*. The problem is that
     // normalization expects its param-env to be already normalized, which means we have
@@ -359,7 +357,7 @@ pub fn normalize_param_env_or_error<'tcx>(
     let outlives_env: Vec<_> =
         non_outlives_predicates.iter().chain(&outlives_predicates).cloned().collect();
     let outlives_env =
-        ty::ParamEnv::new(tcx.intern_predicates(&outlives_env), unnormalized_env.reveal(), None);
+        ty::ParamEnv::new(tcx.intern_predicates(&outlives_env), unnormalized_env.reveal());
     let outlives_predicates = match do_normalize_predicates(
         tcx,
         region_context,
@@ -379,11 +377,7 @@ pub fn normalize_param_env_or_error<'tcx>(
     let mut predicates = non_outlives_predicates;
     predicates.extend(outlives_predicates);
     debug!("normalize_param_env_or_error: final predicates={:?}", predicates);
-    ty::ParamEnv::new(
-        tcx.intern_predicates(&predicates),
-        unnormalized_env.reveal(),
-        unnormalized_env.def_id,
-    )
+    ty::ParamEnv::new(tcx.intern_predicates(&predicates), unnormalized_env.reveal())
 }
 
 pub fn fully_normalize<'a, 'tcx, T>(
@@ -391,7 +385,7 @@ pub fn fully_normalize<'a, 'tcx, T>(
     mut fulfill_cx: FulfillmentContext<'tcx>,
     cause: ObligationCause<'tcx>,
     param_env: ty::ParamEnv<'tcx>,
-    value: &T,
+    value: T,
 ) -> Result<T, Vec<FulfillmentError<'tcx>>>
 where
     T: TypeFoldable<'tcx>,
@@ -411,7 +405,7 @@ where
     debug!("fully_normalize: select_all_or_error start");
     fulfill_cx.select_all_or_error(infcx)?;
     debug!("fully_normalize: select_all_or_error complete");
-    let resolved_value = infcx.resolve_vars_if_possible(&normalized_value);
+    let resolved_value = infcx.resolve_vars_if_possible(normalized_value);
     debug!("fully_normalize: resolved_value={:?}", resolved_value);
     Ok(resolved_value)
 }
@@ -431,7 +425,7 @@ pub fn impossible_predicates<'tcx>(
         let mut fulfill_cx = FulfillmentContext::new();
         let cause = ObligationCause::dummy();
         let Normalized { value: predicates, obligations } =
-            normalize(&mut selcx, param_env, cause.clone(), &predicates);
+            normalize(&mut selcx, param_env, cause.clone(), predicates);
         for obligation in obligations {
             fulfill_cx.register_predicate_obligation(&infcx, obligation);
         }
@@ -442,7 +436,7 @@ pub fn impossible_predicates<'tcx>(
 
         fulfill_cx.select_all_or_error(&infcx).is_err()
     });
-    debug!("impossible_predicates(predicates={:?}) = {:?}", predicates, result);
+    debug!("impossible_predicates = {:?}", result);
     result
 }
 
@@ -501,7 +495,7 @@ fn vtable_methods<'tcx>(
             // erase them if they appear, so that we get the type
             // at some particular call site.
             let substs =
-                tcx.normalize_erasing_late_bound_regions(ty::ParamEnv::reveal_all(), &substs);
+                tcx.normalize_erasing_late_bound_regions(ty::ParamEnv::reveal_all(), substs);
 
             // It's possible that the method relies on where-clauses that
             // do not hold for this particular set of type parameters.
@@ -558,6 +552,21 @@ pub fn provide(providers: &mut ty::query::Providers) {
         vtable_methods,
         type_implements_trait,
         subst_and_check_impossible_predicates,
+        mir_abstract_const: |tcx, def_id| {
+            let def_id = def_id.expect_local();
+            if let Some(def) = ty::WithOptConstParam::try_lookup(def_id, tcx) {
+                tcx.mir_abstract_const_of_const_arg(def)
+            } else {
+                const_evaluatable::mir_abstract_const(tcx, ty::WithOptConstParam::unknown(def_id))
+            }
+        },
+        mir_abstract_const_of_const_arg: |tcx, (did, param_did)| {
+            const_evaluatable::mir_abstract_const(
+                tcx,
+                ty::WithOptConstParam { did, const_param_did: Some(param_did) },
+            )
+        },
+        try_unify_abstract_consts: const_evaluatable::try_unify_abstract_consts,
         ..*providers
     };
 }

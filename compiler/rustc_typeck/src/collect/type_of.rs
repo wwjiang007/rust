@@ -1,5 +1,6 @@
+use crate::errors::AssocTypeOnInherentImpl;
 use rustc_data_structures::fx::FxHashSet;
-use rustc_errors::{struct_span_err, Applicability, ErrorReported, StashKey};
+use rustc_errors::{Applicability, ErrorReported, StashKey};
 use rustc_hir as hir;
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::{DefId, LocalDefId};
@@ -78,7 +79,13 @@ pub(super) fn opt_const_param_of(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Option<
                         let _tables = tcx.typeck(body_owner);
                         &*path
                     }
-                    _ => span_bug!(DUMMY_SP, "unexpected const parent path {:?}", parent_node),
+                    _ => {
+                        tcx.sess.delay_span_bug(
+                            tcx.def_span(def_id),
+                            &format!("unexpected const parent path {:?}", parent_node),
+                        );
+                        return None;
+                    }
                 };
 
                 // We've encountered an `AnonConst` in some path, so we need to
@@ -111,12 +118,16 @@ pub(super) fn opt_const_param_of(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Option<
                         tcx.sess.delay_span_bug(tcx.def_span(def_id), "anon const with Res::Err");
                         return None;
                     }
-                    _ => span_bug!(
-                        DUMMY_SP,
-                        "unexpected anon const res {:?} in path: {:?}",
-                        res,
-                        path,
-                    ),
+                    _ => {
+                        // If the user tries to specify generics on a type that does not take them,
+                        // e.g. `usize<T>`, we may hit this branch, in which case we treat it as if
+                        // no arguments have been passed. An error should already have been emitted.
+                        tcx.sess.delay_span_bug(
+                            tcx.def_span(def_id),
+                            &format!("unexpected anon const res {:?} in path: {:?}", res, path),
+                        );
+                        return None;
+                    }
                 };
 
                 generics
@@ -248,7 +259,7 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                 ItemKind::Trait(..)
                 | ItemKind::TraitAlias(..)
                 | ItemKind::Mod(..)
-                | ItemKind::ForeignMod(..)
+                | ItemKind::ForeignMod { .. }
                 | ItemKind::GlobalAsm(..)
                 | ItemKind::ExternCrate(..)
                 | ItemKind::Use(..) => {
@@ -306,6 +317,12 @@ pub(super) fn type_of(tcx: TyCtxt<'_>, def_id: DefId) -> Ty<'_> {
                     if constant.hir_id == hir_id =>
                 {
                     tcx.types.usize
+                }
+
+                Node::Expr(&Expr { kind: ExprKind::ConstBlock(ref anon_const), .. })
+                    if anon_const.hir_id == hir_id =>
+                {
+                    tcx.typeck(def_id).node_type(anon_const.hir_id)
                 }
 
                 Node::Variant(Variant { disr_expr: Some(ref e), .. }) if e.hir_id == hir_id => tcx
@@ -382,7 +399,7 @@ fn find_opaque_ty_constraints(tcx: TyCtxt<'_>, def_id: LocalDefId) -> Ty<'_> {
                 let mut used_params: FxHashSet<_> = FxHashSet::default();
                 for (i, arg) in substs.iter().enumerate() {
                     let arg_is_param = match arg.unpack() {
-                        GenericArgKind::Type(ty) => matches!(ty.kind, ty::Param(_)),
+                        GenericArgKind::Type(ty) => matches!(ty.kind(), ty::Param(_)),
                         GenericArgKind::Lifetime(lt) => {
                             matches!(lt, ty::ReEarlyBound(_) | ty::ReFree(_))
                         }
@@ -607,7 +624,7 @@ fn infer_placeholder_type(
         }
         None => {
             let mut diag = bad_placeholder_type(tcx, vec![span]);
-            if !matches!(ty.kind, ty::Error(_)) {
+            if !matches!(ty.kind(), ty::Error(_)) {
                 diag.span_suggestion(
                     span,
                     "replace `_` with the correct type",
@@ -620,18 +637,12 @@ fn infer_placeholder_type(
     }
 
     // Typeck doesn't expect erased regions to be returned from `type_of`.
-    tcx.fold_regions(&ty, &mut false, |r, _| match r {
+    tcx.fold_regions(ty, &mut false, |r, _| match r {
         ty::ReErased => tcx.lifetimes.re_static,
         _ => r,
     })
 }
 
 fn report_assoc_ty_on_inherent_impl(tcx: TyCtxt<'_>, span: Span) {
-    struct_span_err!(
-        tcx.sess,
-        span,
-        E0202,
-        "associated types are not yet supported in inherent impls (see #8995)"
-    )
-    .emit();
+    tcx.sess.emit_err(AssocTypeOnInherentImpl { span });
 }

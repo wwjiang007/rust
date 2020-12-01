@@ -13,8 +13,7 @@ use rustc_span::symbol::sym;
 use rustc_target::abi::{Integer, LayoutOf, Variants};
 
 use super::{
-    truncate, util::ensure_monomorphic_enough, FnVal, ImmTy, Immediate, InterpCx, Machine, OpTy,
-    PlaceTy,
+    util::ensure_monomorphic_enough, FnVal, ImmTy, Immediate, InterpCx, Machine, OpTy, PlaceTy,
 };
 
 impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
@@ -47,7 +46,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
 
             Pointer(PointerCast::ReifyFnPointer) => {
                 // The src operand does not matter, just its type
-                match src.layout.ty.kind {
+                match *src.layout.ty.kind() {
                     ty::FnDef(def_id, substs) => {
                         // All reifications must be monomorphic, bail out otherwise.
                         ensure_monomorphic_enough(*self.tcx, src.layout.ty)?;
@@ -76,7 +75,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
 
             Pointer(PointerCast::UnsafeFnPointer) => {
                 let src = self.read_immediate(src)?;
-                match cast_ty.kind {
+                match cast_ty.kind() {
                     ty::FnPtr(_) => {
                         // No change to value
                         self.write_immediate(*src, dest)?;
@@ -87,7 +86,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
 
             Pointer(PointerCast::ClosureFnPointer(_)) => {
                 // The src operand does not matter, just its type
-                match src.layout.ty.kind {
+                match *src.layout.ty.kind() {
                     ty::Closure(def_id, substs) => {
                         // All reifications must be monomorphic, bail out otherwise.
                         ensure_monomorphic_enough(*self.tcx, src.layout.ty)?;
@@ -116,7 +115,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         use rustc_middle::ty::TyKind::*;
         trace!("Casting {:?}: {:?} to {:?}", *src, src.layout.ty, cast_ty);
 
-        match src.layout.ty.kind {
+        match src.layout.ty.kind() {
             // Floating point
             Float(FloatTy::F32) => {
                 return Ok(self.cast_from_float(src.to_scalar()?.to_f32()?, cast_ty).into());
@@ -139,9 +138,14 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
 
         // # First handle non-scalar source values.
 
-        // Handle cast from a univariant (ZST) enum.
+        // Handle cast from a ZST enum (0 or 1 variants).
         match src.layout.variants {
             Variants::Single { index } => {
+                if src.layout.abi.is_uninhabited() {
+                    // This is dead code, because an uninhabited enum is UB to
+                    // instantiate.
+                    throw_ub!(Unreachable);
+                }
                 if let Some(discr) = src.layout.ty.discriminant_for_variant(*self.tcx, index) {
                     assert!(src.layout.is_zst());
                     let discr_layout = self.layout_of(discr.ty)?;
@@ -196,15 +200,15 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         let v = if signed { self.sign_extend(v, src_layout) } else { v };
         trace!("cast_from_scalar: {}, {} -> {}", v, src_layout.ty, cast_ty);
         use rustc_middle::ty::TyKind::*;
-        match cast_ty.kind {
+        match *cast_ty.kind() {
             Int(_) | Uint(_) | RawPtr(_) => {
-                let size = match cast_ty.kind {
+                let size = match *cast_ty.kind() {
                     Int(t) => Integer::from_attr(self, attr::IntType::SignedInt(t)).size(),
                     Uint(t) => Integer::from_attr(self, attr::IntType::UnsignedInt(t)).size(),
                     RawPtr(_) => self.pointer_size(),
                     _ => bug!(),
                 };
-                let v = truncate(v, size);
+                let v = size.truncate(v);
                 Scalar::from_uint(v, size)
             }
 
@@ -228,7 +232,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         F: Float + Into<Scalar<M::PointerTag>> + FloatConvert<Single> + FloatConvert<Double>,
     {
         use rustc_middle::ty::TyKind::*;
-        match dest_ty.kind {
+        match *dest_ty.kind() {
             // float -> uint
             Uint(t) => {
                 let size = Integer::from_attr(self, attr::IntType::UnsignedInt(t)).size();
@@ -267,7 +271,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         let (src_pointee_ty, dest_pointee_ty) =
             self.tcx.struct_lockstep_tails_erasing_lifetimes(source_ty, cast_ty, self.param_env);
 
-        match (&src_pointee_ty.kind, &dest_pointee_ty.kind) {
+        match (&src_pointee_ty.kind(), &dest_pointee_ty.kind()) {
             (&ty::Array(_, length), &ty::Slice(_)) => {
                 let ptr = self.read_immediate(src)?.to_scalar()?;
                 // u64 cast is from usize to u64, which is always good
@@ -303,7 +307,7 @@ impl<'mir, 'tcx: 'mir, M: Machine<'mir, 'tcx>> InterpCx<'mir, 'tcx, M> {
         dest: PlaceTy<'tcx, M::PointerTag>,
     ) -> InterpResult<'tcx> {
         trace!("Unsizing {:?} of type {} into {:?}", *src, src.layout.ty, cast_ty.ty);
-        match (&src.layout.ty.kind, &cast_ty.ty.kind) {
+        match (&src.layout.ty.kind(), &cast_ty.ty.kind()) {
             (&ty::Ref(_, s, _), &ty::Ref(_, c, _) | &ty::RawPtr(TypeAndMut { ty: c, .. }))
             | (&ty::RawPtr(TypeAndMut { ty: s, .. }), &ty::RawPtr(TypeAndMut { ty: c, .. })) => {
                 self.unsize_into_ptr(src, dest, s, c)

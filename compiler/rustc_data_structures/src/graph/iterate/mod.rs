@@ -1,6 +1,7 @@
 use super::{DirectedGraph, WithNumNodes, WithStartNode, WithSuccessors};
 use rustc_index::bit_set::BitSet;
 use rustc_index::vec::IndexVec;
+use std::ops::ControlFlow;
 
 #[cfg(test)]
 mod tests;
@@ -32,16 +33,31 @@ fn post_order_walk<G: DirectedGraph + WithSuccessors + WithNumNodes>(
     result: &mut Vec<G::Node>,
     visited: &mut IndexVec<G::Node, bool>,
 ) {
+    struct PostOrderFrame<Node, Iter> {
+        node: Node,
+        iter: Iter,
+    }
+
     if visited[node] {
         return;
     }
-    visited[node] = true;
 
-    for successor in graph.successors(node) {
-        post_order_walk(graph, successor, result, visited);
+    let mut stack = vec![PostOrderFrame { node, iter: graph.successors(node) }];
+
+    'recurse: while let Some(frame) = stack.last_mut() {
+        let node = frame.node;
+        visited[node] = true;
+
+        while let Some(successor) = frame.iter.next() {
+            if !visited[successor] {
+                stack.push(PostOrderFrame { node: successor, iter: graph.successors(successor) });
+                continue 'recurse;
+            }
+        }
+
+        let _ = stack.pop();
+        result.push(node);
     }
-
-    result.push(node);
 }
 
 pub fn reverse_post_order<G: DirectedGraph + WithSuccessors + WithNumNodes>(
@@ -84,13 +100,6 @@ where
         stack.extend(graph.successors(n).filter(|&m| visited.insert(m)));
         Some(n)
     }
-}
-
-/// Allows searches to terminate early with a value.
-#[derive(Clone, Copy, Debug)]
-pub enum ControlFlow<T> {
-    Break(T),
-    Continue,
 }
 
 /// The status of a node in the depth-first search.
@@ -260,12 +269,12 @@ where
         _node: G::Node,
         _prior_status: Option<NodeStatus>,
     ) -> ControlFlow<Self::BreakVal> {
-        ControlFlow::Continue
+        ControlFlow::CONTINUE
     }
 
     /// Called after all nodes reachable from this one have been examined.
     fn node_settled(&mut self, _node: G::Node) -> ControlFlow<Self::BreakVal> {
-        ControlFlow::Continue
+        ControlFlow::CONTINUE
     }
 
     /// Behave as if no edges exist from `source` to `target`.
@@ -289,8 +298,8 @@ where
         prior_status: Option<NodeStatus>,
     ) -> ControlFlow<Self::BreakVal> {
         match prior_status {
-            Some(NodeStatus::Visited) => ControlFlow::Break(()),
-            _ => ControlFlow::Continue,
+            Some(NodeStatus::Visited) => ControlFlow::BREAK,
+            _ => ControlFlow::CONTINUE,
         }
     }
 }

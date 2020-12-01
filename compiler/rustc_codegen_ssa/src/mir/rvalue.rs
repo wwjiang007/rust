@@ -106,7 +106,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 }
 
                 let count =
-                    self.monomorphize(&count).eval_usize(bx.cx().tcx(), ty::ParamEnv::reveal_all());
+                    self.monomorphize(count).eval_usize(bx.cx().tcx(), ty::ParamEnv::reveal_all());
 
                 bx.write_operand_repeatedly(cg_elem, count, dest)
             }
@@ -181,11 +181,11 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             mir::Rvalue::Cast(ref kind, ref source, mir_cast_ty) => {
                 let operand = self.codegen_operand(&mut bx, source);
                 debug!("cast operand is {:?}", operand);
-                let cast = bx.cx().layout_of(self.monomorphize(&mir_cast_ty));
+                let cast = bx.cx().layout_of(self.monomorphize(mir_cast_ty));
 
                 let val = match *kind {
                     mir::CastKind::Pointer(PointerCast::ReifyFnPointer) => {
-                        match operand.layout.ty.kind {
+                        match *operand.layout.ty.kind() {
                             ty::FnDef(def_id, substs) => {
                                 if bx.cx().tcx().has_attr(def_id, sym::rustc_args_required_const) {
                                     bug!("reifying a fn ptr that requires const arguments");
@@ -204,7 +204,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                         }
                     }
                     mir::CastKind::Pointer(PointerCast::ClosureFnPointer(_)) => {
-                        match operand.layout.ty.kind {
+                        match *operand.layout.ty.kind() {
                             ty::Closure(def_id, substs) => {
                                 let instance = Instance::resolve_closure(
                                     bx.cx().tcx(),
@@ -502,6 +502,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             }
 
             mir::Rvalue::NullaryOp(mir::NullOp::SizeOf, ty) => {
+                let ty = self.monomorphize(ty);
                 assert!(bx.cx().type_is_sized(ty));
                 let val = bx.cx().const_usize(bx.cx().layout_of(ty).size.bytes());
                 let tcx = self.cx.tcx();
@@ -515,7 +516,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             }
 
             mir::Rvalue::NullaryOp(mir::NullOp::Box, content_ty) => {
-                let content_ty = self.monomorphize(&content_ty);
+                let content_ty = self.monomorphize(content_ty);
                 let content_layout = bx.cx().layout_of(content_ty);
                 let llsize = bx.cx().const_usize(content_layout.size.bytes());
                 let llalign = bx.cx().const_usize(content_layout.align.abi.bytes());
@@ -553,7 +554,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
                 // aggregate rvalues are allowed to be operands.
                 let ty = rvalue.ty(self.mir, self.cx.tcx());
                 let operand =
-                    OperandRef::new_zst(&mut bx, self.cx.layout_of(self.monomorphize(&ty)));
+                    OperandRef::new_zst(&mut bx, self.cx.layout_of(self.monomorphize(ty)));
                 (bx, operand)
             }
         }
@@ -564,7 +565,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
         // because codegen_place() panics if Local is operand.
         if let Some(index) = place.as_local() {
             if let LocalRef::Operand(Some(op)) = self.locals[index] {
-                if let ty::Array(_, n) = op.layout.ty.kind {
+                if let ty::Array(_, n) = op.layout.ty.kind() {
                     let n = n.eval_usize(bx.cx().tcx(), ty::ParamEnv::reveal_all());
                     return bx.cx().const_usize(n);
                 }
@@ -773,7 +774,7 @@ impl<'a, 'tcx, Bx: BuilderMethods<'a, 'tcx>> FunctionCx<'a, 'tcx, Bx> {
             mir::Rvalue::Repeat(..) |
             mir::Rvalue::Aggregate(..) => {
                 let ty = rvalue.ty(self.mir, self.cx.tcx());
-                let ty = self.monomorphize(&ty);
+                let ty = self.monomorphize(ty);
                 self.cx.spanned_layout_of(ty, span).is_zst()
             }
         }

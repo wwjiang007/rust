@@ -1,4 +1,4 @@
-#![doc(html_root_url = "https://doc.rust-lang.org/nightly/")]
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
 #![feature(nll)]
 #![feature(or_patterns)]
 #![recursion_limit = "256"]
@@ -438,7 +438,7 @@ impl<'tcx> SaveContext<'tcx> {
                                     .next()
                                     .map(|item| item.def_id);
                             }
-                            qualname.push_str(">");
+                            qualname.push('>');
 
                             (qualname, trait_id, decl_id, docs, attrs)
                         }
@@ -524,12 +524,12 @@ impl<'tcx> SaveContext<'tcx> {
 
     pub fn get_expr_data(&self, expr: &hir::Expr<'_>) -> Option<Data> {
         let ty = self.typeck_results().expr_ty_adjusted_opt(expr)?;
-        if matches!(ty.kind, ty::Error(_)) {
+        if matches!(ty.kind(), ty::Error(_)) {
             return None;
         }
         match expr.kind {
             hir::ExprKind::Field(ref sub_ex, ident) => {
-                match self.typeck_results().expr_ty_adjusted(&sub_ex).kind {
+                match self.typeck_results().expr_ty_adjusted(&sub_ex).kind() {
                     ty::Adt(def, _) if !def.is_enum() => {
                         let variant = &def.non_enum_variant();
                         filter!(self.span_utils, ident.span);
@@ -551,7 +551,7 @@ impl<'tcx> SaveContext<'tcx> {
                     }
                 }
             }
-            hir::ExprKind::Struct(qpath, ..) => match ty.kind {
+            hir::ExprKind::Struct(qpath, ..) => match ty.kind() {
                 ty::Adt(def, _) => {
                     let sub_span = qpath.last_segment_span();
                     filter!(self.span_utils, sub_span);
@@ -630,9 +630,14 @@ impl<'tcx> SaveContext<'tcx> {
             })
             | Node::Ty(&hir::Ty { kind: hir::TyKind::Path(ref qpath), .. }) => match qpath {
                 hir::QPath::Resolved(_, path) => path.res,
-                hir::QPath::TypeRelative(..) | hir::QPath::LangItem(..) => self
-                    .maybe_typeck_results
-                    .map_or(Res::Err, |typeck_results| typeck_results.qpath_res(qpath, hir_id)),
+                hir::QPath::TypeRelative(..) | hir::QPath::LangItem(..) => {
+                    // #75962: `self.typeck_results` may be different from the `hir_id`'s result.
+                    if self.tcx.has_typeck_results(hir_id.owner.to_def_id()) {
+                        self.tcx.typeck(hir_id.owner).qpath_res(qpath, hir_id)
+                    } else {
+                        Res::Err
+                    }
+                }
             },
 
             Node::Binding(&hir::Pat {
@@ -794,7 +799,9 @@ impl<'tcx> SaveContext<'tcx> {
 
             // These are not macros.
             // FIXME(eddyb) maybe there is a way to handle them usefully?
-            ExpnKind::Root | ExpnKind::AstPass(_) | ExpnKind::Desugaring(_) => return None,
+            ExpnKind::Inlined | ExpnKind::Root | ExpnKind::AstPass(_) | ExpnKind::Desugaring(_) => {
+                return None;
+            }
         };
 
         let callee_span = self.span_from_span(callee.def_site);

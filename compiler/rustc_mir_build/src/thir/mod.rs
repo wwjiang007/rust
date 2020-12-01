@@ -211,8 +211,14 @@ crate enum ExprKind<'tcx> {
     VarRef {
         id: hir::HirId,
     },
-    /// first argument, used for self in a closure
-    SelfRef,
+    /// Used to represent upvars mentioned in a closure/generator
+    UpvarRef {
+        /// DefId of the closure/generator
+        closure_def_id: DefId,
+
+        /// HirId of the root variable
+        var_hir_id: hir::HirId,
+    },
     Borrow {
         borrow_kind: BorrowKind,
         arg: ExprRef<'tcx>,
@@ -231,6 +237,9 @@ crate enum ExprKind<'tcx> {
     },
     Return {
         value: Option<ExprRef<'tcx>>,
+    },
+    ConstBlock {
+        value: &'tcx Const<'tcx>,
     },
     Repeat {
         value: ExprRef<'tcx>,
@@ -273,6 +282,10 @@ crate enum ExprKind<'tcx> {
     Literal {
         literal: &'tcx Const<'tcx>,
         user_ty: Option<Canonical<'tcx, UserType<'tcx>>>,
+        /// The `DefId` of the `const` item this literal
+        /// was produced from, if this is not a user-written
+        /// literal value.
+        const_id: Option<DefId>,
     },
     /// A literal containing the address of a `static`.
     ///

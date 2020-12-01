@@ -4,7 +4,7 @@ use crate::expand::{AstFragment, AstFragmentKind};
 use rustc_ast as ast;
 use rustc_ast::mut_visit::*;
 use rustc_ast::ptr::P;
-use rustc_span::source_map::{dummy_spanned, DUMMY_SP};
+use rustc_span::source_map::DUMMY_SP;
 use rustc_span::symbol::Ident;
 
 use smallvec::{smallvec, SmallVec};
@@ -18,7 +18,7 @@ pub fn placeholder(
 ) -> AstFragment {
     fn mac_placeholder() -> ast::MacCall {
         ast::MacCall {
-            path: ast::Path { span: DUMMY_SP, segments: Vec::new() },
+            path: ast::Path { span: DUMMY_SP, segments: Vec::new(), tokens: None },
             args: P(ast::MacArgs::Empty),
             prior_type_ascription: None,
         }
@@ -26,7 +26,11 @@ pub fn placeholder(
 
     let ident = Ident::invalid();
     let attrs = Vec::new();
-    let vis = vis.unwrap_or_else(|| dummy_spanned(ast::VisibilityKind::Inherited));
+    let vis = vis.unwrap_or(ast::Visibility {
+        span: DUMMY_SP,
+        kind: ast::VisibilityKind::Inherited,
+        tokens: None,
+    });
     let span = DUMMY_SP;
     let expr_placeholder = || {
         P(ast::Expr {
@@ -37,7 +41,8 @@ pub fn placeholder(
             tokens: None,
         })
     };
-    let ty = || P(ast::Ty { id, kind: ast::TyKind::MacCall(mac_placeholder()), span });
+    let ty =
+        || P(ast::Ty { id, kind: ast::TyKind::MacCall(mac_placeholder()), span, tokens: None });
     let pat =
         || P(ast::Pat { id, kind: ast::PatKind::MacCall(mac_placeholder()), span, tokens: None });
 
@@ -88,14 +93,18 @@ pub fn placeholder(
             kind: ast::PatKind::MacCall(mac_placeholder()),
             tokens: None,
         })),
-        AstFragmentKind::Ty => {
-            AstFragment::Ty(P(ast::Ty { id, span, kind: ast::TyKind::MacCall(mac_placeholder()) }))
-        }
+        AstFragmentKind::Ty => AstFragment::Ty(P(ast::Ty {
+            id,
+            span,
+            kind: ast::TyKind::MacCall(mac_placeholder()),
+            tokens: None,
+        })),
         AstFragmentKind::Stmts => AstFragment::Stmts(smallvec![{
             let mac = P(ast::MacCallStmt {
                 mac: mac_placeholder(),
                 style: ast::MacStmtStyle::Braces,
                 attrs: ast::AttrVec::new(),
+                tokens: None,
             });
             ast::Stmt { id, span, kind: ast::StmtKind::MacCall(mac) }
         }]),
@@ -302,8 +311,39 @@ impl<'a, 'b> MutVisitor for PlaceholderExpander<'a, 'b> {
         };
 
         if style == ast::MacStmtStyle::Semicolon {
+            // Implement the proposal described in
+            // https://github.com/rust-lang/rust/issues/61733#issuecomment-509626449
+            //
+            // The macro invocation expands to the list of statements. If the
+            // list of statements is empty, then 'parse' the trailing semicolon
+            // on the original invocation as an empty statement. That is:
+            //
+            // `empty();` is parsed as a single `StmtKind::Empty`
+            //
+            // If the list of statements is non-empty, see if the final
+            // statement already has a trailing semicolon.
+            //
+            // If it doesn't have a semicolon, then 'parse' the trailing
+            // semicolon from the invocation as part of the final statement,
+            // using `stmt.add_trailing_semicolon()`
+            //
+            // If it does have a semicolon, then 'parse' the trailing semicolon
+            // from the invocation as a new StmtKind::Empty
+
+            // FIXME: We will need to preserve the original semicolon token and
+            // span as part of #15701
+            let empty_stmt =
+                ast::Stmt { id: ast::DUMMY_NODE_ID, kind: ast::StmtKind::Empty, span: DUMMY_SP };
+
             if let Some(stmt) = stmts.pop() {
-                stmts.push(stmt.add_trailing_semicolon());
+                if stmt.has_trailing_semicolon() {
+                    stmts.push(stmt);
+                    stmts.push(empty_stmt);
+                } else {
+                    stmts.push(stmt.add_trailing_semicolon());
+                }
+            } else {
+                stmts.push(empty_stmt);
             }
         }
 
@@ -337,13 +377,9 @@ impl<'a, 'b> MutVisitor for PlaceholderExpander<'a, 'b> {
 
     fn visit_mod(&mut self, module: &mut ast::Mod) {
         noop_visit_mod(module, self);
-        module.items.retain(|item| match item.kind {
-            ast::ItemKind::MacCall(_) if !self.cx.ecfg.keep_macs => false, // remove macro definitions
-            _ => true,
-        });
-    }
-
-    fn visit_mac(&mut self, _mac: &mut ast::MacCall) {
-        // Do nothing.
+        // remove macro definitions
+        module.items.retain(
+            |item| !matches!(item.kind, ast::ItemKind::MacCall(_) if !self.cx.ecfg.keep_macs),
+        );
     }
 }

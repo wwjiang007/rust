@@ -33,12 +33,12 @@ struct Collector<'tcx> {
 
 impl ItemLikeVisitor<'tcx> for Collector<'tcx> {
     fn visit_item(&mut self, it: &'tcx hir::Item<'tcx>) {
-        let fm = match it.kind {
-            hir::ItemKind::ForeignMod(ref fm) => fm,
+        let abi = match it.kind {
+            hir::ItemKind::ForeignMod { abi, .. } => abi,
             _ => return,
         };
 
-        if fm.abi == Abi::Rust || fm.abi == Abi::RustIntrinsic || fm.abi == Abi::PlatformIntrinsic {
+        if abi == Abi::Rust || abi == Abi::RustIntrinsic || abi == Abi::PlatformIntrinsic {
             return;
         }
 
@@ -127,6 +127,7 @@ impl ItemLikeVisitor<'tcx> for Collector<'tcx> {
 
     fn visit_trait_item(&mut self, _it: &'tcx hir::TraitItem<'tcx>) {}
     fn visit_impl_item(&mut self, _it: &'tcx hir::ImplItem<'tcx>) {}
+    fn visit_foreign_item(&mut self, _it: &'tcx hir::ForeignItem<'tcx>) {}
 }
 
 impl Collector<'tcx> {
@@ -149,7 +150,7 @@ impl Collector<'tcx> {
             }
             return;
         }
-        let is_osx = self.tcx.sess.target.target.options.is_like_osx;
+        let is_osx = self.tcx.sess.target.is_like_osx;
         if lib.kind == NativeLibKind::Framework && !is_osx {
             let msg = "native frameworks are only available on macOS targets";
             match span {
@@ -170,7 +171,7 @@ impl Collector<'tcx> {
             feature_err(
                 &self.tcx.sess.parse_sess,
                 sym::static_nobundle,
-                span.unwrap_or_else(|| rustc_span::DUMMY_SP),
+                span.unwrap_or(rustc_span::DUMMY_SP),
                 "kind=\"static-nobundle\" is unstable",
             )
             .emit();
@@ -179,7 +180,7 @@ impl Collector<'tcx> {
             feature_err(
                 &self.tcx.sess.parse_sess,
                 sym::raw_dylib,
-                span.unwrap_or_else(|| rustc_span::DUMMY_SP),
+                span.unwrap_or(rustc_span::DUMMY_SP),
                 "kind=\"raw-dylib\" is unstable",
             )
             .emit();

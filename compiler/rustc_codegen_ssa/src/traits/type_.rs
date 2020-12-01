@@ -51,11 +51,11 @@ pub trait DerivedTypeMethods<'tcx>: BaseTypeMethods<'tcx> + MiscMethods<'tcx> {
     }
 
     fn type_int(&self) -> Self::Type {
-        match &self.sess().target.target.target_c_int_width[..] {
+        match &self.sess().target.c_int_width[..] {
             "16" => self.type_i16(),
             "32" => self.type_i32(),
             "64" => self.type_i64(),
-            width => bug!("Unsupported target_c_int_width: {}", width),
+            width => bug!("Unsupported c_int_width: {}", width),
         }
     }
 
@@ -89,7 +89,7 @@ pub trait DerivedTypeMethods<'tcx>: BaseTypeMethods<'tcx> + MiscMethods<'tcx> {
         }
 
         let tail = self.tcx().struct_tail_erasing_lifetimes(ty, param_env);
-        match tail.kind {
+        match tail.kind() {
             ty::Foreign(..) => false,
             ty::Str | ty::Slice(..) | ty::Dynamic(..) => true,
             _ => bug!("unexpected unsized tail: {:?}", tail),

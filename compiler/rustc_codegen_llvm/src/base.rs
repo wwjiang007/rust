@@ -60,7 +60,7 @@ pub fn write_compressed_metadata<'tcx>(
         unsafe { llvm::LLVMAddGlobal(metadata_llmod, common::val_ty(llconst), buf.as_ptr()) };
     unsafe {
         llvm::LLVMSetInitializer(llglobal, llconst);
-        let section_name = metadata::metadata_section_name(&tcx.sess.target.target);
+        let section_name = metadata::metadata_section_name(&tcx.sess.target);
         let name = SmallCStr::new(section_name);
         llvm::LLVMSetSection(llglobal, name.as_ptr());
 
@@ -97,21 +97,23 @@ pub fn compile_codegen_unit(
     tcx: TyCtxt<'tcx>,
     cgu_name: Symbol,
 ) -> (ModuleCodegen<ModuleLlvm>, u64) {
-    let prof_timer = tcx.prof.generic_activity_with_arg("codegen_module", cgu_name.to_string());
     let start_time = Instant::now();
 
     let dep_node = tcx.codegen_unit(cgu_name).codegen_dep_node(tcx);
     let (module, _) =
         tcx.dep_graph.with_task(dep_node, tcx, cgu_name, module_codegen, dep_graph::hash_result);
     let time_to_codegen = start_time.elapsed();
-    drop(prof_timer);
 
     // We assume that the cost to run LLVM on a CGU is proportional to
     // the time we needed for codegenning it.
-    let cost = time_to_codegen.as_secs() * 1_000_000_000 + time_to_codegen.subsec_nanos() as u64;
+    let cost = time_to_codegen.as_nanos() as u64;
 
     fn module_codegen(tcx: TyCtxt<'_>, cgu_name: Symbol) -> ModuleCodegen<ModuleLlvm> {
         let cgu = tcx.codegen_unit(cgu_name);
+        let _prof_timer = tcx.prof.generic_activity_with_args(
+            "codegen_module",
+            &[cgu_name.to_string(), cgu.size_estimate().to_string()],
+        );
         // Instantiate monomorphizations without filling out definitions yet...
         let llvm_module = ModuleLlvm::new(tcx, &cgu_name.as_str());
         {

@@ -198,13 +198,13 @@ impl<'a> AstValidator<'a> {
     }
 
     fn invalid_visibility(&self, vis: &Visibility, note: Option<&str>) {
-        if let VisibilityKind::Inherited = vis.node {
+        if let VisibilityKind::Inherited = vis.kind {
             return;
         }
 
         let mut err =
             struct_span_err!(self.session, vis.span, E0449, "unnecessary visibility qualifier");
-        if vis.node.is_pub() {
+        if vis.kind.is_pub() {
             err.span_label(vis.span, "`pub` not permitted here because it's implied");
         }
         if let Some(note) = note {
@@ -287,7 +287,7 @@ impl<'a> AstValidator<'a> {
     // ```
     fn check_expr_within_pat(&self, expr: &Expr, allow_paths: bool) {
         match expr.kind {
-            ExprKind::Lit(..) | ExprKind::Err => {}
+            ExprKind::Lit(..) | ExprKind::ConstBlock(..) | ExprKind::Err => {}
             ExprKind::Path(..) if allow_paths => {}
             ExprKind::Unary(UnOp::Neg, ref inner) if matches!(inner.kind, ExprKind::Lit(_)) => {}
             _ => self.err_handler().span_err(
@@ -516,13 +516,13 @@ impl<'a> AstValidator<'a> {
         self.session.source_map().guess_head_span(self.extern_mod.unwrap().span)
     }
 
-    /// An `fn` in `extern { ... }` cannot have qualfiers, e.g. `async fn`.
+    /// An `fn` in `extern { ... }` cannot have qualifiers, e.g. `async fn`.
     fn check_foreign_fn_headerless(&self, ident: Ident, span: Span, header: FnHeader) {
         if header.has_qualifiers() {
             self.err_handler()
                 .struct_span_err(ident.span, "functions in `extern` blocks cannot have qualifiers")
                 .span_label(self.current_extern_span(), "in this `extern` block")
-                .span_suggestion(
+                .span_suggestion_verbose(
                     span.until(ident.span.shrink_to_lo()),
                     "remove the qualifiers",
                     "fn ".to_string(),
@@ -796,7 +796,7 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
 
     fn visit_expr(&mut self, expr: &'a Expr) {
         match &expr.kind {
-            ExprKind::LlvmInlineAsm(..) if !self.session.target.target.options.allow_asm => {
+            ExprKind::LlvmInlineAsm(..) if !self.session.target.allow_asm => {
                 struct_span_err!(
                     self.session,
                     expr.span,
@@ -868,10 +868,7 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
                     .emit();
                 }
 
-                if !bounds
-                    .iter()
-                    .any(|b| if let GenericBound::Trait(..) = *b { true } else { false })
-                {
+                if !bounds.iter().any(|b| matches!(b, GenericBound::Trait(..))) {
                     self.err_handler().span_err(ty.span, "at least one trait must be specified");
                 }
 
@@ -990,12 +987,15 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
                     self.error_item_without_body(item.span, "function", msg, " { <body> }");
                 }
             }
-            ItemKind::ForeignMod(_) => {
+            ItemKind::ForeignMod(ForeignMod { unsafety, .. }) => {
                 let old_item = mem::replace(&mut self.extern_mod, Some(item));
                 self.invalid_visibility(
                     &item.vis,
                     Some("place qualifiers on individual foreign items instead"),
                 );
+                if let Unsafe::Yes(span) = unsafety {
+                    self.err_handler().span_err(span, "extern block cannot be declared unsafe");
+                }
                 visit::walk_item(self, item);
                 self.extern_mod = old_item;
                 return; // Avoid visiting again.
@@ -1029,7 +1029,10 @@ impl<'a> Visitor<'a> for AstValidator<'a> {
                 walk_list!(self, visit_attribute, &item.attrs);
                 return;
             }
-            ItemKind::Mod(Mod { inline, .. }) => {
+            ItemKind::Mod(Mod { inline, unsafety, .. }) => {
+                if let Unsafe::Yes(span) = unsafety {
+                    self.err_handler().span_err(span, "module cannot be declared unsafe");
+                }
                 // Ensure that `path` attributes on modules are recorded as used (cf. issue #35584).
                 if !inline && !self.session.contains_name(&item.attrs, sym::path) {
                     self.check_mod_file_item_asciionly(item.ident);
@@ -1369,16 +1372,18 @@ fn deny_equality_constraints(
                         if param.ident == *ident {
                             let param = ident;
                             match &full_path.segments[qself.position..] {
-                                [PathSegment { ident, .. }] => {
+                                [PathSegment { ident, args, .. }] => {
                                     // Make a new `Path` from `foo::Bar` to `Foo<Bar = RhsTy>`.
                                     let mut assoc_path = full_path.clone();
                                     // Remove `Bar` from `Foo::Bar`.
                                     assoc_path.segments.pop();
                                     let len = assoc_path.segments.len() - 1;
+                                    let gen_args = args.as_ref().map(|p| (**p).clone());
                                     // Build `<Bar = RhsTy>`.
                                     let arg = AngleBracketedArg::Constraint(AssocTyConstraint {
                                         id: rustc_ast::node_id::DUMMY_NODE_ID,
                                         ident: *ident,
+                                        gen_args,
                                         kind: AssocTyConstraintKind::Equality {
                                             ty: predicate.rhs_ty.clone(),
                                         },

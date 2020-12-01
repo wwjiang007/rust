@@ -22,9 +22,10 @@ pub fn opts() -> TargetOptions {
         "-lmingw32".to_string(),
     ];
     late_link_args.insert(LinkerFlavor::Gcc, mingw_libs.clone());
-    late_link_args.insert(LinkerFlavor::Lld(LldFlavor::Ld), mingw_libs.clone());
+    late_link_args.insert(LinkerFlavor::Lld(LldFlavor::Ld), mingw_libs);
 
     TargetOptions {
+        vendor: "uwp".to_string(),
         executables: false,
         limit_rdylib_exports: false,
         late_link_args,

@@ -1,8 +1,9 @@
 //! Validation of patterns/matches.
 
-mod _match;
 mod check_match;
 mod const_to_pat;
+mod deconstruct_pat;
+mod usefulness;
 
 pub(crate) use self::check_match::check_match;
 
@@ -15,7 +16,7 @@ use rustc_hir::def::{CtorKind, CtorOf, DefKind, Res};
 use rustc_hir::pat_util::EnumerateAndAdjustIterator;
 use rustc_hir::RangeEnd;
 use rustc_index::vec::Idx;
-use rustc_middle::mir::interpret::{get_slice_bytes, sign_extend, ConstValue};
+use rustc_middle::mir::interpret::{get_slice_bytes, ConstValue};
 use rustc_middle::mir::interpret::{ErrorHandled, LitToConstError, LitToConstInput};
 use rustc_middle::mir::UserTypeProjection;
 use rustc_middle::mir::{BorrowKind, Field, Mutability};
@@ -39,19 +40,19 @@ crate enum PatternError {
     NonConstPath(Span),
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 crate enum BindingMode {
     ByValue,
     ByRef(BorrowKind),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 crate struct FieldPat<'tcx> {
     crate field: Field,
     crate pattern: Pat<'tcx>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 crate struct Pat<'tcx> {
     crate ty: Ty<'tcx>,
     crate span: Span,
@@ -116,7 +117,7 @@ crate struct Ascription<'tcx> {
     crate user_ty_span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 crate enum PatKind<'tcx> {
     Wild,
 
@@ -158,6 +159,13 @@ crate enum PatKind<'tcx> {
         subpattern: Pat<'tcx>,
     },
 
+    /// One of the following:
+    /// * `&str`, which will be handled as a string pattern and thus exhaustiveness
+    ///   checking will detect if you use the same string twice in different patterns.
+    /// * integer, bool, char or float, which will be handled by exhaustivenes to cover exactly
+    ///   its own value, similar to `&str`, but these values are much simpler.
+    /// * Opaque constants, that must not be matched structurally. So anything that does not derive
+    ///   `PartialEq` and `Eq`.
     Constant {
         value: &'tcx ty::Const<'tcx>,
     },
@@ -216,10 +224,7 @@ impl<'tcx> fmt::Display for Pat<'tcx> {
                     BindingMode::ByValue => mutability == Mutability::Mut,
                     BindingMode::ByRef(bk) => {
                         write!(f, "ref ")?;
-                        match bk {
-                            BorrowKind::Mut { .. } => true,
-                            _ => false,
-                        }
+                        matches!(bk, BorrowKind::Mut { .. })
                     }
                 };
                 if is_mut {
@@ -237,7 +242,7 @@ impl<'tcx> fmt::Display for Pat<'tcx> {
                         Some(&adt_def.variants[variant_index])
                     }
                     _ => {
-                        if let ty::Adt(adt, _) = self.ty.kind {
+                        if let ty::Adt(adt, _) = self.ty.kind() {
                             if !adt.is_enum() {
                                 Some(&adt.variants[VariantIdx::new(0)])
                             } else {
@@ -302,7 +307,7 @@ impl<'tcx> fmt::Display for Pat<'tcx> {
                 Ok(())
             }
             PatKind::Deref { ref subpattern } => {
-                match self.ty.kind {
+                match self.ty.kind() {
                     ty::Adt(def, _) if def.is_box() => write!(f, "box ")?,
                     ty::Ref(_, _, mutbl) => {
                         write!(f, "&{}", mutbl.prefix_str())?;
@@ -559,7 +564,7 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
             }
 
             hir::PatKind::Tuple(ref pats, ddpos) => {
-                let tys = match ty.kind {
+                let tys = match ty.kind() {
                     ty::Tuple(ref tys) => tys,
                     _ => span_bug!(pat.span, "unexpected type for tuple pattern: {:?}", ty),
                 };
@@ -588,7 +593,7 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
                 // x's type, which is &T, where we want T (the type being matched).
                 let var_ty = ty;
                 if let ty::BindByReference(_) = bm {
-                    if let ty::Ref(_, rty, _) = ty.kind {
+                    if let ty::Ref(_, rty, _) = ty.kind() {
                         ty = rty;
                     } else {
                         bug!("`ref {}` has wrong type {}", ident, ty);
@@ -608,7 +613,7 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
 
             hir::PatKind::TupleStruct(ref qpath, ref pats, ddpos) => {
                 let res = self.typeck_results.qpath_res(qpath, pat.hir_id);
-                let adt_def = match ty.kind {
+                let adt_def = match ty.kind() {
                     ty::Adt(adt_def, _) => adt_def,
                     _ => span_bug!(pat.span, "tuple struct pattern not applied to an ADT {:?}", ty),
                 };
@@ -670,7 +675,7 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
         let prefix = self.lower_patterns(prefix);
         let slice = self.lower_opt_pattern(slice);
         let suffix = self.lower_patterns(suffix);
-        match ty.kind {
+        match ty.kind() {
             // Matching a slice, `[T]`.
             ty::Slice(..) => PatKind::Slice { prefix, slice, suffix },
             // Fixed-length array, `[T; len]`.
@@ -704,7 +709,7 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
                 let enum_id = self.tcx.parent(variant_id).unwrap();
                 let adt_def = self.tcx.adt_def(enum_id);
                 if adt_def.is_enum() {
-                    let substs = match ty.kind {
+                    let substs = match ty.kind() {
                         ty::Adt(_, substs) | ty::FnDef(_, substs) => substs,
                         ty::Error(_) => {
                             // Avoid ICE (#50585)
@@ -856,6 +861,11 @@ impl<'a, 'tcx> PatCtxt<'a, 'tcx> {
             *self.lower_path(qpath, expr.hir_id, expr.span).kind
         } else {
             let (lit, neg) = match expr.kind {
+                hir::ExprKind::ConstBlock(ref anon_const) => {
+                    let anon_const_def_id = self.tcx.hir().local_def_id(anon_const.hir_id);
+                    let value = ty::Const::from_anon_const(self.tcx, anon_const_def_id);
+                    return *self.const_to_pat(value, expr.hir_id, expr.span, false).kind;
+                }
                 hir::ExprKind::Lit(ref lit) => (lit, false),
                 hir::ExprKind::Unary(hir::UnOp::UnNeg, ref expr) => {
                     let lit = match expr.kind {
@@ -1058,30 +1068,30 @@ crate fn compare_const_vals<'tcx>(
 
     if let (Some(a), Some(b)) = (a_bits, b_bits) {
         use rustc_apfloat::Float;
-        return match ty.kind {
+        return match *ty.kind() {
             ty::Float(ast::FloatTy::F32) => {
-                let l = ::rustc_apfloat::ieee::Single::from_bits(a);
-                let r = ::rustc_apfloat::ieee::Single::from_bits(b);
+                let l = rustc_apfloat::ieee::Single::from_bits(a);
+                let r = rustc_apfloat::ieee::Single::from_bits(b);
                 l.partial_cmp(&r)
             }
             ty::Float(ast::FloatTy::F64) => {
-                let l = ::rustc_apfloat::ieee::Double::from_bits(a);
-                let r = ::rustc_apfloat::ieee::Double::from_bits(b);
+                let l = rustc_apfloat::ieee::Double::from_bits(a);
+                let r = rustc_apfloat::ieee::Double::from_bits(b);
                 l.partial_cmp(&r)
             }
             ty::Int(ity) => {
                 use rustc_attr::SignedInt;
                 use rustc_middle::ty::layout::IntegerExt;
                 let size = rustc_target::abi::Integer::from_attr(&tcx, SignedInt(ity)).size();
-                let a = sign_extend(a, size);
-                let b = sign_extend(b, size);
+                let a = size.sign_extend(a);
+                let b = size.sign_extend(b);
                 Some((a as i128).cmp(&(b as i128)))
             }
             _ => Some(a.cmp(&b)),
         };
     }
 
-    if let ty::Str = ty.kind {
+    if let ty::Str = ty.kind() {
         if let (
             ty::ConstKind::Value(a_val @ ConstValue::Slice { .. }),
             ty::ConstKind::Value(b_val @ ConstValue::Slice { .. }),

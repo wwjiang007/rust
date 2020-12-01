@@ -619,14 +619,6 @@ impl SyntaxContext {
         HygieneData::with(|data| data.outer_mark(self))
     }
 
-    #[inline]
-    pub fn outer_mark_with_data(self) -> (ExpnId, Transparency, ExpnData) {
-        HygieneData::with(|data| {
-            let (expn_id, transparency) = data.outer_mark(self);
-            (expn_id, transparency, data.expn_data(expn_id).clone())
-        })
-    }
-
     pub fn dollar_crate_name(self) -> Symbol {
         HygieneData::with(|data| data.syntax_context_data[self.0 as usize].dollar_crate_name)
     }
@@ -702,7 +694,7 @@ pub struct ExpnData {
     /// The `DefId` of the macro being invoked,
     /// if this `ExpnData` corresponds to a macro invocation
     pub macro_def_id: Option<DefId>,
-    /// The crate that originally created this `ExpnData. During
+    /// The crate that originally created this `ExpnData`. During
     /// metadata serialization, we only encode `ExpnData`s that were
     /// created locally - when our serialized metadata is decoded,
     /// foreign `ExpnId`s will have their `ExpnData` looked up
@@ -759,7 +751,7 @@ impl ExpnData {
 
     #[inline]
     pub fn is_root(&self) -> bool {
-        if let ExpnKind::Root = self.kind { true } else { false }
+        matches!(self.kind, ExpnKind::Root)
     }
 }
 
@@ -774,6 +766,8 @@ pub enum ExpnKind {
     AstPass(AstPass),
     /// Desugaring done by the compiler during HIR lowering.
     Desugaring(DesugaringKind),
+    /// MIR inlining
+    Inlined,
 }
 
 impl ExpnKind {
@@ -787,6 +781,7 @@ impl ExpnKind {
             },
             ExpnKind::AstPass(kind) => kind.descr().to_string(),
             ExpnKind::Desugaring(kind) => format!("desugaring of {}", kind.descr()),
+            ExpnKind::Inlined => "inlined source".to_string(),
         }
     }
 }

@@ -165,7 +165,7 @@ fn get_impl_substs<'tcx>(
     // Conservatively use an empty `ParamEnv`.
     let outlives_env = OutlivesEnvironment::new(ty::ParamEnv::empty());
     infcx.resolve_regions_and_report_errors(impl1_def_id, &outlives_env, RegionckMode::default());
-    let impl2_substs = match infcx.fully_resolve(&impl2_substs) {
+    let impl2_substs = match infcx.fully_resolve(impl2_substs) {
         Ok(s) => s,
         Err(_) => {
             tcx.sess.struct_span_err(span, "could not resolve substs on overridden impl").emit();
@@ -337,6 +337,7 @@ fn check_predicates<'tcx>(
             infcx,
             tcx.param_env(impl1_def_id),
             tcx.hir().local_def_id_to_hir_id(impl1_def_id),
+            0,
             arg,
             span,
         ) {
@@ -405,6 +406,7 @@ fn trait_predicate_kind<'tcx>(
         | ty::PredicateAtom::ObjectSafe(_)
         | ty::PredicateAtom::ClosureKind(..)
         | ty::PredicateAtom::ConstEvaluatable(..)
-        | ty::PredicateAtom::ConstEquate(..) => None,
+        | ty::PredicateAtom::ConstEquate(..)
+        | ty::PredicateAtom::TypeWellFormedFromEnv(..) => None,
     }
 }

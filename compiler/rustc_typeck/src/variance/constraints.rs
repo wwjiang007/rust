@@ -92,14 +92,6 @@ impl<'a, 'tcx, 'v> ItemLikeVisitor<'v> for ConstraintContext<'a, 'tcx> {
                 self.visit_node_helper(item.hir_id);
             }
 
-            hir::ItemKind::ForeignMod(ref foreign_mod) => {
-                for foreign_item in foreign_mod.items {
-                    if let hir::ForeignItemKind::Fn(..) = foreign_item.kind {
-                        self.visit_node_helper(foreign_item.hir_id);
-                    }
-                }
-            }
-
             _ => {}
         }
     }
@@ -113,6 +105,12 @@ impl<'a, 'tcx, 'v> ItemLikeVisitor<'v> for ConstraintContext<'a, 'tcx> {
     fn visit_impl_item(&mut self, impl_item: &hir::ImplItem<'_>) {
         if let hir::ImplItemKind::Fn(..) = impl_item.kind {
             self.visit_node_helper(impl_item.hir_id);
+        }
+    }
+
+    fn visit_foreign_item(&mut self, foreign_item: &hir::ForeignItem<'_>) {
+        if let hir::ForeignItemKind::Fn(..) = foreign_item.kind {
+            self.visit_node_helper(foreign_item.hir_id);
         }
     }
 }
@@ -140,7 +138,7 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
         let id = tcx.hir().local_def_id_to_hir_id(def_id);
         let inferred_start = self.terms_cx.inferred_starts[&id];
         let current_item = &CurrentItem { inferred_start };
-        match tcx.type_of(def_id).kind {
+        match tcx.type_of(def_id).kind() {
             ty::Adt(def, _) => {
                 // Not entirely obvious: constraints on structs/enums do not
                 // affect the variance of their type parameters. See discussion
@@ -257,7 +255,7 @@ impl<'a, 'tcx> ConstraintContext<'a, 'tcx> {
     ) {
         debug!("add_constraints_from_ty(ty={:?}, variance={:?})", ty, variance);
 
-        match ty.kind {
+        match *ty.kind() {
             ty::Bool
             | ty::Char
             | ty::Int(_)

@@ -2,13 +2,13 @@ use rustc_index::bit_set::BitSet;
 use rustc_middle::mir::visit::{MutatingUseContext, NonMutatingUseContext, PlaceContext, Visitor};
 use rustc_middle::mir::{self, Local, Location};
 
-use crate::dataflow::{AnalysisDomain, Backward, BottomValue, GenKill, GenKillAnalysis};
+use crate::dataflow::{AnalysisDomain, Backward, GenKill, GenKillAnalysis};
 
 /// A [live-variable dataflow analysis][liveness].
 ///
 /// This analysis considers references as being used only at the point of the
 /// borrow. In other words, this analysis does not track uses because of references that already
-/// exist. See [this `mir-datalow` test][flow-test] for an example. You almost never want to use
+/// exist. See [this `mir-dataflow` test][flow-test] for an example. You almost never want to use
 /// this analysis without also looking at the results of [`MaybeBorrowedLocals`].
 ///
 /// [`MaybeBorrowedLocals`]: ../struct.MaybeBorrowedLocals.html
@@ -22,27 +22,25 @@ impl MaybeLiveLocals {
     }
 }
 
-impl BottomValue for MaybeLiveLocals {
-    // bottom = not live
-    const BOTTOM_VALUE: bool = false;
-}
-
 impl AnalysisDomain<'tcx> for MaybeLiveLocals {
-    type Idx = Local;
+    type Domain = BitSet<Local>;
     type Direction = Backward;
 
     const NAME: &'static str = "liveness";
 
-    fn bits_per_block(&self, body: &mir::Body<'tcx>) -> usize {
-        body.local_decls.len()
+    fn bottom_value(&self, body: &mir::Body<'tcx>) -> Self::Domain {
+        // bottom = not live
+        BitSet::new_empty(body.local_decls.len())
     }
 
-    fn initialize_start_block(&self, _: &mir::Body<'tcx>, _: &mut BitSet<Self::Idx>) {
+    fn initialize_start_block(&self, _: &mir::Body<'tcx>, _: &mut Self::Domain) {
         // No variables are live until we observe a use
     }
 }
 
 impl GenKillAnalysis<'tcx> for MaybeLiveLocals {
+    type Idx = Local;
+
     fn statement_effect(
         &self,
         trans: &mut impl GenKill<Self::Idx>,
@@ -136,7 +134,7 @@ impl DefUse {
 
             // `MutatingUseContext::Call` and `MutatingUseContext::Yield` indicate that this is the
             // destination place for a `Call` return or `Yield` resume respectively. Since this is
-            // only a `Def` when the function returns succesfully, we handle this case separately
+            // only a `Def` when the function returns successfully, we handle this case separately
             // in `call_return_effect` above.
             PlaceContext::MutatingUse(MutatingUseContext::Call | MutatingUseContext::Yield) => None,
 

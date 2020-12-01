@@ -187,7 +187,6 @@ use rustc_ast::{GenericArg, GenericParamKind, VariantData};
 use rustc_attr as attr;
 use rustc_data_structures::map_in_place::MapInPlace;
 use rustc_expand::base::{Annotatable, ExtCtxt};
-use rustc_span::source_map::respan;
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::Span;
 
@@ -359,7 +358,7 @@ fn find_type_parameters(
             visit::walk_ty(self, ty)
         }
 
-        fn visit_mac(&mut self, mac: &ast::MacCall) {
+        fn visit_mac_call(&mut self, mac: &ast::MacCall) {
             self.cx.span_err(mac.span(), "`derive` cannot be used on items with type macros");
         }
     }
@@ -408,13 +407,7 @@ impl<'a> TraitDef<'a> {
                             _ => false,
                         })
                     }
-                    _ => {
-                        // Non-ADT derive is an error, but it should have been
-                        // set earlier; see
-                        // librustc_expand/expand.rs:MacroExpander::fully_expand_fragment()
-                        // librustc_expand/base.rs:Annotatable::derive_allowed()
-                        return;
-                    }
+                    _ => unreachable!(),
                 };
                 let container_id = cx.current_expansion.id.expn_data().parent;
                 let always_copy = has_no_type_params && cx.resolver.has_derive_copy(container_id);
@@ -476,12 +469,7 @@ impl<'a> TraitDef<'a> {
                 );
                 push(Annotatable::Item(P(ast::Item { attrs, ..(*newitem).clone() })))
             }
-            _ => {
-                // Non-Item derive is an error, but it should have been
-                // set earlier; see
-                // librustc_expand/expand.rs:MacroExpander::fully_expand_fragment()
-                // librustc_expand/base.rs:Annotatable::derive_allowed()
-            }
+            _ => unreachable!(),
         }
     }
 
@@ -532,7 +520,11 @@ impl<'a> TraitDef<'a> {
                 id: ast::DUMMY_NODE_ID,
                 span: self.span,
                 ident,
-                vis: respan(self.span.shrink_to_lo(), ast::VisibilityKind::Inherited),
+                vis: ast::Visibility {
+                    span: self.span.shrink_to_lo(),
+                    kind: ast::VisibilityKind::Inherited,
+                    tokens: None,
+                },
                 attrs: Vec::new(),
                 kind: ast::AssocItemKind::TyAlias(
                     ast::Defaultness::Final,
@@ -933,7 +925,11 @@ impl<'a> MethodDef<'a> {
             id: ast::DUMMY_NODE_ID,
             attrs: self.attributes.clone(),
             span: trait_.span,
-            vis: respan(trait_lo_sp, ast::VisibilityKind::Inherited),
+            vis: ast::Visibility {
+                span: trait_lo_sp,
+                kind: ast::VisibilityKind::Inherited,
+                tokens: None,
+            },
             ident: method_ident,
             kind: ast::AssocItemKind::Fn(def, sig, fn_generics, Some(body_block)),
             tokens: None,
@@ -1130,12 +1126,9 @@ impl<'a> MethodDef<'a> {
     /// for each of the self-args, carried in precomputed variables.
 
     /// ```{.text}
-    /// let __self0_vi = unsafe {
-    ///     std::intrinsics::discriminant_value(&self) };
-    /// let __self1_vi = unsafe {
-    ///     std::intrinsics::discriminant_value(&arg1) };
-    /// let __self2_vi = unsafe {
-    ///     std::intrinsics::discriminant_value(&arg2) };
+    /// let __self0_vi = std::intrinsics::discriminant_value(&self);
+    /// let __self1_vi = std::intrinsics::discriminant_value(&arg1);
+    /// let __self2_vi = std::intrinsics::discriminant_value(&arg2);
     ///
     /// if __self0_vi == __self1_vi && __self0_vi == __self2_vi && ... {
     ///     match (...) {
@@ -1318,7 +1311,7 @@ impl<'a> MethodDef<'a> {
                 // Since we know that all the arguments will match if we reach
                 // the match expression we add the unreachable intrinsics as the
                 // result of the catch all which should help llvm in optimizing it
-                Some(deriving::call_intrinsic(cx, sp, sym::unreachable, vec![]))
+                Some(deriving::call_unreachable(cx, sp))
             }
             _ => None,
         };
@@ -1349,12 +1342,9 @@ impl<'a> MethodDef<'a> {
             // with three Self args, builds three statements:
             //
             // ```
-            // let __self0_vi = unsafe {
-            //     std::intrinsics::discriminant_value(&self) };
-            // let __self1_vi = unsafe {
-            //     std::intrinsics::discriminant_value(&arg1) };
-            // let __self2_vi = unsafe {
-            //     std::intrinsics::discriminant_value(&arg2) };
+            // let __self0_vi = std::intrinsics::discriminant_value(&self);
+            // let __self1_vi = std::intrinsics::discriminant_value(&arg1);
+            // let __self2_vi = std::intrinsics::discriminant_value(&arg2);
             // ```
             let mut index_let_stmts: Vec<ast::Stmt> = Vec::with_capacity(vi_idents.len() + 1);
 
@@ -1467,7 +1457,7 @@ impl<'a> MethodDef<'a> {
             // derive Debug on such a type could here generate code
             // that needs the feature gate enabled.)
 
-            deriving::call_intrinsic(cx, sp, sym::unreachable, vec![])
+            deriving::call_unreachable(cx, sp)
         } else {
             // Final wrinkle: the self_args are expressions that deref
             // down to desired places, but we cannot actually deref
@@ -1522,7 +1512,7 @@ impl<'a> TraitDef<'a> {
             }
         }
 
-        let is_tuple = if let ast::VariantData::Tuple(..) = struct_def { true } else { false };
+        let is_tuple = matches!(struct_def, ast::VariantData::Tuple(..));
         match (just_spans.is_empty(), named_idents.is_empty()) {
             (false, false) => cx.span_bug(
                 self.span,

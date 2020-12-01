@@ -1,8 +1,8 @@
 use rustc_ast as ast;
 use rustc_middle::mir::interpret::{
-    truncate, Allocation, ConstValue, LitToConstError, LitToConstInput, Scalar,
+    Allocation, ConstValue, LitToConstError, LitToConstInput, Scalar,
 };
-use rustc_middle::ty::{self, ParamEnv, TyCtxt, TyS};
+use rustc_middle::ty::{self, ParamEnv, TyCtxt};
 use rustc_span::symbol::Symbol;
 use rustc_target::abi::Size;
 
@@ -16,24 +16,26 @@ crate fn lit_to_const<'tcx>(
         let param_ty = ParamEnv::reveal_all().and(ty);
         let width = tcx.layout_of(param_ty).map_err(|_| LitToConstError::Reported)?.size;
         trace!("trunc {} with size {} and shift {}", n, width.bits(), 128 - width.bits());
-        let result = truncate(n, width);
+        let result = width.truncate(n);
         trace!("trunc result: {}", result);
         Ok(ConstValue::Scalar(Scalar::from_uint(result, width)))
     };
 
-    let lit = match (lit, &ty.kind) {
-        (ast::LitKind::Str(s, _), ty::Ref(_, TyS { kind: ty::Str, .. }, _)) => {
+    let lit = match (lit, &ty.kind()) {
+        (ast::LitKind::Str(s, _), ty::Ref(_, inner_ty, _)) if inner_ty.is_str() => {
             let s = s.as_str();
             let allocation = Allocation::from_byte_aligned_bytes(s.as_bytes());
             let allocation = tcx.intern_const_alloc(allocation);
             ConstValue::Slice { data: allocation, start: 0, end: s.len() }
         }
-        (ast::LitKind::ByteStr(data), ty::Ref(_, TyS { kind: ty::Slice(_), .. }, _)) => {
-            let allocation = Allocation::from_byte_aligned_bytes(data as &Vec<u8>);
+        (ast::LitKind::ByteStr(data), ty::Ref(_, inner_ty, _))
+            if matches!(inner_ty.kind(), ty::Slice(_)) =>
+        {
+            let allocation = Allocation::from_byte_aligned_bytes(data as &[u8]);
             let allocation = tcx.intern_const_alloc(allocation);
             ConstValue::Slice { data: allocation, start: 0, end: data.len() }
         }
-        (ast::LitKind::ByteStr(data), ty::Ref(_, TyS { kind: ty::Array(_, _), .. }, _)) => {
+        (ast::LitKind::ByteStr(data), ty::Ref(_, inner_ty, _)) if inner_ty.is_array() => {
             let id = tcx.allocate_bytes(data);
             ConstValue::Scalar(Scalar::Ptr(id.into()))
         }

@@ -27,6 +27,7 @@ pub struct Autoderef<'a, 'tcx> {
     // Meta infos:
     infcx: &'a InferCtxt<'a, 'tcx>,
     span: Span,
+    overloaded_span: Span,
     body_id: hir::HirId,
     param_env: ty::ParamEnv<'tcx>,
 
@@ -98,15 +99,17 @@ impl<'a, 'tcx> Autoderef<'a, 'tcx> {
         body_id: hir::HirId,
         span: Span,
         base_ty: Ty<'tcx>,
+        overloaded_span: Span,
     ) -> Autoderef<'a, 'tcx> {
         Autoderef {
             infcx,
             span,
+            overloaded_span,
             body_id,
             param_env,
             state: AutoderefSnapshot {
                 steps: vec![],
-                cur_ty: infcx.resolve_vars_if_possible(&base_ty),
+                cur_ty: infcx.resolve_vars_if_possible(base_ty),
                 obligations: vec![],
                 at_start: true,
                 reached_recursion_limit: false,
@@ -161,14 +164,14 @@ impl<'a, 'tcx> Autoderef<'a, 'tcx> {
         debug!("overloaded_deref_ty({:?}) = ({:?}, {:?})", ty, normalized_ty, obligations);
         self.state.obligations.extend(obligations);
 
-        Some(self.infcx.resolve_vars_if_possible(&normalized_ty))
+        Some(self.infcx.resolve_vars_if_possible(normalized_ty))
     }
 
     /// Returns the final type we ended up with, which may be an inference
     /// variable (we will resolve it first, if we want).
     pub fn final_ty(&self, resolve: bool) -> Ty<'tcx> {
         if resolve {
-            self.infcx.resolve_vars_if_possible(&self.state.cur_ty)
+            self.infcx.resolve_vars_if_possible(self.state.cur_ty)
         } else {
             self.state.cur_ty
         }
@@ -188,6 +191,10 @@ impl<'a, 'tcx> Autoderef<'a, 'tcx> {
 
     pub fn span(&self) -> Span {
         self.span
+    }
+
+    pub fn overloaded_span(&self) -> Span {
+        self.overloaded_span
     }
 
     pub fn reached_recursion_limit(&self) -> bool {

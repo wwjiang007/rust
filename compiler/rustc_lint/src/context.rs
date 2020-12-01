@@ -19,10 +19,9 @@ use self::TargetLint::*;
 use crate::levels::LintLevelsBuilder;
 use crate::passes::{EarlyLintPassObject, LateLintPassObject};
 use rustc_ast as ast;
-use rustc_ast::util::lev_distance::find_best_match_for_name;
 use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::sync;
-use rustc_errors::{struct_span_err, Applicability};
+use rustc_errors::{add_elided_lifetime_in_path_suggestion, struct_span_err, Applicability};
 use rustc_hir as hir;
 use rustc_hir::def::Res;
 use rustc_hir::def_id::{CrateNum, DefId};
@@ -33,9 +32,11 @@ use rustc_middle::middle::stability;
 use rustc_middle::ty::layout::{LayoutError, TyAndLayout};
 use rustc_middle::ty::print::with_no_trimmed_paths;
 use rustc_middle::ty::{self, print::Printer, subst::GenericArg, Ty, TyCtxt};
-use rustc_session::lint::{add_elided_lifetime_in_path_suggestion, BuiltinLintDiagnostics};
+use rustc_session::lint::BuiltinLintDiagnostics;
 use rustc_session::lint::{FutureIncompatibleInfo, Level, Lint, LintBuffer, LintId};
 use rustc_session::Session;
+use rustc_session::SessionLintStore;
+use rustc_span::lev_distance::find_best_match_for_name;
 use rustc_span::{symbol::Symbol, MultiSpan, Span, DUMMY_SP};
 use rustc_target::abi::LayoutOf;
 
@@ -67,6 +68,20 @@ pub struct LintStore {
 
     /// Map of registered lint groups to what lints they expand to.
     lint_groups: FxHashMap<&'static str, LintGroup>,
+}
+
+impl SessionLintStore for LintStore {
+    fn name_to_lint(&self, lint_name: &str) -> LintId {
+        let lints = self
+            .find_lints(lint_name)
+            .unwrap_or_else(|_| panic!("Failed to find lint with name `{}`", lint_name));
+
+        if let &[lint] = lints.as_slice() {
+            return lint;
+        } else {
+            panic!("Found mutliple lints with name `{}`: {:?}", lint_name, lints);
+        }
+    }
 }
 
 /// The target of the `by_name` map, which accounts for renaming/deprecation.
@@ -396,7 +411,7 @@ impl LintStore {
                         self.by_name.keys().map(|name| Symbol::intern(&name)).collect::<Vec<_>>();
 
                     let suggestion = find_best_match_for_name(
-                        symbols.iter(),
+                        &symbols,
                         Symbol::intern(&lint_name.to_lowercase()),
                         None,
                     );
@@ -543,7 +558,7 @@ pub trait LintContext: Sized {
                     anon_lts,
                 ) => {
                     add_elided_lifetime_in_path_suggestion(
-                        sess,
+                        sess.source_map(),
                         &mut db,
                         n,
                         path_span,
@@ -711,14 +726,14 @@ impl<'tcx> LateContext<'tcx> {
         }
     }
 
-    pub fn current_lint_root(&self) -> hir::HirId {
-        self.last_node_with_lint_attrs
-    }
-
     /// Check if a `DefId`'s path matches the given absolute type path usage.
     ///
     /// Anonymous scopes such as `extern` imports are matched with `kw::Invalid`;
     /// inherent `impl` blocks are matched with the name of the type.
+    ///
+    /// Instead of using this method, it is often preferable to instead use
+    /// `rustc_diagnostic_item` or a `lang_item`. This is less prone to errors
+    /// as paths get invalidated if the target definition moves.
     ///
     /// # Examples
     ///
@@ -790,7 +805,7 @@ impl<'tcx> LateContext<'tcx> {
                 trait_ref: Option<ty::TraitRef<'tcx>>,
             ) -> Result<Self::Path, Self::Error> {
                 if trait_ref.is_none() {
-                    if let ty::Adt(def, substs) = self_ty.kind {
+                    if let ty::Adt(def, substs) = self_ty.kind() {
                         return self.print_def_path(def.did, substs);
                     }
                 }
@@ -842,7 +857,7 @@ impl<'tcx> LateContext<'tcx> {
                     return Ok(path);
                 }
 
-                path.push(disambiguated_data.data.as_symbol());
+                path.push(Symbol::intern(&disambiguated_data.data.to_string()));
                 Ok(path)
             }
 

@@ -46,15 +46,9 @@ pub struct Feature {
     pub state: State,
     pub name: Symbol,
     pub since: &'static str,
-    issue: Option<u32>, // FIXME: once #58732 is done make this an Option<NonZeroU32>
+    issue: Option<NonZeroU32>,
     pub edition: Option<Edition>,
     description: &'static str,
-}
-
-impl Feature {
-    fn issue(&self) -> Option<NonZeroU32> {
-        self.issue.and_then(NonZeroU32::new)
-    }
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -65,7 +59,7 @@ pub enum Stability {
     Deprecated(&'static str, Option<&'static str>),
 }
 
-#[derive(Clone, Copy, Hash)]
+#[derive(Clone, Copy, Debug, Hash)]
 pub enum UnstableFeatures {
     /// Hard errors for unstable features are active, as on beta/stable channels.
     Disallow,
@@ -79,11 +73,20 @@ pub enum UnstableFeatures {
 }
 
 impl UnstableFeatures {
-    pub fn from_environment() -> UnstableFeatures {
+    /// This takes into account `RUSTC_BOOTSTRAP`.
+    ///
+    /// If `krate` is [`Some`], then setting `RUSTC_BOOTSTRAP=krate` will enable the nightly features.
+    /// Otherwise, only `RUSTC_BOOTSTRAP=1` will work.
+    pub fn from_environment(krate: Option<&str>) -> Self {
         // `true` if this is a feature-staged build, i.e., on the beta or stable channel.
         let disable_unstable_features = option_env!("CFG_DISABLE_UNSTABLE_FEATURES").is_some();
+        // Returns whether `krate` should be counted as unstable
+        let is_unstable_crate = |var: &str| {
+            krate.map_or(false, |name| var.split(',').any(|new_krate| new_krate == name))
+        };
         // `true` if we should enable unstable features for bootstrapping.
-        let bootstrap = std::env::var("RUSTC_BOOTSTRAP").is_ok();
+        let bootstrap = std::env::var("RUSTC_BOOTSTRAP")
+            .map_or(false, |var| var == "1" || is_unstable_crate(&var));
         match (disable_unstable_features, bootstrap) {
             (_, true) => UnstableFeatures::Cheat,
             (true, _) => UnstableFeatures::Disallow,
@@ -102,8 +105,8 @@ impl UnstableFeatures {
 fn find_lang_feature_issue(feature: Symbol) -> Option<NonZeroU32> {
     if let Some(info) = ACTIVE_FEATURES.iter().find(|t| t.name == feature) {
         // FIXME (#28244): enforce that active features have issue numbers
-        // assert!(info.issue().is_some())
-        info.issue()
+        // assert!(info.issue.is_some())
+        info.issue
     } else {
         // search in Accepted, Removed, or Stable Removed features
         let found = ACCEPTED_FEATURES
@@ -112,9 +115,18 @@ fn find_lang_feature_issue(feature: Symbol) -> Option<NonZeroU32> {
             .chain(STABLE_REMOVED_FEATURES)
             .find(|t| t.name == feature);
         match found {
-            Some(found) => found.issue(),
+            Some(found) => found.issue,
             None => panic!("feature `{}` is not declared anywhere", feature),
         }
+    }
+}
+
+const fn to_nonzero(n: Option<u32>) -> Option<NonZeroU32> {
+    // Can be replaced with `n.and_then(NonZeroU32::new)` if that is ever usable
+    // in const context. Requires https://github.com/rust-lang/rfcs/pull/2632.
+    match n {
+        None => None,
+        Some(n) => NonZeroU32::new(n),
     }
 }
 
@@ -131,9 +143,36 @@ pub fn find_feature_issue(feature: Symbol, issue: GateIssue) -> Option<NonZeroU3
 }
 
 pub use accepted::ACCEPTED_FEATURES;
-pub use active::{Features, ACTIVE_FEATURES, INCOMPLETE_FEATURES};
+pub use active::{Features, ACTIVE_FEATURES, INCOMPATIBLE_FEATURES, INCOMPLETE_FEATURES};
 pub use builtin_attrs::{
     deprecated_attributes, find_gated_cfg, is_builtin_attr_name, AttributeGate, AttributeTemplate,
     AttributeType, BuiltinAttribute, GatedCfg, BUILTIN_ATTRIBUTES, BUILTIN_ATTRIBUTE_MAP,
 };
 pub use removed::{REMOVED_FEATURES, STABLE_REMOVED_FEATURES};
+
+#[cfg(test)]
+mod test {
+    use super::UnstableFeatures;
+
+    #[test]
+    fn rustc_bootstrap_parsing() {
+        let is_bootstrap = |env, krate| {
+            std::env::set_var("RUSTC_BOOTSTRAP", env);
+            matches!(UnstableFeatures::from_environment(krate), UnstableFeatures::Cheat)
+        };
+        assert!(is_bootstrap("1", None));
+        assert!(is_bootstrap("1", Some("x")));
+        // RUSTC_BOOTSTRAP allows specifying a specific crate
+        assert!(is_bootstrap("x", Some("x")));
+        // RUSTC_BOOTSTRAP allows multiple comma-delimited crates
+        assert!(is_bootstrap("x,y,z", Some("x")));
+        assert!(is_bootstrap("x,y,z", Some("y")));
+        // Crate that aren't specified do not get unstable features
+        assert!(!is_bootstrap("x", Some("a")));
+        assert!(!is_bootstrap("x,y,z", Some("a")));
+        assert!(!is_bootstrap("x,y,z", None));
+
+        // this is technically a breaking change, but there are no stability guarantees for RUSTC_BOOTSTRAP
+        assert!(!is_bootstrap("0", None));
+    }
+}

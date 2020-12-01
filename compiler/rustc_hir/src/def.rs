@@ -6,6 +6,7 @@ use rustc_ast::NodeId;
 use rustc_macros::HashStable_Generic;
 use rustc_span::hygiene::MacroKind;
 
+use std::array::IntoIter;
 use std::fmt::Debug;
 
 /// Encodes if a `DefKind::Ctor` is the constructor of an enum variant or a struct.
@@ -38,6 +39,9 @@ pub enum NonMacroAttrKind {
     Tool,
     /// Single-segment custom attribute registered by a derive macro (`#[serde(default)]`).
     DeriveHelper,
+    /// Single-segment custom attribute registered by a derive macro
+    /// but used before that derive macro was expanded (deprecated).
+    DeriveHelperCompat,
     /// Single-segment custom attribute registered with `#[register_attr]`.
     Registered,
 }
@@ -198,7 +202,18 @@ pub enum Res<Id = hir::HirId> {
 
     // Type namespace
     PrimTy(hir::PrimTy),
-    SelfTy(Option<DefId> /* trait */, Option<DefId> /* impl */),
+    /// `Self`, with both an optional trait and impl `DefId`.
+    ///
+    /// HACK(min_const_generics): impl self types also have an optional requirement to not mention
+    /// any generic parameters to allow the following with `min_const_generics`:
+    /// ```rust
+    /// impl Foo { fn test() -> [u8; std::mem::size_of::<Self>()] {} }
+    /// ```
+    /// We do however allow `Self` in repeat expression even if it is generic to not break code
+    /// which already works on stable while causing the `const_evaluatable_unchecked` future compat lint.
+    ///
+    /// FIXME(lazy_normalization_consts): Remove this bodge once that feature is stable.
+    SelfTy(Option<DefId> /* trait */, Option<(DefId, bool)> /* impl */),
     ToolMod, // e.g., `rustfmt` in `#[rustfmt::skip]`
 
     // Value namespace
@@ -291,6 +306,14 @@ impl<T> PerNS<T> {
     pub fn map<U, F: FnMut(T) -> U>(self, mut f: F) -> PerNS<U> {
         PerNS { value_ns: f(self.value_ns), type_ns: f(self.type_ns), macro_ns: f(self.macro_ns) }
     }
+
+    pub fn into_iter(self) -> IntoIter<T, 3> {
+        IntoIter::new([self.value_ns, self.type_ns, self.macro_ns])
+    }
+
+    pub fn iter(&self) -> IntoIter<&T, 3> {
+        IntoIter::new([&self.value_ns, &self.type_ns, &self.macro_ns])
+    }
 }
 
 impl<T> ::std::ops::Index<Namespace> for PerNS<T> {
@@ -323,9 +346,7 @@ impl<T> PerNS<Option<T>> {
 
     /// Returns an iterator over the items which are `Some`.
     pub fn present_items(self) -> impl Iterator<Item = T> {
-        use std::iter::once;
-
-        once(self.type_ns).chain(once(self.value_ns)).chain(once(self.macro_ns)).filter_map(|it| it)
+        IntoIter::new([self.type_ns, self.value_ns, self.macro_ns]).filter_map(|it| it)
     }
 }
 
@@ -352,7 +373,9 @@ impl NonMacroAttrKind {
         match self {
             NonMacroAttrKind::Builtin => "built-in attribute",
             NonMacroAttrKind::Tool => "tool attribute",
-            NonMacroAttrKind::DeriveHelper => "derive helper attribute",
+            NonMacroAttrKind::DeriveHelper | NonMacroAttrKind::DeriveHelperCompat => {
+                "derive helper attribute"
+            }
             NonMacroAttrKind::Registered => "explicitly registered attribute",
         }
     }
@@ -367,7 +390,9 @@ impl NonMacroAttrKind {
     /// Users of some attributes cannot mark them as used, so they are considered always used.
     pub fn is_used(self) -> bool {
         match self {
-            NonMacroAttrKind::Tool | NonMacroAttrKind::DeriveHelper => true,
+            NonMacroAttrKind::Tool
+            | NonMacroAttrKind::DeriveHelper
+            | NonMacroAttrKind::DeriveHelperCompat => true,
             NonMacroAttrKind::Builtin | NonMacroAttrKind::Registered => false,
         }
     }
@@ -465,5 +490,10 @@ impl<Id> Res<Id> {
     /// Always returns `true` if `self` is `Res::Err`
     pub fn matches_ns(&self, ns: Namespace) -> bool {
         self.ns().map_or(true, |actual_ns| actual_ns == ns)
+    }
+
+    /// Returns whether such a resolved path can occur in a tuple struct/variant pattern
+    pub fn expected_in_tuple_struct_pat(&self) -> bool {
+        matches!(self, Res::Def(DefKind::Ctor(_, CtorKind::Fn), _) | Res::SelfCtor(..))
     }
 }

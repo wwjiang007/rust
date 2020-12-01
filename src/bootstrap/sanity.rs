@@ -30,8 +30,8 @@ impl Finder {
         Self { cache: HashMap::new(), path: env::var_os("PATH").unwrap_or_default() }
     }
 
-    pub fn maybe_have<S: AsRef<OsStr>>(&mut self, cmd: S) -> Option<PathBuf> {
-        let cmd: OsString = cmd.as_ref().into();
+    pub fn maybe_have<S: Into<OsString>>(&mut self, cmd: S) -> Option<PathBuf> {
+        let cmd: OsString = cmd.into();
         let path = &self.path;
         self.cache
             .entry(cmd.clone())
@@ -91,7 +91,7 @@ pub fn check(build: &mut Build) {
                 .unwrap_or(true)
         })
         .any(|build_llvm_ourselves| build_llvm_ourselves);
-    if building_llvm || build.config.sanitizers {
+    if building_llvm || build.config.any_sanitizers_enabled() {
         cmd_finder.must_have("cmake");
     }
 

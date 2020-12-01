@@ -58,6 +58,7 @@
 //! [`push`]: PathBuf::push
 
 #![stable(feature = "rust1", since = "1.0.0")]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 #[cfg(test)]
 mod tests;
@@ -294,7 +295,8 @@ fn os_str_as_u8_slice(s: &OsStr) -> &[u8] {
     unsafe { &*(s as *const OsStr as *const [u8]) }
 }
 unsafe fn u8_slice_as_os_str(s: &[u8]) -> &OsStr {
-    &*(s as *const [u8] as *const OsStr)
+    // SAFETY: see the comment of `os_str_as_u8_slice`
+    unsafe { &*(s as *const [u8] as *const OsStr) }
 }
 
 // Detect scheme on Redox
@@ -314,24 +316,21 @@ fn has_physical_root(s: &[u8], prefix: Option<Prefix<'_>>) -> bool {
 
 // basic workhorse for splitting stem and extension
 fn split_file_at_dot(file: &OsStr) -> (Option<&OsStr>, Option<&OsStr>) {
-    unsafe {
-        if os_str_as_u8_slice(file) == b".." {
-            return (Some(file), None);
-        }
+    if os_str_as_u8_slice(file) == b".." {
+        return (Some(file), None);
+    }
 
-        // The unsafety here stems from converting between &OsStr and &[u8]
-        // and back. This is safe to do because (1) we only look at ASCII
-        // contents of the encoding and (2) new &OsStr values are produced
-        // only from ASCII-bounded slices of existing &OsStr values.
-
-        let mut iter = os_str_as_u8_slice(file).rsplitn(2, |b| *b == b'.');
-        let after = iter.next();
-        let before = iter.next();
-        if before == Some(b"") {
-            (Some(file), None)
-        } else {
-            (before.map(|s| u8_slice_as_os_str(s)), after.map(|s| u8_slice_as_os_str(s)))
-        }
+    // The unsafety here stems from converting between &OsStr and &[u8]
+    // and back. This is safe to do because (1) we only look at ASCII
+    // contents of the encoding and (2) new &OsStr values are produced
+    // only from ASCII-bounded slices of existing &OsStr values.
+    let mut iter = os_str_as_u8_slice(file).rsplitn(2, |b| *b == b'.');
+    let after = iter.next();
+    let before = iter.next();
+    if before == Some(b"") {
+        (Some(file), None)
+    } else {
+        unsafe { (before.map(|s| u8_slice_as_os_str(s)), after.map(|s| u8_slice_as_os_str(s))) }
     }
 }
 
@@ -447,7 +446,7 @@ impl Hash for PrefixComponent<'_> {
 /// (`/` or `\`).
 ///
 /// This `enum` is created by iterating over [`Components`], which in turn is
-/// created by the [`components`][`Path::components`] method on [`Path`].
+/// created by the [`components`](Path::components) method on [`Path`].
 ///
 /// # Examples
 ///
@@ -1010,7 +1009,7 @@ impl FusedIterator for Ancestors<'_> {}
 /// [`set_extension`]: PathBuf::set_extension
 ///
 /// More details about the overall approach can be found in
-/// the [module documentation](index.html).
+/// the [module documentation](self).
 ///
 /// # Examples
 ///
@@ -1320,7 +1319,7 @@ impl PathBuf {
         self.inner
     }
 
-    /// Converts this `PathBuf` into a [boxed][`Box`] [`Path`].
+    /// Converts this `PathBuf` into a [boxed](Box) [`Path`].
     #[stable(feature = "into_boxed_path", since = "1.20.0")]
     pub fn into_boxed_path(self) -> Box<Path> {
         let rw = Box::into_raw(self.inner.into_boxed_os_str()) as *mut Path;
@@ -1656,7 +1655,7 @@ impl AsRef<OsStr> for PathBuf {
 /// see [`PathBuf`].
 ///
 /// More details about the overall approach can be found in
-/// the [module documentation](index.html).
+/// the [module documentation](self).
 ///
 /// # Examples
 ///
@@ -1687,8 +1686,7 @@ pub struct Path {
     inner: OsStr,
 }
 
-/// An error returned from [`Path::strip_prefix`][`strip_prefix`] if the prefix
-/// was not found.
+/// An error returned from [`Path::strip_prefix`] if the prefix was not found.
 ///
 /// This `struct` is created by the [`strip_prefix`] method on [`Path`].
 /// See its documentation for more.
@@ -1702,7 +1700,7 @@ impl Path {
     // The following (private!) function allows construction of a path from a u8
     // slice, which is only safe when it is known to follow the OsStr encoding.
     unsafe fn from_u8_slice(s: &[u8]) -> &Path {
-        Path::new(u8_slice_as_os_str(s))
+        unsafe { Path::new(u8_slice_as_os_str(s)) }
     }
     // The following (private!) function reveals the byte encoding used for OsStr.
     fn as_u8_slice(&self) -> &[u8] {
@@ -1839,7 +1837,7 @@ impl Path {
             // FIXME: Allow Redox prefixes
             self.has_root() || has_redox_scheme(self.as_u8_slice())
         } else {
-            self.has_root() && (cfg!(unix) || self.prefix().is_some())
+            self.has_root() && (cfg!(any(unix, target_os = "wasi")) || self.prefix().is_some())
         }
     }
 
@@ -2471,7 +2469,7 @@ impl Path {
         fs::metadata(self).map(|m| m.is_dir()).unwrap_or(false)
     }
 
-    /// Converts a [`Box<Path>`][`Box`] into a [`PathBuf`] without copying or
+    /// Converts a [`Box<Path>`](Box) into a [`PathBuf`] without copying or
     /// allocating.
     #[stable(feature = "into_boxed_path", since = "1.20.0")]
     pub fn into_path_buf(self: Box<Path>) -> PathBuf {
@@ -2499,7 +2497,7 @@ impl fmt::Debug for Path {
 ///
 /// A [`Path`] might contain non-Unicode data. This `struct` implements the
 /// [`Display`] trait in a way that mitigates that. It is created by the
-/// [`display`][`Path::display`] method on [`Path`].
+/// [`display`](Path::display) method on [`Path`].
 ///
 /// # Examples
 ///

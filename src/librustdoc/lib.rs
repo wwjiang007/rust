@@ -3,11 +3,13 @@
     html_playground_url = "https://play.rust-lang.org/"
 )]
 #![feature(rustc_private)]
+#![feature(array_methods)]
 #![feature(box_patterns)]
 #![feature(box_syntax)]
 #![feature(in_band_lifetimes)]
 #![feature(nll)]
 #![feature(or_patterns)]
+#![feature(peekable_next_if)]
 #![feature(test)]
 #![feature(crate_visibility_modifier)]
 #![feature(never_type)]
@@ -16,6 +18,16 @@
 
 #[macro_use]
 extern crate lazy_static;
+#[macro_use]
+extern crate tracing;
+
+// N.B. these need `extern crate` even in 2018 edition
+// because they're loaded implicitly from the sysroot.
+// The reason they're loaded from the sysroot is because
+// the rustdoc artifacts aren't stored in rustc's cargo target directory.
+// So if `rustc` was specified in Cargo.toml, this would spuriously rebuild crates.
+//
+// Dependencies listed in Cargo.toml do not need `extern crate`.
 extern crate rustc_ast;
 extern crate rustc_ast_pretty;
 extern crate rustc_attr;
@@ -42,8 +54,6 @@ extern crate rustc_target;
 extern crate rustc_trait_selection;
 extern crate rustc_typeck;
 extern crate test as testing;
-#[macro_use]
-extern crate tracing;
 
 use std::default::Default;
 use std::env;
@@ -74,12 +84,6 @@ mod passes;
 mod theme;
 mod visit_ast;
 mod visit_lib;
-
-struct Output {
-    krate: clean::Crate,
-    renderinfo: config::RenderInfo,
-    renderopts: config::RenderOptions,
-}
 
 pub fn main() {
     rustc_driver::set_sigpipe_handler();
@@ -265,6 +269,26 @@ fn opts() -> Vec<RustcOptGroup> {
                 "sort modules by where they appear in the program, rather than alphabetically",
             )
         }),
+        unstable("default-theme", |o| {
+            o.optopt(
+                "",
+                "default-theme",
+                "Set the default theme. THEME should be the theme name, generally lowercase. \
+                 If an unknown default theme is specified, the builtin default is used. \
+                 The set of themes, and the rustdoc built-in default is not stable.",
+                "THEME",
+            )
+        }),
+        unstable("default-setting", |o| {
+            o.optmulti(
+                "",
+                "default-setting",
+                "Default value for a rustdoc setting (used when \"rustdoc-SETTING\" is absent \
+                 from web browser Local Storage). If VALUE is not supplied, \"true\" is used. \
+                 Supported SETTINGs and VALUEs are not documented and not stable.",
+                "SETTING[=VALUE]",
+            )
+        }),
         stable("theme", |o| {
             o.optmulti(
                 "",
@@ -399,6 +423,7 @@ fn opts() -> Vec<RustcOptGroup> {
                 "specified the rustc-like binary to use as the test builder",
             )
         }),
+        unstable("check", |o| o.optflag("", "check", "Run rustdoc checks")),
     ]
 }
 
@@ -408,6 +433,7 @@ fn usage(argv0: &str) {
         (option.apply)(&mut options);
     }
     println!("{}", options.usage(&format!("{} [options] <input>", argv0)));
+    println!("More information available at https://doc.rust-lang.org/rustdoc/what-is-rustdoc.html")
 }
 
 /// A result type used by several functions under `main()`.
@@ -487,9 +513,10 @@ fn main_options(options: config::Options) -> MainResult {
     }
 
     // need to move these items separately because we lose them by the time the closure is called,
-    // but we can't crates the Handler ahead of time because it's not Send
+    // but we can't create the Handler ahead of time because it's not Send
     let diag_opts = (options.error_format, options.edition, options.debugging_opts.clone());
     let show_coverage = options.show_coverage;
+    let run_check = options.run_check;
 
     // First, parse the crate and extract all relevant information.
     info!("starting to run rustc");
@@ -511,15 +538,15 @@ fn main_options(options: config::Options) -> MainResult {
 
     krate.version = crate_version;
 
-    let out = Output { krate, renderinfo, renderopts };
-
     if show_coverage {
         // if we ran coverage, bail early, we don't need to also generate docs at this point
         // (also we didn't load in any of the useful passes)
         return Ok(());
+    } else if run_check {
+        // Since we're in "check" mode, no need to generate anything beyond this point.
+        return Ok(());
     }
 
-    let Output { krate, renderinfo, renderopts } = out;
     info!("going to format");
     let (error_format, edition, debugging_options) = diag_opts;
     let diag = core::new_handler(error_format, None, &debugging_options);

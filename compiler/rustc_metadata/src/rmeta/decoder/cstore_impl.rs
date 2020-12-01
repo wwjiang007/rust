@@ -6,11 +6,14 @@ use crate::rmeta::{self, encoder};
 
 use rustc_ast as ast;
 use rustc_ast::expand::allocator::AllocatorKind;
+use rustc_data_structures::stable_map::FxHashMap;
 use rustc_data_structures::svh::Svh;
 use rustc_hir as hir;
+use rustc_hir::def::DefKind;
 use rustc_hir::def_id::{CrateNum, DefId, DefIdMap, CRATE_DEF_INDEX, LOCAL_CRATE};
 use rustc_hir::definitions::{DefKey, DefPath, DefPathHash};
 use rustc_middle::hir::exports::Export;
+use rustc_middle::middle::cstore::ForeignModule;
 use rustc_middle::middle::cstore::{CrateSource, CrateStore, EncodedMetadata};
 use rustc_middle::middle::exported_symbols::ExportedSymbol;
 use rustc_middle::middle::stability::DeprecationEntry;
@@ -18,7 +21,7 @@ use rustc_middle::ty::query::Providers;
 use rustc_middle::ty::{self, TyCtxt};
 use rustc_session::utils::NativeLibKind;
 use rustc_session::{CrateDisambiguator, Session};
-use rustc_span::source_map::{self, Span, Spanned};
+use rustc_span::source_map::{Span, Spanned};
 use rustc_span::symbol::Symbol;
 
 use rustc_data_structures::sync::Lrc;
@@ -89,11 +92,12 @@ provide! { <'tcx> tcx, def_id, other, cdata,
     explicit_predicates_of => { cdata.get_explicit_predicates(def_id.index, tcx) }
     inferred_outlives_of => { cdata.get_inferred_outlives(def_id.index, tcx) }
     super_predicates_of => { cdata.get_super_predicates(def_id.index, tcx) }
+    explicit_item_bounds => { cdata.get_explicit_item_bounds(def_id.index, tcx) }
     trait_def => { cdata.get_trait_def(def_id.index, tcx.sess) }
     adt_def => { cdata.get_adt_def(def_id.index, tcx) }
     adt_destructor => {
         let _ = cdata;
-        tcx.calculate_dtor(def_id, &mut |_,_| Ok(()))
+        tcx.calculate_dtor(def_id, |_,_| Ok(()))
     }
     variances_of => { tcx.arena.alloc_from_iter(cdata.get_item_variances(def_id.index)) }
     associated_item_def_ids => {
@@ -112,6 +116,7 @@ provide! { <'tcx> tcx, def_id, other, cdata,
     }
     optimized_mir => { tcx.arena.alloc(cdata.get_optimized_mir(tcx, def_id.index)) }
     promoted_mir => { tcx.arena.alloc(cdata.get_promoted_mir(tcx, def_id.index)) }
+    mir_abstract_const => { cdata.get_mir_abstract_const(tcx, def_id.index) }
     unused_generic_params => { cdata.get_unused_generic_params(def_id.index) }
     mir_const_qualif => { cdata.mir_const_qualif(def_id.index) }
     fn_sig => { cdata.fn_sig(def_id.index, tcx) }
@@ -133,7 +138,7 @@ provide! { <'tcx> tcx, def_id, other, cdata,
         cdata.get_deprecation(def_id.index).map(DeprecationEntry::external)
     }
     item_attrs => { tcx.arena.alloc_from_iter(
-        cdata.get_item_attrs(def_id.index, tcx.sess).into_iter()
+        cdata.get_item_attrs(def_id.index, tcx.sess)
     ) }
     fn_arg_names => { cdata.get_fn_param_names(tcx, def_id.index) }
     rendered_const => { cdata.get_rendered_const(def_id.index) }
@@ -178,8 +183,11 @@ provide! { <'tcx> tcx, def_id, other, cdata,
         })
     }
     proc_macro_decls_static => {
-        cdata.root.proc_macro_decls_static.map(|index| {
-            DefId { krate: def_id.krate, index }
+        cdata.root.proc_macro_data.as_ref().map(|data| {
+            DefId {
+                krate: def_id.krate,
+                index: data.proc_macro_decls_static,
+            }
         })
     }
     crate_disambiguator => { cdata.root.disambiguator }
@@ -214,10 +222,7 @@ provide! { <'tcx> tcx, def_id, other, cdata,
     missing_lang_items => { cdata.get_missing_lang_items(tcx) }
 
     missing_extern_crate_item => {
-        let r = match *cdata.extern_crate.borrow() {
-            Some(extern_crate) if !extern_crate.is_direct() => true,
-            _ => false,
-        };
+        let r = matches!(*cdata.extern_crate.borrow(), Some(extern_crate) if !extern_crate.is_direct());
         r
     }
 
@@ -234,6 +239,7 @@ provide! { <'tcx> tcx, def_id, other, cdata,
     }
 
     crate_extern_paths => { cdata.source().paths().cloned().collect() }
+    expn_that_defined => { cdata.get_expn_that_defined(def_id.index, tcx.sess) }
 }
 
 pub fn provide(providers: &mut Providers) {
@@ -247,9 +253,11 @@ pub fn provide(providers: &mut Providers) {
             }
             _ => false,
         },
-        is_statically_included_foreign_item: |tcx, id| match tcx.native_library_kind(id) {
-            Some(NativeLibKind::StaticBundle | NativeLibKind::StaticNoBundle) => true,
-            _ => false,
+        is_statically_included_foreign_item: |tcx, id| {
+            matches!(
+                tcx.native_library_kind(id),
+                Some(NativeLibKind::StaticBundle | NativeLibKind::StaticNoBundle)
+            )
         },
         native_library_kind: |tcx, id| {
             tcx.native_libraries(id.krate)
@@ -260,9 +268,8 @@ pub fn provide(providers: &mut Providers) {
                         Some(id) => id,
                         None => return false,
                     };
-                    tcx.foreign_modules(id.krate)
-                        .iter()
-                        .find(|m| m.def_id == fm_id)
+                    let map = tcx.foreign_modules(id.krate);
+                    map.get(&fm_id)
                         .expect("failed to find foreign module")
                         .foreign_items
                         .contains(&id)
@@ -275,7 +282,9 @@ pub fn provide(providers: &mut Providers) {
         },
         foreign_modules: |tcx, cnum| {
             assert_eq!(cnum, LOCAL_CRATE);
-            &tcx.arena.alloc(foreign_modules::collect(tcx))[..]
+            let modules: FxHashMap<DefId, ForeignModule> =
+                foreign_modules::collect(tcx).into_iter().map(|m| (m.def_id, m)).collect();
+            Lrc::new(modules)
         },
         link_args: |tcx, cnum| {
             assert_eq!(cnum, LOCAL_CRATE);
@@ -406,11 +415,7 @@ impl CStore {
 
         let span = data.get_span(id.index, sess);
 
-        // Mark the attrs as used
-        let attrs = data.get_item_attrs(id.index, sess);
-        for attr in attrs.iter() {
-            sess.mark_attr_used(attr);
-        }
+        let attrs = data.get_item_attrs(id.index, sess).collect();
 
         let ident = data.item_ident(id.index, sess);
 
@@ -419,9 +424,13 @@ impl CStore {
                 ident,
                 id: ast::DUMMY_NODE_ID,
                 span,
-                attrs: attrs.to_vec(),
+                attrs,
                 kind: ast::ItemKind::MacroDef(data.get_macro(id.index, sess)),
-                vis: source_map::respan(span.shrink_to_lo(), ast::VisibilityKind::Inherited),
+                vis: ast::Visibility {
+                    span: span.shrink_to_lo(),
+                    kind: ast::VisibilityKind::Inherited,
+                    tokens: None,
+                },
                 tokens: None,
             },
             data.root.edition,
@@ -475,6 +484,10 @@ impl CrateStore for CStore {
     /// `DefId` refers to.
     fn def_key(&self, def: DefId) -> DefKey {
         self.get_crate_data(def.krate).def_key(def.index)
+    }
+
+    fn def_kind(&self, def: DefId) -> DefKind {
+        self.get_crate_data(def.krate).def_kind(def.index)
     }
 
     fn def_path(&self, def: DefId) -> DefPath {

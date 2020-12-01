@@ -7,7 +7,7 @@ use crate::maybe_whole;
 use rustc_ast::ptr::P;
 use rustc_ast::token::{self, TokenKind};
 use rustc_ast::tokenstream::{DelimSpan, TokenStream, TokenTree};
-use rustc_ast::{self as ast, AttrStyle, AttrVec, Attribute, DUMMY_NODE_ID};
+use rustc_ast::{self as ast, AttrVec, Attribute, DUMMY_NODE_ID};
 use rustc_ast::{AssocItem, AssocItemKind, ForeignItemKind, Item, ItemKind, Mod};
 use rustc_ast::{Async, Const, Defaultness, IsAuto, Mutability, Unsafe, UseTree, UseTreeKind};
 use rustc_ast::{BindingMode, Block, FnDecl, FnSig, Param, SelfKind};
@@ -28,7 +28,7 @@ impl<'a> Parser<'a> {
     /// Parses a source module as a crate. This is the main entry point for the parser.
     pub fn parse_crate_mod(&mut self) -> PResult<'a, ast::Crate> {
         let lo = self.token.span;
-        let (module, attrs) = self.parse_mod(&token::Eof)?;
+        let (module, attrs) = self.parse_mod(&token::Eof, Unsafe::No)?;
         let span = lo.to(self.token.span);
         let proc_macros = Vec::new(); // Filled in by `proc_macro_harness::inject()`.
         Ok(ast::Crate { attrs, module, span, proc_macros })
@@ -36,27 +36,38 @@ impl<'a> Parser<'a> {
 
     /// Parses a `mod <foo> { ... }` or `mod <foo>;` item.
     fn parse_item_mod(&mut self, attrs: &mut Vec<Attribute>) -> PResult<'a, ItemInfo> {
+        let unsafety = self.parse_unsafety();
+        self.expect_keyword(kw::Mod)?;
         let id = self.parse_ident()?;
         let (module, mut inner_attrs) = if self.eat(&token::Semi) {
-            Default::default()
+            (Mod { inner: Span::default(), unsafety, items: Vec::new(), inline: false }, Vec::new())
         } else {
             self.expect(&token::OpenDelim(token::Brace))?;
-            self.parse_mod(&token::CloseDelim(token::Brace))?
+            self.parse_mod(&token::CloseDelim(token::Brace), unsafety)?
         };
         attrs.append(&mut inner_attrs);
         Ok((id, ItemKind::Mod(module)))
     }
 
     /// Parses the contents of a module (inner attributes followed by module items).
-    pub fn parse_mod(&mut self, term: &TokenKind) -> PResult<'a, (Mod, Vec<Attribute>)> {
+    pub fn parse_mod(
+        &mut self,
+        term: &TokenKind,
+        unsafety: Unsafe,
+    ) -> PResult<'a, (Mod, Vec<Attribute>)> {
         let lo = self.token.span;
         let attrs = self.parse_inner_attributes()?;
-        let module = self.parse_mod_items(term, lo)?;
+        let module = self.parse_mod_items(term, lo, unsafety)?;
         Ok((module, attrs))
     }
 
     /// Given a termination token, parses all of the items in a module.
-    fn parse_mod_items(&mut self, term: &TokenKind, inner_lo: Span) -> PResult<'a, Mod> {
+    fn parse_mod_items(
+        &mut self,
+        term: &TokenKind,
+        inner_lo: Span,
+        unsafety: Unsafe,
+    ) -> PResult<'a, Mod> {
         let mut items = vec![];
         while let Some(item) = self.parse_item()? {
             items.push(item);
@@ -75,7 +86,7 @@ impl<'a> Parser<'a> {
 
         let hi = if self.token.span.is_dummy() { inner_lo } else { self.prev_token.span };
 
-        Ok(Mod { inner: inner_lo.to(hi), items, inline: true })
+        Ok(Mod { inner: inner_lo.to(hi), unsafety, items, inline: true })
     }
 }
 
@@ -105,44 +116,30 @@ impl<'a> Parser<'a> {
             Some(item.into_inner())
         });
 
+        let needs_tokens = super::attr::maybe_needs_tokens(&attrs);
+
         let mut unclosed_delims = vec![];
-        let has_attrs = !attrs.is_empty();
         let parse_item = |this: &mut Self| {
             let item = this.parse_item_common_(attrs, mac_allowed, attrs_allowed, req_name);
             unclosed_delims.append(&mut this.unclosed_delims);
             item
         };
 
-        let (mut item, tokens) = if has_attrs {
+        let (mut item, tokens) = if needs_tokens {
             let (item, tokens) = self.collect_tokens(parse_item)?;
-            (item, Some(tokens))
+            (item, tokens)
         } else {
             (parse_item(self)?, None)
         };
-
-        self.unclosed_delims.append(&mut unclosed_delims);
-
-        // Once we've parsed an item and recorded the tokens we got while
-        // parsing we may want to store `tokens` into the item we're about to
-        // return. Note, though, that we specifically didn't capture tokens
-        // related to outer attributes. The `tokens` field here may later be
-        // used with procedural macros to convert this item back into a token
-        // stream, but during expansion we may be removing attributes as we go
-        // along.
-        //
-        // If we've got inner attributes then the `tokens` we've got above holds
-        // these inner attributes. If an inner attribute is expanded we won't
-        // actually remove it from the token stream, so we'll just keep yielding
-        // it (bad!). To work around this case for now we just avoid recording
-        // `tokens` if we detect any inner attributes. This should help keep
-        // expansion correct, but we should fix this bug one day!
-        if let Some(tokens) = tokens {
-            if let Some(item) = &mut item {
-                if !item.attrs.iter().any(|attr| attr.style == AttrStyle::Inner) {
-                    item.tokens = Some(tokens);
-                }
+        if let Some(item) = &mut item {
+            // If we captured tokens during parsing (due to encountering an `NtItem`),
+            // use those instead
+            if item.tokens.is_none() {
+                item.tokens = tokens;
             }
         }
+
+        self.unclosed_delims.append(&mut unclosed_delims);
         Ok(item)
     }
 
@@ -176,7 +173,7 @@ impl<'a> Parser<'a> {
 
     /// Error in-case a non-inherited visibility was parsed but no item followed.
     fn error_on_unmatched_vis(&self, vis: &Visibility) {
-        if let VisibilityKind::Inherited = vis.node {
+        if let VisibilityKind::Inherited = vis.kind {
             return;
         }
         let vs = pprust::vis_to_string(&vis);
@@ -235,8 +232,13 @@ impl<'a> Parser<'a> {
                 self.parse_item_extern_crate()?
             } else {
                 // EXTERN BLOCK
-                self.parse_item_foreign_mod(attrs)?
+                self.parse_item_foreign_mod(attrs, Unsafe::No)?
             }
+        } else if self.is_unsafe_foreign_mod() {
+            // EXTERN BLOCK
+            let unsafety = self.parse_unsafety();
+            self.expect_keyword(kw::Extern)?;
+            self.parse_item_foreign_mod(attrs, unsafety)?
         } else if self.is_static_global() {
             // STATIC ITEM
             self.bump(); // `static`
@@ -256,7 +258,9 @@ impl<'a> Parser<'a> {
         {
             // IMPL ITEM
             self.parse_item_impl(attrs, def())?
-        } else if self.eat_keyword(kw::Mod) {
+        } else if self.check_keyword(kw::Mod)
+            || self.check_keyword(kw::Unsafe) && self.is_keyword_ahead(1, &[kw::Mod])
+        {
             // MODULE ITEM
             self.parse_item_mod(attrs)?
         } else if self.eat_keyword(kw::Type) {
@@ -278,7 +282,7 @@ impl<'a> Parser<'a> {
         } else if self.is_macro_rules_item() {
             // MACRO_RULES ITEM
             self.parse_item_macro_rules(vis)?
-        } else if vis.node.is_pub() && self.isnt_macro_invocation() {
+        } else if vis.kind.is_pub() && self.isnt_macro_invocation() {
             self.recover_missing_kw_before_item()?;
             return Ok(None);
         } else if macros_allowed && self.check_path() {
@@ -357,21 +361,19 @@ impl<'a> Parser<'a> {
                     format!(" {} ", kw),
                     Applicability::MachineApplicable,
                 );
+            } else if let Ok(snippet) = self.span_to_snippet(ident_sp) {
+                err.span_suggestion(
+                    full_sp,
+                    "if you meant to call a macro, try",
+                    format!("{}!", snippet),
+                    // this is the `ambiguous` conditional branch
+                    Applicability::MaybeIncorrect,
+                );
             } else {
-                if let Ok(snippet) = self.span_to_snippet(ident_sp) {
-                    err.span_suggestion(
-                        full_sp,
-                        "if you meant to call a macro, try",
-                        format!("{}!", snippet),
-                        // this is the `ambiguous` conditional branch
-                        Applicability::MaybeIncorrect,
-                    );
-                } else {
-                    err.help(
-                        "if you meant to call a macro, remove the `pub` \
-                                  and add a trailing `!` after the identifier",
-                    );
-                }
+                err.help(
+                    "if you meant to call a macro, remove the `pub` \
+                              and add a trailing `!` after the identifier",
+                );
             }
             Err(err)
         } else if self.look_ahead(1, |t| *t == token::Lt) {
@@ -492,7 +494,12 @@ impl<'a> Parser<'a> {
         {
             let span = self.prev_token.span.between(self.token.span);
             self.struct_span_err(span, "missing trait in a trait impl").emit();
-            P(Ty { kind: TyKind::Path(None, err_path(span)), span, id: DUMMY_NODE_ID })
+            P(Ty {
+                kind: TyKind::Path(None, err_path(span)),
+                span,
+                id: DUMMY_NODE_ID,
+                tokens: None,
+            })
         } else {
             self.parse_ty()?
         };
@@ -764,7 +771,7 @@ impl<'a> Parser<'a> {
     fn parse_use_tree(&mut self) -> PResult<'a, UseTree> {
         let lo = self.token.span;
 
-        let mut prefix = ast::Path { segments: Vec::new(), span: lo.shrink_to_lo() };
+        let mut prefix = ast::Path { segments: Vec::new(), span: lo.shrink_to_lo(), tokens: None };
         let kind = if self.check(&token::OpenDelim(token::Brace))
             || self.check(&token::BinOp(token::Star))
             || self.is_import_coupler()
@@ -893,10 +900,14 @@ impl<'a> Parser<'a> {
     /// extern "C" {}
     /// extern {}
     /// ```
-    fn parse_item_foreign_mod(&mut self, attrs: &mut Vec<Attribute>) -> PResult<'a, ItemInfo> {
+    fn parse_item_foreign_mod(
+        &mut self,
+        attrs: &mut Vec<Attribute>,
+        unsafety: Unsafe,
+    ) -> PResult<'a, ItemInfo> {
         let abi = self.parse_abi(); // ABI?
         let items = self.parse_item_list(attrs, |p| p.parse_foreign_item())?;
-        let module = ast::ForeignMod { abi, items };
+        let module = ast::ForeignMod { unsafety, abi, items };
         Ok((Ident::invalid(), ItemKind::ForeignMod(module)))
     }
 
@@ -938,6 +949,15 @@ impl<'a> Parser<'a> {
             .emit();
     }
 
+    fn is_unsafe_foreign_mod(&self) -> bool {
+        self.token.is_keyword(kw::Unsafe)
+            && self.is_keyword_ahead(1, &[kw::Extern])
+            && self.look_ahead(
+                2 + self.look_ahead(2, |t| t.can_begin_literal_maybe_minus() as usize),
+                |t| t.kind == token::OpenDelim(token::Brace),
+            )
+    }
+
     fn is_static_global(&mut self) -> bool {
         if self.check_keyword(kw::Static) {
             // Check if this could be a closure.
@@ -945,10 +965,7 @@ impl<'a> Parser<'a> {
                 if token.is_keyword(kw::Move) {
                     return true;
                 }
-                match token.kind {
-                    token::BinOp(token::Or) | token::OrOr => true,
-                    _ => false,
-                }
+                matches!(token.kind, token::BinOp(token::Or) | token::OrOr)
             })
         } else {
             false
@@ -1015,7 +1032,7 @@ impl<'a> Parser<'a> {
 
         // The user intended that the type be inferred,
         // so treat this as if the user wrote e.g. `const A: _ = expr;`.
-        P(Ty { kind: TyKind::Infer, span: id.span, id: ast::DUMMY_NODE_ID })
+        P(Ty { kind: TyKind::Infer, span: id.span, id: ast::DUMMY_NODE_ID, tokens: None })
     }
 
     /// Parses an enum declaration.
@@ -1382,7 +1399,7 @@ impl<'a> Parser<'a> {
     /// Item macro invocations or `macro_rules!` definitions need inherited visibility.
     /// If that's not the case, emit an error.
     fn complain_if_pub_macro(&self, vis: &Visibility, macro_rules: bool) {
-        if let VisibilityKind::Inherited = vis.node {
+        if let VisibilityKind::Inherited = vis.kind {
             return;
         }
 
@@ -1501,7 +1518,7 @@ impl<'a> Parser<'a> {
         generics.where_clause = self.parse_where_clause()?; // `where T: Ord`
 
         let mut sig_hi = self.prev_token.span;
-        let body = self.parse_fn_body(attrs, &mut sig_hi)?; // `;` or `{ ... }`.
+        let body = self.parse_fn_body(attrs, &ident, &mut sig_hi)?; // `;` or `{ ... }`.
         let fn_sig_span = sig_lo.to(sig_hi);
         Ok((ident, FnSig { header, decl, span: fn_sig_span }, generics, body))
     }
@@ -1512,12 +1529,12 @@ impl<'a> Parser<'a> {
     fn parse_fn_body(
         &mut self,
         attrs: &mut Vec<Attribute>,
+        ident: &Ident,
         sig_hi: &mut Span,
     ) -> PResult<'a, Option<P<Block>>> {
-        let (inner_attrs, body) = if self.check(&token::Semi) {
+        let (inner_attrs, body) = if self.eat(&token::Semi) {
             // Include the trailing semicolon in the span of the signature
-            *sig_hi = self.token.span;
-            self.bump(); // `;`
+            *sig_hi = self.prev_token.span;
             (Vec::new(), None)
         } else if self.check(&token::OpenDelim(token::Brace)) || self.token.is_whole_block() {
             self.parse_inner_attrs_and_block().map(|(attrs, body)| (attrs, Some(body)))?
@@ -1537,7 +1554,21 @@ impl<'a> Parser<'a> {
                 .emit();
             (Vec::new(), Some(self.mk_block_err(span)))
         } else {
-            return self.expected_semi_or_open_brace();
+            if let Err(mut err) =
+                self.expected_one_of_not_found(&[], &[token::Semi, token::OpenDelim(token::Brace)])
+            {
+                if self.token.kind == token::CloseDelim(token::Brace) {
+                    // The enclosing `mod`, `trait` or `impl` is being closed, so keep the `fn` in
+                    // the AST for typechecking.
+                    err.span_label(ident.span, "while parsing this `fn`");
+                    err.emit();
+                    (Vec::new(), None)
+                } else {
+                    return Err(err);
+                }
+            } else {
+                unreachable!()
+            }
         };
         attrs.extend(inner_attrs);
         Ok(body)
@@ -1552,10 +1583,14 @@ impl<'a> Parser<'a> {
             // `$qual fn` or `$qual $qual`:
             || QUALS.iter().any(|&kw| self.check_keyword(kw))
                 && self.look_ahead(1, |t| {
-                    // ...qualified and then `fn`, e.g. `const fn`.
+                    // `$qual fn`, e.g. `const fn` or `async fn`.
                     t.is_keyword(kw::Fn)
-                    // Two qualifiers. This is enough. Due `async` we need to check that it's reserved.
-                    || t.is_non_raw_ident_where(|i| QUALS.contains(&i.name) && i.is_reserved())
+                    // Two qualifiers `$qual $qual` is enough, e.g. `async unsafe`.
+                    || t.is_non_raw_ident_where(|i| QUALS.contains(&i.name)
+                        // Rule out 2015 `const async: T = val`.
+                        && i.is_reserved()
+                        // Rule out unsafe extern block.
+                        && !self.is_unsafe_foreign_mod())
                 })
             // `extern ABI fn`
             || self.check_keyword(kw::Extern)
@@ -1567,9 +1602,9 @@ impl<'a> Parser<'a> {
     /// up to and including the `fn` keyword. The formal grammar is:
     ///
     /// ```
-    /// Extern = "extern" StringLit ;
+    /// Extern = "extern" StringLit? ;
     /// FnQual = "const"? "async"? "unsafe"? Extern? ;
-    /// FnFrontMatter = FnQual? "fn" ;
+    /// FnFrontMatter = FnQual "fn" ;
     /// ```
     pub(super) fn parse_fn_front_matter(&mut self) -> PResult<'a, FnHeader> {
         let constness = self.parse_constness();
@@ -1704,7 +1739,7 @@ impl<'a> Parser<'a> {
             }
         };
 
-        let span = lo.to(self.token.span);
+        let span = lo.until(self.token.span);
 
         Ok(Param {
             attrs: attrs.into(),

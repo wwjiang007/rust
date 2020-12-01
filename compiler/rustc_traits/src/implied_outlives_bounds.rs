@@ -61,8 +61,8 @@ fn compute_implied_outlives_bounds<'tcx>(
         // than the ultimate set. (Note: normally there won't be
         // unresolved inference variables here anyway, but there might be
         // during typeck under some circumstances.)
-        let obligations =
-            wf::obligations(infcx, param_env, hir::CRATE_HIR_ID, arg, DUMMY_SP).unwrap_or(vec![]);
+        let obligations = wf::obligations(infcx, param_env, hir::CRATE_HIR_ID, 0, arg, DUMMY_SP)
+            .unwrap_or_default();
 
         // N.B., all of these predicates *ought* to be easily proven
         // true. In fact, their correctness is (mostly) implied by
@@ -103,7 +103,8 @@ fn compute_implied_outlives_bounds<'tcx>(
                     | ty::PredicateAtom::ClosureKind(..)
                     | ty::PredicateAtom::ObjectSafe(..)
                     | ty::PredicateAtom::ConstEvaluatable(..)
-                    | ty::PredicateAtom::ConstEquate(..) => vec![],
+                    | ty::PredicateAtom::ConstEquate(..)
+                    | ty::PredicateAtom::TypeWellFormedFromEnv(..) => vec![],
                     ty::PredicateAtom::WellFormed(arg) => {
                         wf_args.push(arg);
                         vec![]
@@ -114,7 +115,7 @@ fn compute_implied_outlives_bounds<'tcx>(
                     }
 
                     ty::PredicateAtom::TypeOutlives(ty::OutlivesPredicate(ty_a, r_b)) => {
-                        let ty_a = infcx.resolve_vars_if_possible(&ty_a);
+                        let ty_a = infcx.resolve_vars_if_possible(ty_a);
                         let mut components = smallvec![];
                         tcx.push_outlives_components(ty_a, &mut components);
                         implied_bounds_from_components(r_b, components)

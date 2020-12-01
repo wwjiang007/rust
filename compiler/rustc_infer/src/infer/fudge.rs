@@ -105,7 +105,7 @@ impl<'a, 'tcx> InferCtxt<'a, 'tcx> {
         let (mut fudger, value) = self.probe(|_| {
             match f() {
                 Ok(value) => {
-                    let value = self.resolve_vars_if_possible(&value);
+                    let value = self.resolve_vars_if_possible(value);
 
                     // At this point, `value` could in principle refer
                     // to inference variables that have been created during
@@ -182,7 +182,7 @@ impl<'a, 'tcx> TypeFolder<'tcx> for InferenceFudger<'a, 'tcx> {
     }
 
     fn fold_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
-        match ty.kind {
+        match *ty.kind() {
             ty::Infer(ty::InferTy::TyVar(vid)) => {
                 if self.type_vars.0.contains(&vid) {
                     // This variable was created during the fudging.

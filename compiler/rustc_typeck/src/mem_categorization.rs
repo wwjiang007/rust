@@ -124,7 +124,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         self.infcx.type_is_copy_modulo_regions(self.param_env, ty, span)
     }
 
-    fn resolve_vars_if_possible<T>(&self, value: &T) -> T
+    fn resolve_vars_if_possible<T>(&self, value: T) -> T
     where
         T: TypeFoldable<'tcx>,
     {
@@ -142,7 +142,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
     ) -> McResult<Ty<'tcx>> {
         match ty {
             Some(ty) => {
-                let ty = self.resolve_vars_if_possible(&ty);
+                let ty = self.resolve_vars_if_possible(ty);
                 if ty.references_error() || ty.is_ty_var() {
                     debug!("resolve_type_vars_or_error: error from {:?}", ty);
                     Err(())
@@ -274,7 +274,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         F: FnOnce() -> McResult<PlaceWithHirId<'tcx>>,
     {
         debug!("cat_expr_adjusted_with({:?}): {:?}", adjustment, expr);
-        let target = self.resolve_vars_if_possible(&adjustment.target);
+        let target = self.resolve_vars_if_possible(adjustment.target);
         match adjustment.kind {
             adjustment::Adjust::Deref(overloaded) => {
                 // Equivalent to *expr or something similar.
@@ -370,6 +370,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
             | hir::ExprKind::Loop(..)
             | hir::ExprKind::Match(..)
             | hir::ExprKind::Lit(..)
+            | hir::ExprKind::ConstBlock(..)
             | hir::ExprKind::Break(..)
             | hir::ExprKind::Continue(..)
             | hir::ExprKind::Struct(..)
@@ -482,7 +483,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         let place_ty = self.expr_ty(expr)?;
         let base_ty = self.expr_ty_adjusted(base)?;
 
-        let (region, mutbl) = match base_ty.kind {
+        let (region, mutbl) = match *base_ty.kind() {
             ty::Ref(region, _, mutbl) => (region, mutbl),
             _ => span_bug!(expr.span, "cat_overloaded_place: base is not a reference"),
         };
@@ -542,7 +543,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
     ) -> McResult<VariantIdx> {
         let res = self.typeck_results.qpath_res(qpath, pat_hir_id);
         let ty = self.typeck_results.node_type(pat_hir_id);
-        let adt_def = match ty.kind {
+        let adt_def = match ty.kind() {
             ty::Adt(adt_def, _) => adt_def,
             _ => {
                 self.tcx()
@@ -577,7 +578,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
         span: Span,
     ) -> McResult<usize> {
         let ty = self.typeck_results.node_type(pat_hir_id);
-        match ty.kind {
+        match ty.kind() {
             ty::Adt(adt_def, _) => Ok(adt_def.variants[variant_index].fields.len()),
             _ => {
                 self.tcx()
@@ -592,7 +593,7 @@ impl<'a, 'tcx> MemCategorizationContext<'a, 'tcx> {
     /// Here `pat_hir_id` is the HirId of the pattern itself.
     fn total_fields_in_tuple(&self, pat_hir_id: hir::HirId, span: Span) -> McResult<usize> {
         let ty = self.typeck_results.node_type(pat_hir_id);
-        match ty.kind {
+        match ty.kind() {
             ty::Tuple(substs) => Ok(substs.len()),
             _ => {
                 self.tcx().sess.delay_span_bug(span, "tuple pattern not applied to a tuple");

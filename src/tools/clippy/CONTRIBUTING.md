@@ -8,7 +8,7 @@ something. We appreciate any sort of contributions, and don't want a wall of rul
 
 Clippy welcomes contributions from everyone. There are many ways to contribute to Clippy and the following document
 explains how you can contribute and how to get started.  If you have any questions about contributing or need help with
-anything, feel free to ask questions on issues or visit the `#clippy` on [Discord].
+anything, feel free to ask questions on issues or visit the `#clippy` on [Zulip].
 
 All contributors are expected to follow the [Rust Code of Conduct].
 
@@ -23,7 +23,7 @@ All contributors are expected to follow the [Rust Code of Conduct].
   - [Bors and Homu](#bors-and-homu)
   - [Contributions](#contributions)
 
-[Discord]: https://discord.gg/rust-lang
+[Zulip]: https://rust-lang.zulipchat.com/#narrow/stream/clippy
 [Rust Code of Conduct]: https://www.rust-lang.org/policies/code-of-conduct
 
 ## Getting started
@@ -63,9 +63,10 @@ To figure out how this syntax structure is encoded in the AST, it is recommended
 Usually the lint will end up to be a nested series of matches and ifs, [like so][deep-nesting].
 But we can make it nest-less by using [if_chain] macro, [like this][nest-less].
 
-[`E-medium`] issues are generally pretty easy too, though it's recommended you work on an E-easy issue first.
-They are mostly classified as [`E-medium`], since they might be somewhat involved code wise,
-but not difficult per-se.
+[`E-medium`] issues are generally pretty easy too, though it's recommended you work on an [`good first issue`]
+first. Sometimes they are only somewhat involved code wise, but not difficult per-se.
+Note that [`E-medium`] issues may require some knowledge of Clippy internals or some 
+debugging to find the actual problem behind the issue. 
 
 [`T-middle`] issues can be more involved and require verifying types. The [`ty`] module contains a
 lot of methods that are useful, though one of the most useful would be `expr_ty` (gives the type of
@@ -242,7 +243,7 @@ to be run inside the `rust` directory):
     ```
 3. Open a PR to `rust-lang/rust-clippy` and wait for it to get merged (to
    accelerate the process ping the `@rust-lang/clippy` team in your PR and/or
-   ~~annoy~~ ask them in the [Discord] channel.)
+   ~~annoy~~ ask them in the [Zulip] stream.)
    
 ### Syncing back changes in Clippy to [`rust-lang/rust`]
 
@@ -316,8 +317,8 @@ If you have @bors permissions, you can find an overview of the available
 commands [here][homu_instructions].
 
 [triage]: https://forge.rust-lang.org/release/triage-procedure.html
-[l-crash]: https://github.com/rust-lang/rust-clippy/labels/L-crash%20%3Aboom%3A
-[l-bug]: https://github.com/rust-lang/rust-clippy/labels/L-bug%20%3Abeetle%3A
+[l-crash]: https://github.com/rust-lang/rust-clippy/labels/L-crash
+[l-bug]: https://github.com/rust-lang/rust-clippy/labels/L-bug
 [homu]: https://github.com/rust-lang/homu
 [homu_instructions]: https://buildbot2.rust-lang.org/homu/
 [homu_queue]: https://buildbot2.rust-lang.org/homu/queue/clippy

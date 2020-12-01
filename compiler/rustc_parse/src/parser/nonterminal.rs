@@ -38,16 +38,13 @@ impl<'a> Parser<'a> {
             },
             NonterminalKind::Block => match token.kind {
                 token::OpenDelim(token::Brace) => true,
-                token::Interpolated(ref nt) => match **nt {
-                    token::NtItem(_)
+                token::Interpolated(ref nt) => !matches!(**nt, token::NtItem(_)
                     | token::NtPat(_)
                     | token::NtTy(_)
                     | token::NtIdent(..)
                     | token::NtMeta(_)
                     | token::NtPath(_)
-                    | token::NtVis(_) => false, // none of these may start with '{'.
-                    _ => true,
-                },
+                    | token::NtVis(_)),
                 _ => false,
             },
             NonterminalKind::Path | NonterminalKind::Meta => match token.kind {
@@ -76,17 +73,14 @@ impl<'a> Parser<'a> {
             },
             NonterminalKind::Lifetime => match token.kind {
                 token::Lifetime(_) => true,
-                token::Interpolated(ref nt) => match **nt {
-                    token::NtLifetime(_) | token::NtTT(_) => true,
-                    _ => false,
-                },
+                token::Interpolated(ref nt) => {
+                    matches!(**nt, token::NtLifetime(_) | token::NtTT(_))
+                }
                 _ => false,
             },
-            NonterminalKind::TT | NonterminalKind::Item | NonterminalKind::Stmt => match token.kind
-            {
-                token::CloseDelim(_) => false,
-                _ => true,
-            },
+            NonterminalKind::TT | NonterminalKind::Item | NonterminalKind::Stmt => {
+                !matches!(token.kind, token::CloseDelim(_))
+            }
         }
     }
 
@@ -103,7 +97,7 @@ impl<'a> Parser<'a> {
                     // If we captured tokens during parsing (due to outer attributes),
                     // use those.
                     if item.tokens.is_none() {
-                        item.tokens = Some(tokens);
+                        item.tokens = tokens;
                     }
                     token::NtItem(item)
                 }
@@ -111,16 +105,33 @@ impl<'a> Parser<'a> {
                     return Err(self.struct_span_err(self.token.span, "expected an item keyword"));
                 }
             },
-            NonterminalKind::Block => token::NtBlock(self.parse_block()?),
-            NonterminalKind::Stmt => match self.parse_stmt()? {
-                Some(s) => token::NtStmt(s),
-                None => return Err(self.struct_span_err(self.token.span, "expected a statement")),
-            },
+            NonterminalKind::Block => {
+                let (mut block, tokens) = self.collect_tokens(|this| this.parse_block())?;
+                // We have have eaten an NtBlock, which could already have tokens
+                if block.tokens.is_none() {
+                    block.tokens = tokens;
+                }
+                token::NtBlock(block)
+            }
+            NonterminalKind::Stmt => {
+                let (stmt, tokens) = self.collect_tokens(|this| this.parse_stmt())?;
+                match stmt {
+                    Some(mut s) => {
+                        if s.tokens().is_none() {
+                            s.set_tokens(tokens);
+                        }
+                        token::NtStmt(s)
+                    }
+                    None => {
+                        return Err(self.struct_span_err(self.token.span, "expected a statement"));
+                    }
+                }
+            }
             NonterminalKind::Pat => {
                 let (mut pat, tokens) = self.collect_tokens(|this| this.parse_pat(None))?;
                 // We have have eaten an NtPat, which could already have tokens
                 if pat.tokens.is_none() {
-                    pat.tokens = Some(tokens);
+                    pat.tokens = tokens;
                 }
                 token::NtPat(pat)
             }
@@ -129,12 +140,27 @@ impl<'a> Parser<'a> {
                 // If we captured tokens during parsing (due to outer attributes),
                 // use those.
                 if expr.tokens.is_none() {
-                    expr.tokens = Some(tokens);
+                    expr.tokens = tokens;
                 }
                 token::NtExpr(expr)
             }
-            NonterminalKind::Literal => token::NtLiteral(self.parse_literal_maybe_minus()?),
-            NonterminalKind::Ty => token::NtTy(self.parse_ty()?),
+            NonterminalKind::Literal => {
+                let (mut lit, tokens) =
+                    self.collect_tokens(|this| this.parse_literal_maybe_minus())?;
+                // We have have eaten a nonterminal, which  could already have tokens
+                if lit.tokens.is_none() {
+                    lit.tokens = tokens;
+                }
+                token::NtLiteral(lit)
+            }
+            NonterminalKind::Ty => {
+                let (mut ty, tokens) = self.collect_tokens(|this| this.parse_ty())?;
+                // We have an eaten an NtTy, which could already have tokens
+                if ty.tokens.is_none() {
+                    ty.tokens = tokens;
+                }
+                token::NtTy(ty)
+            }
             // this could be handled like a token, since it is one
             NonterminalKind::Ident => {
                 if let Some((ident, is_raw)) = get_macro_ident(&self.token) {
@@ -146,10 +172,33 @@ impl<'a> Parser<'a> {
                     return Err(self.struct_span_err(self.token.span, msg));
                 }
             }
-            NonterminalKind::Path => token::NtPath(self.parse_path(PathStyle::Type)?),
-            NonterminalKind::Meta => token::NtMeta(P(self.parse_attr_item()?)),
+            NonterminalKind::Path => {
+                let (mut path, tokens) =
+                    self.collect_tokens(|this| this.parse_path(PathStyle::Type))?;
+                // We have have eaten an NtPath, which could already have tokens
+                if path.tokens.is_none() {
+                    path.tokens = tokens;
+                }
+                token::NtPath(path)
+            }
+            NonterminalKind::Meta => {
+                let (mut attr, tokens) = self.collect_tokens(|this| this.parse_attr_item(false))?;
+                // We may have eaten a nonterminal, which could already have tokens
+                if attr.tokens.is_none() {
+                    attr.tokens = tokens;
+                }
+                token::NtMeta(P(attr))
+            }
             NonterminalKind::TT => token::NtTT(self.parse_token_tree()),
-            NonterminalKind::Vis => token::NtVis(self.parse_visibility(FollowedByType::Yes)?),
+            NonterminalKind::Vis => {
+                let (mut vis, tokens) =
+                    self.collect_tokens(|this| this.parse_visibility(FollowedByType::Yes))?;
+                // We may have etan an `NtVis`, which could already have tokens
+                if vis.tokens.is_none() {
+                    vis.tokens = tokens;
+                }
+                token::NtVis(vis)
+            }
             NonterminalKind::Lifetime => {
                 if self.check_lifetime() {
                     token::NtLifetime(self.expect_lifetime().ident)

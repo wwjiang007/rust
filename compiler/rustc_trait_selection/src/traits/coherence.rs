@@ -103,7 +103,7 @@ fn with_fresh_ty_vars<'cx, 'tcx>(
     };
 
     let Normalized { value: mut header, obligations } =
-        traits::normalize(selcx, param_env, ObligationCause::dummy(), &header);
+        traits::normalize(selcx, param_env, ObligationCause::dummy(), header);
 
     header.predicates.extend(obligations.into_iter().map(|o| o.predicate));
     header
@@ -162,7 +162,8 @@ fn overlap_within_probe(
     let opt_failing_obligation = a_impl_header
         .predicates
         .iter()
-        .chain(&b_impl_header.predicates)
+        .copied()
+        .chain(b_impl_header.predicates)
         .map(|p| infcx.resolve_vars_if_possible(p))
         .map(|p| Obligation {
             cause: ObligationCause::dummy(),
@@ -182,13 +183,13 @@ fn overlap_within_probe(
     }
 
     if !skip_leak_check.is_yes() {
-        if let Err(_) = infcx.leak_check(true, snapshot) {
+        if infcx.leak_check(true, snapshot).is_err() {
             debug!("overlap: leak check failed");
             return None;
         }
     }
 
-    let impl_header = selcx.infcx().resolve_vars_if_possible(&a_impl_header);
+    let impl_header = selcx.infcx().resolve_vars_if_possible(a_impl_header);
     let intercrate_ambiguity_causes = selcx.take_intercrate_ambiguity_causes();
     debug!("overlap: intercrate_ambiguity_causes={:#?}", intercrate_ambiguity_causes);
 
@@ -412,7 +413,7 @@ fn orphan_check_trait_ref<'tcx>(
         if non_local_tys.is_empty() {
             debug!("orphan_check_trait_ref: ty_is_local `{:?}`", input_ty);
             return Ok(());
-        } else if let ty::Param(_) = input_ty.kind {
+        } else if let ty::Param(_) = input_ty.kind() {
             debug!("orphan_check_trait_ref: uncovered ty: `{:?}`", input_ty);
             let local_type = trait_ref
                 .substs
@@ -467,7 +468,7 @@ fn fundamental_ty_inner_tys(
     tcx: TyCtxt<'tcx>,
     ty: Ty<'tcx>,
 ) -> Option<impl Iterator<Item = Ty<'tcx>>> {
-    let (first_ty, rest_tys) = match ty.kind {
+    let (first_ty, rest_tys) = match *ty.kind() {
         ty::Ref(_, ty, _) => (ty, ty::subst::InternalSubsts::empty().types()),
         ty::Adt(def, substs) if def.is_fundamental() => {
             let mut types = substs.types();
@@ -504,7 +505,7 @@ fn def_id_is_local(def_id: DefId, in_crate: InCrate) -> bool {
 fn ty_is_local_constructor(ty: Ty<'_>, in_crate: InCrate) -> bool {
     debug!("ty_is_local_constructor({:?})", ty);
 
-    match ty.kind {
+    match *ty.kind() {
         ty::Bool
         | ty::Char
         | ty::Int(..)

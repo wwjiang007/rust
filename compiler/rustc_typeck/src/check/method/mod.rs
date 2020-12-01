@@ -207,7 +207,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
         if let Some(span) = result.illegal_sized_bound {
             let mut needs_mut = false;
-            if let ty::Ref(region, t_type, mutability) = self_ty.kind {
+            if let ty::Ref(region, t_type, mutability) = self_ty.kind() {
                 let trait_type = self
                     .tcx
                     .mk_ref(region, ty::TypeAndMut { ty: t_type, mutbl: mutability.invert() });
@@ -265,7 +265,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         scope: ProbeScope,
     ) -> probe::PickResult<'tcx> {
         let mode = probe::Mode::MethodCall;
-        let self_ty = self.resolve_vars_if_possible(&self_ty);
+        let self_ty = self.resolve_vars_if_possible(self_ty);
         self.probe_for_name(
             span,
             mode,
@@ -358,11 +358,11 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // `instantiate_type_scheme` can normalize associated types that
         // may reference those regions.
         let fn_sig = tcx.fn_sig(def_id);
-        let fn_sig = self.replace_bound_vars_with_fresh_vars(span, infer::FnCall, &fn_sig).0;
+        let fn_sig = self.replace_bound_vars_with_fresh_vars(span, infer::FnCall, fn_sig).0;
         let fn_sig = fn_sig.subst(self.tcx, substs);
 
         let InferOk { value, obligations: o } =
-            self.normalize_associated_types_in_as_infer_ok(span, &fn_sig);
+            self.normalize_associated_types_in_as_infer_ok(span, fn_sig);
         let fn_sig = {
             obligations.extend(o);
             value
@@ -379,7 +379,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let bounds = self.tcx.predicates_of(def_id).instantiate(self.tcx, substs);
 
         let InferOk { value, obligations: o } =
-            self.normalize_associated_types_in_as_infer_ok(span, &bounds);
+            self.normalize_associated_types_in_as_infer_ok(span, bounds);
         let bounds = {
             obligations.extend(o);
             value
@@ -424,7 +424,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         let tcx = self.tcx;
 
         // Check if we have an enum variant.
-        if let ty::Adt(adt_def, _) = self_ty.kind {
+        if let ty::Adt(adt_def, _) = self_ty.kind() {
             if adt_def.is_enum() {
                 let variant_def = adt_def
                     .variants

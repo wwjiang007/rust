@@ -56,6 +56,9 @@ impl Compiler {
     pub fn output_file(&self) -> &Option<PathBuf> {
         &self.output_file
     }
+    pub fn register_lints(&self) -> &Option<Box<dyn Fn(&Session, &mut LintStore) + Send + Sync>> {
+        &self.register_lints
+    }
     pub fn build_output_filenames(
         &self,
         sess: &Session,
@@ -154,6 +157,10 @@ pub struct Config {
     pub override_queries:
         Option<fn(&Session, &mut ty::query::Providers, &mut ty::query::Providers)>,
 
+    /// This is a callback from the driver that is called to create a codegen backend.
+    pub make_codegen_backend:
+        Option<Box<dyn FnOnce(&config::Options) -> Box<dyn CodegenBackend> + Send>>,
+
     /// Registry of diagnostics codes.
     pub registry: Registry,
 }
@@ -167,6 +174,7 @@ pub fn create_compiler_and_run<R>(config: Config, f: impl FnOnce(&Compiler) -> R
         config.file_loader,
         config.input_path.clone(),
         config.lint_caps,
+        config.make_codegen_backend,
         registry.clone(),
     );
 

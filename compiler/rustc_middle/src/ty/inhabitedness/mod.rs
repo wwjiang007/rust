@@ -104,14 +104,6 @@ impl<'tcx> TyCtxt<'tcx> {
         // ```
         ty.uninhabited_from(self, param_env).contains(self, module)
     }
-
-    pub fn is_ty_uninhabited_from_any_module(
-        self,
-        ty: Ty<'tcx>,
-        param_env: ty::ParamEnv<'tcx>,
-    ) -> bool {
-        !ty.uninhabited_from(self, param_env).is_empty()
-    }
 }
 
 impl<'tcx> AdtDef {
@@ -196,7 +188,7 @@ impl<'tcx> FieldDef {
 impl<'tcx> TyS<'tcx> {
     /// Calculates the forest of `DefId`s from which this type is visibly uninhabited.
     fn uninhabited_from(&self, tcx: TyCtxt<'tcx>, param_env: ty::ParamEnv<'tcx>) -> DefIdForest {
-        match self.kind {
+        match *self.kind() {
             Adt(def, substs) => {
                 ensure_sufficient_stack(|| def.uninhabited_from(tcx, substs, param_env))
             }
@@ -209,13 +201,13 @@ impl<'tcx> TyS<'tcx> {
             ),
 
             Array(ty, len) => match len.try_eval_usize(tcx, param_env) {
+                Some(0) | None => DefIdForest::empty(),
                 // If the array is definitely non-empty, it's uninhabited if
                 // the type of its elements is uninhabited.
-                Some(n) if n != 0 => ty.uninhabited_from(tcx, param_env),
-                _ => DefIdForest::empty(),
+                Some(1..) => ty.uninhabited_from(tcx, param_env),
             },
 
-            // References to uninitialised memory is valid for any type, including
+            // References to uninitialised memory are valid for any type, including
             // uninhabited types, in unsafe code, so we treat all references as
             // inhabited.
             // The precise semantics of inhabitedness with respect to references is currently

@@ -10,6 +10,7 @@ use rustc_hir as hir;
 use rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
 use rustc_hir::{intravisit, HirId};
 use rustc_middle::hir::map::Map;
+use rustc_middle::lint::LevelSource;
 use rustc_middle::lint::LintDiagnosticBuilder;
 use rustc_middle::lint::{struct_lint_level, LintLevelMap, LintLevelSets, LintSet, LintSource};
 use rustc_middle::ty::query::Providers;
@@ -28,6 +29,8 @@ fn lint_levels(tcx: TyCtxt<'_>, cnum: CrateNum) -> LintLevelMap {
     let levels = LintLevelsBuilder::new(tcx.sess, false, &store);
     let mut builder = LintLevelMapBuilder { levels, tcx, store };
     let krate = tcx.hir().krate();
+
+    builder.levels.id_to_set.reserve(krate.exported_macros.len() + 1);
 
     let push = builder.levels.push(&krate.item.attrs, &store, true);
     builder.levels.register_id(hir::CRATE_HIR_ID);
@@ -73,6 +76,7 @@ impl<'s> LintLevelsBuilder<'s> {
 
         for &(ref lint_name, level) in &sess.opts.lint_opts {
             store.check_lint_name_cmdline(sess, &lint_name, level);
+            let orig_level = level;
 
             // If the cap is less than this specified level, e.g., if we've got
             // `--cap-lints allow` but we've also got `-D foo` then we ignore
@@ -87,12 +91,50 @@ impl<'s> LintLevelsBuilder<'s> {
             };
             for id in ids {
                 self.check_gated_lint(id, DUMMY_SP);
-                let src = LintSource::CommandLine(lint_flag_val);
+                let src = LintSource::CommandLine(lint_flag_val, orig_level);
                 specs.insert(id, (level, src));
             }
         }
 
         self.sets.list.push(LintSet::CommandLine { specs });
+    }
+
+    /// Attempts to insert the `id` to `level_src` map entry. If unsuccessful
+    /// (e.g. if a forbid was already inserted on the same scope), then emits a
+    /// diagnostic with no change to `specs`.
+    fn insert_spec(
+        &mut self,
+        specs: &mut FxHashMap<LintId, LevelSource>,
+        id: LintId,
+        (level, src): LevelSource,
+    ) {
+        if let Some((old_level, old_src)) = specs.get(&id) {
+            if old_level == &Level::Forbid && level != Level::Forbid {
+                let mut diag_builder = struct_span_err!(
+                    self.sess,
+                    src.span(),
+                    E0453,
+                    "{}({}) incompatible with previous forbid in same scope",
+                    level.as_str(),
+                    src.name(),
+                );
+                match *old_src {
+                    LintSource::Default => {}
+                    LintSource::Node(_, forbid_source_span, reason) => {
+                        diag_builder.span_label(forbid_source_span, "`forbid` level set here");
+                        if let Some(rationale) = reason {
+                            diag_builder.note(&rationale.as_str());
+                        }
+                    }
+                    LintSource::CommandLine(_, _) => {
+                        diag_builder.note("`forbid` lint level was set on command line");
+                    }
+                }
+                diag_builder.emit();
+                return;
+            }
+        }
+        specs.insert(id, (level, src));
     }
 
     /// Pushes a list of AST lint attributes onto this context.
@@ -109,7 +151,7 @@ impl<'s> LintLevelsBuilder<'s> {
     ///   `#[allow]`
     ///
     /// Don't forget to call `pop`!
-    pub fn push(
+    pub(crate) fn push(
         &mut self,
         attrs: &[ast::Attribute],
         store: &LintStore,
@@ -221,7 +263,7 @@ impl<'s> LintLevelsBuilder<'s> {
                         let src = LintSource::Node(name, li.span(), reason);
                         for &id in ids {
                             self.check_gated_lint(id, attr.span);
-                            specs.insert(id, (level, src));
+                            self.insert_spec(&mut specs, id, (level, src));
                         }
                     }
 
@@ -235,7 +277,7 @@ impl<'s> LintLevelsBuilder<'s> {
                                     reason,
                                 );
                                 for id in ids {
-                                    specs.insert(*id, (level, src));
+                                    self.insert_spec(&mut specs, *id, (level, src));
                                 }
                             }
                             Err((Some(ids), new_lint_name)) => {
@@ -272,7 +314,7 @@ impl<'s> LintLevelsBuilder<'s> {
                                     reason,
                                 );
                                 for id in ids {
-                                    specs.insert(*id, (level, src));
+                                    self.insert_spec(&mut specs, *id, (level, src));
                                 }
                             }
                             Err((None, _)) => {
@@ -383,7 +425,7 @@ impl<'s> LintLevelsBuilder<'s> {
             let forbidden_lint_name = match forbid_src {
                 LintSource::Default => id.to_string(),
                 LintSource::Node(name, _, _) => name.to_string(),
-                LintSource::CommandLine(name) => name.to_string(),
+                LintSource::CommandLine(name, _) => name.to_string(),
             };
             let (lint_attr_name, lint_attr_span) = match *src {
                 LintSource::Node(name, span, _) => (name, span),
@@ -407,7 +449,7 @@ impl<'s> LintLevelsBuilder<'s> {
                         diag_builder.note(&rationale.as_str());
                     }
                 }
-                LintSource::CommandLine(_) => {
+                LintSource::CommandLine(_, _) => {
                     diag_builder.note("`forbid` lint level was set on command line");
                 }
             }
@@ -521,6 +563,13 @@ impl<'tcx> intravisit::Visitor<'tcx> for LintLevelMapBuilder<'_, 'tcx> {
         self.with_lint_attrs(it.hir_id, &it.attrs, |builder| {
             intravisit::walk_foreign_item(builder, it);
         })
+    }
+
+    fn visit_stmt(&mut self, e: &'tcx hir::Stmt<'tcx>) {
+        // We will call `with_lint_attrs` when we walk
+        // the `StmtKind`. The outer statement itself doesn't
+        // define the lint levels.
+        intravisit::walk_stmt(self, e);
     }
 
     fn visit_expr(&mut self, e: &'tcx hir::Expr<'tcx>) {

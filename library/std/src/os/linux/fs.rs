@@ -1,3 +1,5 @@
+//! Linux-specific extensions to primitives in the `std::fs` module.
+
 #![stable(feature = "metadata_ext", since = "1.1.0")]
 
 use crate::fs::Metadata;
@@ -18,7 +20,7 @@ pub trait MetadataExt {
     /// Unix platforms. The `os::unix::fs::MetadataExt` trait contains the
     /// cross-Unix abstractions contained within the raw stat.
     ///
-    /// [`stat`]: crate::os::linux::raw::stat
+    /// [`stat`]: struct@crate::os::linux::raw::stat
     ///
     /// # Examples
     ///

@@ -110,6 +110,7 @@ use crate::sys;
 /// of `CString` instances can lead to invalid memory accesses, memory leaks,
 /// and other memory errors.
 #[derive(PartialEq, PartialOrd, Eq, Ord, Hash, Clone)]
+#[cfg_attr(not(test), rustc_diagnostic_item = "cstring_type")]
 #[stable(feature = "rust1", since = "1.0.0")]
 pub struct CString {
     // Invariant 1: the slice ends with a zero byte and has a length of at least one.
@@ -881,13 +882,13 @@ impl From<Vec<NonZeroU8>> for CString {
         unsafe {
             // Transmute `Vec<NonZeroU8>` to `Vec<u8>`.
             let v: Vec<u8> = {
-                // Safety:
+                // SAFETY:
                 //   - transmuting between `NonZeroU8` and `u8` is sound;
                 //   - `alloc::Layout<NonZeroU8> == alloc::Layout<u8>`.
                 let (ptr, len, cap): (*mut NonZeroU8, _, _) = Vec::into_raw_parts(v);
                 Vec::from_raw_parts(ptr.cast::<u8>(), len, cap)
             };
-            // Safety: `v` cannot contain null bytes, given the type-level
+            // SAFETY: `v` cannot contain null bytes, given the type-level
             // invariant of `NonZeroU8`.
             CString::from_vec_unchecked(v)
         }
@@ -1265,7 +1266,7 @@ impl CStr {
     /// behavior when `ptr` is used inside the `unsafe` block:
     ///
     /// ```no_run
-    /// # #![allow(unused_must_use)]
+    /// # #![allow(unused_must_use)] #![allow(temporary_cstring_as_ptr)]
     /// use std::ffi::CString;
     ///
     /// let ptr = CString::new("Hello").expect("CString::new failed").as_ptr();
@@ -1383,7 +1384,8 @@ impl CStr {
     /// [`U+FFFD REPLACEMENT CHARACTER`][U+FFFD] and return a
     /// [`Cow`]`::`[`Owned`]`(`[`String`]`)` with the result.
     ///
-    /// [`str`]: prim@str
+    /// [`str`]: primitive@str
+    /// [`&str`]: primitive@str
     /// [`Borrowed`]: Cow::Borrowed
     /// [`Owned`]: Cow::Owned
     /// [U+FFFD]: crate::char::REPLACEMENT_CHARACTER

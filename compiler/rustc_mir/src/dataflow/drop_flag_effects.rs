@@ -53,7 +53,7 @@ fn place_contents_drop_state_cannot_differ<'tcx>(
     place: mir::Place<'tcx>,
 ) -> bool {
     let ty = place.ty(body, tcx).ty;
-    match ty.kind {
+    match ty.kind() {
         ty::Array(..) => {
             debug!(
                 "place_contents_drop_state_cannot_differ place: {:?} ty: {:?} => false",
@@ -152,7 +152,7 @@ pub(crate) fn on_all_drop_children_bits<'tcx, F>(
         let ty = place.ty(body, tcx).ty;
         debug!("on_all_drop_children_bits({:?}, {:?} : {:?})", path, place, ty);
 
-        let erased_ty = tcx.erase_regions(&ty);
+        let erased_ty = tcx.erase_regions(ty);
         if erased_ty.needs_drop(tcx, ctxt.param_env) {
             each_child(child);
         } else {

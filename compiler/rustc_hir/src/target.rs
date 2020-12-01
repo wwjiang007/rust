@@ -9,13 +9,13 @@ use crate::{Item, ItemKind, TraitItem, TraitItemKind};
 
 use std::fmt::{self, Display};
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum MethodKind {
     Trait { body: bool },
     Inherent,
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum Target {
     ExternCrate,
     Use,
@@ -91,7 +91,7 @@ impl Target {
             ItemKind::Const(..) => Target::Const,
             ItemKind::Fn(..) => Target::Fn,
             ItemKind::Mod(..) => Target::Mod,
-            ItemKind::ForeignMod(..) => Target::ForeignMod,
+            ItemKind::ForeignMod { .. } => Target::ForeignMod,
             ItemKind::GlobalAsm(..) => Target::GlobalAsm,
             ItemKind::TyAlias(..) => Target::TyAlias,
             ItemKind::OpaqueTy(..) => Target::OpaqueTy,

@@ -1,10 +1,9 @@
 use crate::expand::{self, AstFragment, Invocation};
 use crate::module::DirectoryOwnership;
 
-use rustc_ast::mut_visit::{self, MutVisitor};
 use rustc_ast::ptr::P;
 use rustc_ast::token;
-use rustc_ast::tokenstream::{self, TokenStream};
+use rustc_ast::tokenstream::TokenStream;
 use rustc_ast::visit::{AssocCtxt, Visitor};
 use rustc_ast::{self as ast, Attribute, NodeId, PatKind};
 use rustc_attr::{self as attr, Deprecation, HasAttrs, Stability};
@@ -149,17 +148,6 @@ impl Annotatable {
         }
     }
 
-    pub fn map_item_or<F, G>(self, mut f: F, mut or: G) -> Annotatable
-    where
-        F: FnMut(P<ast::Item>) -> P<ast::Item>,
-        G: FnMut(Annotatable) -> Annotatable,
-    {
-        match self {
-            Annotatable::Item(i) => Annotatable::Item(f(i)),
-            _ => or(self),
-        }
-    }
-
     pub fn expect_trait_item(self) -> P<ast::AssocItem> {
         match self {
             Annotatable::TraitItem(i) => i,
@@ -246,6 +234,15 @@ impl Annotatable {
 
     pub fn derive_allowed(&self) -> bool {
         match *self {
+            Annotatable::Stmt(ref stmt) => match stmt.kind {
+                ast::StmtKind::Item(ref item) => match item.kind {
+                    ast::ItemKind::Struct(..)
+                    | ast::ItemKind::Enum(..)
+                    | ast::ItemKind::Union(..) => true,
+                    _ => false,
+                },
+                _ => false,
+            },
             Annotatable::Item(ref item) => match item.kind {
                 ast::ItemKind::Struct(..) | ast::ItemKind::Enum(..) | ast::ItemKind::Union(..) => {
                     true
@@ -263,8 +260,7 @@ pub enum ExpandResult<T, U> {
     /// Expansion produced a result (possibly dummy).
     Ready(T),
     /// Expansion could not produce a result and needs to be retried.
-    /// The string is an explanation that will be printed if we are stuck in an infinite retry loop.
-    Retry(U, String),
+    Retry(U),
 }
 
 // `meta_item` is the attribute, and `item` is the item being modified.
@@ -313,7 +309,7 @@ where
         ts: TokenStream,
     ) -> Result<TokenStream, ErrorReported> {
         // FIXME setup implicit context in TLS before calling self.
-        Ok((*self)(ts))
+        Ok(self(ts))
     }
 }
 
@@ -339,7 +335,7 @@ where
         annotated: TokenStream,
     ) -> Result<TokenStream, ErrorReported> {
         // FIXME setup implicit context in TLS before calling self.
-        Ok((*self)(annotation, annotated))
+        Ok(self(annotation, annotated))
     }
 }
 
@@ -364,31 +360,9 @@ where
         &self,
         ecx: &'cx mut ExtCtxt<'_>,
         span: Span,
-        mut input: TokenStream,
+        input: TokenStream,
     ) -> Box<dyn MacResult + 'cx> {
-        struct AvoidInterpolatedIdents;
-
-        impl MutVisitor for AvoidInterpolatedIdents {
-            fn visit_tt(&mut self, tt: &mut tokenstream::TokenTree) {
-                if let tokenstream::TokenTree::Token(token) = tt {
-                    if let token::Interpolated(nt) = &token.kind {
-                        if let token::NtIdent(ident, is_raw) = **nt {
-                            *tt = tokenstream::TokenTree::token(
-                                token::Ident(ident.name, is_raw),
-                                ident.span,
-                            );
-                        }
-                    }
-                }
-                mut_visit::noop_visit_tt(tt, self)
-            }
-
-            fn visit_mac(&mut self, mac: &mut ast::MacCall) {
-                mut_visit::noop_visit_mac(mac, self)
-            }
-        }
-        AvoidInterpolatedIdents.visit_tts(&mut input);
-        (*self)(ecx, span, input)
+        self(ecx, span, input)
     }
 }
 
@@ -607,6 +581,7 @@ impl DummyResult {
             id: ast::DUMMY_NODE_ID,
             kind: if is_error { ast::TyKind::Err } else { ast::TyKind::Tup(Vec::new()) },
             span: sp,
+            tokens: None,
         })
     }
 }
@@ -824,7 +799,7 @@ impl SyntaxExtension {
             allow_internal_unsafe: sess.contains_name(attrs, sym::allow_internal_unsafe),
             local_inner_macros,
             stability,
-            deprecation: attr::find_deprecation(&sess, attrs, span),
+            deprecation: attr::find_deprecation(&sess, attrs).map(|(d, _)| d),
             helper_attrs,
             edition,
             is_builtin,
@@ -920,8 +895,10 @@ pub trait ResolverExpand {
     /// Some parent node that is close enough to the given macro call.
     fn lint_node_id(&mut self, expn_id: ExpnId) -> NodeId;
 
+    // Resolver interfaces for specific built-in macros.
+    /// Does `#[derive(...)]` attribute with the given `ExpnId` have built-in `Copy` inside it?
     fn has_derive_copy(&self, expn_id: ExpnId) -> bool;
-    fn add_derive_copy(&mut self, expn_id: ExpnId);
+    /// Path resolution logic for `#[cfg_accessible(path)]`.
     fn cfg_accessible(&mut self, expn_id: ExpnId, path: &ast::Path) -> Result<bool, Indeterminate>;
 }
 
@@ -950,6 +927,9 @@ pub struct ExtCtxt<'a> {
     pub root_path: PathBuf,
     pub resolver: &'a mut dyn ResolverExpand,
     pub current_expansion: ExpansionData,
+    /// Error recovery mode entered when expansion is stuck
+    /// (or during eager expansion, but that's a hack).
+    pub force_mode: bool,
     pub expansions: FxHashMap<Span, Vec<String>>,
     /// Called directly after having parsed an external `mod foo;` in expansion.
     pub(super) extern_mod_loaded: Option<&'a dyn Fn(&ast::Crate)>,
@@ -976,6 +956,7 @@ impl<'a> ExtCtxt<'a> {
                 directory_ownership: DirectoryOwnership::Owned { relative: None },
                 prior_type_ascription: None,
             },
+            force_mode: false,
             expansions: FxHashMap::default(),
         }
     }
@@ -1071,9 +1052,6 @@ impl<'a> ExtCtxt<'a> {
         iter::once(Ident::new(kw::DollarCrate, def_site))
             .chain(components.iter().map(|&s| Ident::with_dummy_span(s)))
             .collect()
-    }
-    pub fn name_of(&self, st: &str) -> Symbol {
-        Symbol::intern(st)
     }
 
     pub fn check_unused_macros(&mut self) {

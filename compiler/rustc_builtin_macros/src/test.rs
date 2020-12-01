@@ -4,10 +4,10 @@ use crate::util::check_builtin_macro_attribute;
 
 use rustc_ast as ast;
 use rustc_ast::attr;
+use rustc_ast::ptr::P;
 use rustc_ast_pretty::pprust;
 use rustc_expand::base::*;
 use rustc_session::Session;
-use rustc_span::source_map::respan;
 use rustc_span::symbol::{sym, Ident, Symbol};
 use rustc_span::Span;
 
@@ -35,7 +35,11 @@ pub fn expand_test_case(
     let sp = ecx.with_def_site_ctxt(attr_sp);
     let mut item = anno_item.expect_item();
     item = item.map(|mut item| {
-        item.vis = respan(item.vis.span, ast::VisibilityKind::Public);
+        item.vis = ast::Visibility {
+            span: item.vis.span,
+            kind: ast::VisibilityKind::Public,
+            tokens: None,
+        };
         item.ident.span = item.ident.span.with_ctxt(sp.ctxt());
         item.attrs.push(ecx.attribute(ecx.meta_word(sp, sym::rustc_test_marker)));
         item
@@ -75,8 +79,16 @@ pub fn expand_test_or_bench(
         return vec![];
     }
 
-    let item = match item {
-        Annotatable::Item(i) => i,
+    let (item, is_stmt) = match item {
+        Annotatable::Item(i) => (i, false),
+        Annotatable::Stmt(stmt) if matches!(stmt.kind, ast::StmtKind::Item(_)) => {
+            // FIXME: Use an 'if let' guard once they are implemented
+            if let ast::StmtKind::Item(i) = stmt.into_inner().kind {
+                (i, true)
+            } else {
+                unreachable!()
+            }
+        }
         other => {
             cx.struct_span_err(
                 other.span(),
@@ -292,7 +304,7 @@ pub fn expand_test_or_bench(
         ),
     );
     test_const = test_const.map(|mut tc| {
-        tc.vis.node = ast::VisibilityKind::Public;
+        tc.vis.kind = ast::VisibilityKind::Public;
         tc
     });
 
@@ -301,14 +313,25 @@ pub fn expand_test_or_bench(
 
     tracing::debug!("synthetic test item:\n{}\n", pprust::item_to_string(&test_const));
 
-    vec![
-        // Access to libtest under a hygienic name
-        Annotatable::Item(test_extern),
-        // The generated test case
-        Annotatable::Item(test_const),
-        // The original item
-        Annotatable::Item(item),
-    ]
+    if is_stmt {
+        vec![
+            // Access to libtest under a hygienic name
+            Annotatable::Stmt(P(cx.stmt_item(sp, test_extern))),
+            // The generated test case
+            Annotatable::Stmt(P(cx.stmt_item(sp, test_const))),
+            // The original item
+            Annotatable::Stmt(P(cx.stmt_item(sp, item))),
+        ]
+    } else {
+        vec![
+            // Access to libtest under a hygienic name
+            Annotatable::Item(test_extern),
+            // The generated test case
+            Annotatable::Item(test_const),
+            // The original item
+            Annotatable::Item(item),
+        ]
+    }
 }
 
 fn item_path(mod_path: &[Ident], item_ident: &Ident) -> String {

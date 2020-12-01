@@ -3,7 +3,7 @@ use crate::base::ExtCtxt;
 use rustc_ast::attr;
 use rustc_ast::ptr::P;
 use rustc_ast::{self as ast, AttrVec, BlockCheckMode, Expr, PatKind, UnOp};
-use rustc_span::source_map::{respan, Spanned};
+use rustc_span::source_map::Spanned;
 use rustc_span::symbol::{kw, sym, Ident, Symbol};
 
 use rustc_span::Span;
@@ -46,7 +46,7 @@ impl<'a> ExtCtxt<'a> {
             id: ast::DUMMY_NODE_ID,
             args,
         });
-        ast::Path { span, segments }
+        ast::Path { span, segments, tokens: None }
     }
 
     pub fn ty_mt(&self, ty: P<ast::Ty>, mutbl: ast::Mutability) -> ast::MutTy {
@@ -54,7 +54,7 @@ impl<'a> ExtCtxt<'a> {
     }
 
     pub fn ty(&self, span: Span, kind: ast::TyKind) -> P<ast::Ty> {
-        P(ast::Ty { id: ast::DUMMY_NODE_ID, span, kind })
+        P(ast::Ty { id: ast::DUMMY_NODE_ID, span, kind, tokens: None })
     }
 
     pub fn ty_path(&self, path: ast::Path) -> P<ast::Ty> {
@@ -139,24 +139,6 @@ impl<'a> ExtCtxt<'a> {
         ast::Lifetime { id: ast::DUMMY_NODE_ID, ident: ident.with_span_pos(span) }
     }
 
-    pub fn lifetime_def(
-        &self,
-        span: Span,
-        ident: Ident,
-        attrs: Vec<ast::Attribute>,
-        bounds: ast::GenericBounds,
-    ) -> ast::GenericParam {
-        let lifetime = self.lifetime(span, ident);
-        ast::GenericParam {
-            ident: lifetime.ident,
-            id: lifetime.id,
-            attrs: attrs.into(),
-            bounds,
-            kind: ast::GenericParamKind::Lifetime,
-            is_placeholder: false,
-        }
-    }
-
     pub fn stmt_expr(&self, expr: P<ast::Expr>) -> ast::Stmt {
         ast::Stmt { id: ast::DUMMY_NODE_ID, span: expr.span, kind: ast::StmtKind::Expr(expr) }
     }
@@ -175,6 +157,7 @@ impl<'a> ExtCtxt<'a> {
             id: ast::DUMMY_NODE_ID,
             span: sp,
             attrs: AttrVec::new(),
+            tokens: None,
         });
         ast::Stmt { id: ast::DUMMY_NODE_ID, kind: ast::StmtKind::Local(local), span: sp }
     }
@@ -188,6 +171,7 @@ impl<'a> ExtCtxt<'a> {
             id: ast::DUMMY_NODE_ID,
             span,
             attrs: AttrVec::new(),
+            tokens: None,
         });
         ast::Stmt { id: ast::DUMMY_NODE_ID, kind: ast::StmtKind::Local(local), span }
     }
@@ -207,7 +191,13 @@ impl<'a> ExtCtxt<'a> {
         )
     }
     pub fn block(&self, span: Span, stmts: Vec<ast::Stmt>) -> P<ast::Block> {
-        P(ast::Block { stmts, id: ast::DUMMY_NODE_ID, rules: BlockCheckMode::Default, span })
+        P(ast::Block {
+            stmts,
+            id: ast::DUMMY_NODE_ID,
+            rules: BlockCheckMode::Default,
+            span,
+            tokens: None,
+        })
     }
 
     pub fn expr(&self, span: Span, kind: ast::ExprKind) -> P<ast::Expr> {
@@ -294,7 +284,7 @@ impl<'a> ExtCtxt<'a> {
         path: ast::Path,
         fields: Vec<ast::Field>,
     ) -> P<ast::Expr> {
-        self.expr(span, ast::ExprKind::Struct(path, fields, None))
+        self.expr(span, ast::ExprKind::Struct(path, fields, ast::StructRest::None))
     }
     pub fn expr_struct_ident(
         &self,
@@ -443,24 +433,6 @@ impl<'a> ExtCtxt<'a> {
         self.pat_tuple_struct(span, path, vec![pat])
     }
 
-    pub fn pat_none(&self, span: Span) -> P<ast::Pat> {
-        let some = self.std_path(&[sym::option, sym::Option, sym::None]);
-        let path = self.path_global(span, some);
-        self.pat_path(span, path)
-    }
-
-    pub fn pat_ok(&self, span: Span, pat: P<ast::Pat>) -> P<ast::Pat> {
-        let some = self.std_path(&[sym::result, sym::Result, sym::Ok]);
-        let path = self.path_global(span, some);
-        self.pat_tuple_struct(span, path, vec![pat])
-    }
-
-    pub fn pat_err(&self, span: Span, pat: P<ast::Pat>) -> P<ast::Pat> {
-        let some = self.std_path(&[sym::result, sym::Result, sym::Err]);
-        let path = self.path_global(span, some);
-        self.pat_tuple_struct(span, path, vec![pat])
-    }
-
     pub fn arm(&self, span: Span, pat: P<ast::Pat>, expr: P<ast::Expr>) -> ast::Arm {
         ast::Arm {
             attrs: vec![],
@@ -490,26 +462,6 @@ impl<'a> ExtCtxt<'a> {
     ) -> P<ast::Expr> {
         let els = els.map(|x| self.expr_block(self.block_expr(x)));
         self.expr(span, ast::ExprKind::If(cond, self.block_expr(then), els))
-    }
-
-    pub fn lambda_fn_decl(
-        &self,
-        span: Span,
-        fn_decl: P<ast::FnDecl>,
-        body: P<ast::Expr>,
-        fn_decl_span: Span,
-    ) -> P<ast::Expr> {
-        self.expr(
-            span,
-            ast::ExprKind::Closure(
-                ast::CaptureBy::Ref,
-                ast::Async::No,
-                ast::Movability::Movable,
-                fn_decl,
-                body,
-                fn_decl_span,
-            ),
-        )
     }
 
     pub fn lambda(&self, span: Span, ids: Vec<Ident>, body: P<ast::Expr>) -> P<ast::Expr> {
@@ -578,43 +530,14 @@ impl<'a> ExtCtxt<'a> {
             attrs,
             id: ast::DUMMY_NODE_ID,
             kind,
-            vis: respan(span.shrink_to_lo(), ast::VisibilityKind::Inherited),
+            vis: ast::Visibility {
+                span: span.shrink_to_lo(),
+                kind: ast::VisibilityKind::Inherited,
+                tokens: None,
+            },
             span,
             tokens: None,
         })
-    }
-
-    pub fn variant(&self, span: Span, ident: Ident, tys: Vec<P<ast::Ty>>) -> ast::Variant {
-        let vis_span = span.shrink_to_lo();
-        let fields: Vec<_> = tys
-            .into_iter()
-            .map(|ty| ast::StructField {
-                span: ty.span,
-                ty,
-                ident: None,
-                vis: respan(vis_span, ast::VisibilityKind::Inherited),
-                attrs: Vec::new(),
-                id: ast::DUMMY_NODE_ID,
-                is_placeholder: false,
-            })
-            .collect();
-
-        let vdata = if fields.is_empty() {
-            ast::VariantData::Unit(ast::DUMMY_NODE_ID)
-        } else {
-            ast::VariantData::Tuple(fields, ast::DUMMY_NODE_ID)
-        };
-
-        ast::Variant {
-            attrs: Vec::new(),
-            data: vdata,
-            disr_expr: None,
-            id: ast::DUMMY_NODE_ID,
-            ident,
-            vis: respan(vis_span, ast::VisibilityKind::Inherited),
-            span,
-            is_placeholder: false,
-        }
     }
 
     pub fn item_static(

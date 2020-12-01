@@ -37,8 +37,9 @@
 
 use crate::astconv::AstConv;
 use crate::check::FnCtxt;
-use rustc_errors::{struct_span_err, DiagnosticBuilder};
+use rustc_errors::{struct_span_err, Applicability, DiagnosticBuilder};
 use rustc_hir as hir;
+use rustc_hir::def_id::DefId;
 use rustc_infer::infer::type_variable::{TypeVariableOrigin, TypeVariableOriginKind};
 use rustc_infer::infer::{Coercion, InferOk, InferResult};
 use rustc_middle::ty::adjustment::{
@@ -51,7 +52,7 @@ use rustc_middle::ty::subst::SubstsRef;
 use rustc_middle::ty::{self, Ty, TypeAndMut};
 use rustc_session::parse::feature_err;
 use rustc_span::symbol::sym;
-use rustc_span::{self, Span};
+use rustc_span::{self, BytePos, Span};
 use rustc_target::spec::abi::Abi;
 use rustc_trait_selection::traits::error_reporting::InferCtxtExt;
 use rustc_trait_selection::traits::{self, ObligationCause, ObligationCauseCode};
@@ -197,7 +198,7 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
         //
         // Note: does not attempt to resolve type variables we encounter.
         // See above for details.
-        match b.kind {
+        match *b.kind() {
             ty::RawPtr(mt_b) => {
                 return self.coerce_unsafe_ptr(a, b, mt_b.mutbl);
             }
@@ -207,7 +208,7 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
             _ => {}
         }
 
-        match a.kind {
+        match *a.kind() {
             ty::FnDef(..) => {
                 // Function items are coercible to any closure
                 // type; function pointers are not (that would
@@ -221,11 +222,11 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
                 // unsafe qualifier.
                 self.coerce_from_fn_pointer(a, a_f, b)
             }
-            ty::Closure(_, substs_a) => {
+            ty::Closure(closure_def_id_a, substs_a) => {
                 // Non-capturing closures are coercible to
                 // function pointers or unsafe function pointers.
                 // It cannot convert closures that require unsafe.
-                self.coerce_closure_to_fn(a, substs_a, b)
+                self.coerce_closure_to_fn(a, closure_def_id_a, substs_a, b)
             }
             _ => {
                 // Otherwise, just use unification rules.
@@ -252,7 +253,7 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
         // to type check, we will construct the type that `&M*expr` would
         // yield.
 
-        let (r_a, mt_a) = match a.kind {
+        let (r_a, mt_a) = match *a.kind() {
             ty::Ref(r_a, ty, mutbl) => {
                 let mt_a = ty::TypeAndMut { ty, mutbl };
                 coerce_mutbls(mt_a.mutbl, mutbl_b)?;
@@ -415,7 +416,7 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
 
         // Now apply the autoref. We have to extract the region out of
         // the final ref type we got.
-        let r_borrow = match ty.kind {
+        let r_borrow = match ty.kind() {
             ty::Ref(r_borrow, _, _) => r_borrow,
             _ => span_bug!(span, "expected a ref type, got {:?}", ty),
         };
@@ -490,7 +491,7 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
         // that, at which point we will need extra checks on the target here.
 
         // Handle reborrows before selecting `Source: CoerceUnsized<Target>`.
-        let reborrow = match (&source.kind, &target.kind) {
+        let reborrow = match (source.kind(), target.kind()) {
             (&ty::Ref(_, ty_a, mutbl_a), &ty::Ref(_, _, mutbl_b)) => {
                 coerce_mutbls(mutbl_a, mutbl_b)?;
 
@@ -582,18 +583,19 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
         while !queue.is_empty() {
             let obligation = queue.remove(0);
             debug!("coerce_unsized resolve step: {:?}", obligation);
-            let trait_pred = match obligation.predicate.skip_binders() {
+            let bound_predicate = obligation.predicate.bound_atom();
+            let trait_pred = match bound_predicate.skip_binder() {
                 ty::PredicateAtom::Trait(trait_pred, _)
                     if traits.contains(&trait_pred.def_id()) =>
                 {
                     if unsize_did == trait_pred.def_id() {
                         let unsize_ty = trait_pred.trait_ref.substs[1].expect_ty();
-                        if let ty::Tuple(..) = unsize_ty.kind {
+                        if let ty::Tuple(..) = unsize_ty.kind() {
                             debug!("coerce_unsized: found unsized tuple coercion");
                             has_unsized_tuple_coercion = true;
                         }
                     }
-                    ty::Binder::bind(trait_pred)
+                    bound_predicate.rebind(trait_pred)
                 }
                 _ => {
                     coercion.obligations.push(obligation);
@@ -604,11 +606,11 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
                 // Uncertain or unimplemented.
                 Ok(None) => {
                     if trait_pred.def_id() == unsize_did {
-                        let trait_pred = self.resolve_vars_if_possible(&trait_pred);
+                        let trait_pred = self.resolve_vars_if_possible(trait_pred);
                         let self_ty = trait_pred.skip_binder().self_ty();
                         let unsize_ty = trait_pred.skip_binder().trait_ref.substs[1].expect_ty();
                         debug!("coerce_unsized: ambiguous unsize case for {:?}", trait_pred);
-                        match (&self_ty.kind, &unsize_ty.kind) {
+                        match (&self_ty.kind(), &unsize_ty.kind()) {
                             (ty::Infer(ty::TyVar(v)), ty::Dynamic(..))
                                 if self.type_var_is_sized(*v) =>
                             {
@@ -672,7 +674,7 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
         F: FnOnce(Ty<'tcx>) -> Vec<Adjustment<'tcx>>,
         G: FnOnce(Ty<'tcx>) -> Vec<Adjustment<'tcx>>,
     {
-        if let ty::FnPtr(fn_ty_b) = b.kind {
+        if let ty::FnPtr(fn_ty_b) = b.kind() {
             if let (hir::Unsafety::Normal, hir::Unsafety::Unsafe) =
                 (fn_ty_a.unsafety(), fn_ty_b.unsafety())
             {
@@ -712,7 +714,7 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
         let b = self.shallow_resolve(b);
         debug!("coerce_from_fn_item(a={:?}, b={:?})", a, b);
 
-        match b.kind {
+        match b.kind() {
             ty::FnPtr(b_sig) => {
                 let a_sig = a.fn_sig(self.tcx);
                 // Intrinsics are not coercible to function pointers
@@ -721,7 +723,7 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
                 }
 
                 // Safe `#[target_feature]` functions are not assignable to safe fn pointers (RFC 2396).
-                if let ty::FnDef(def_id, _) = a.kind {
+                if let ty::FnDef(def_id, _) = *a.kind() {
                     if b_sig.unsafety() == hir::Unsafety::Normal
                         && !self.tcx.codegen_fn_attrs(def_id).target_features.is_empty()
                     {
@@ -730,7 +732,7 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
                 }
 
                 let InferOk { value: a_sig, mut obligations } =
-                    self.normalize_associated_types_in_as_infer_ok(self.cause.span, &a_sig);
+                    self.normalize_associated_types_in_as_infer_ok(self.cause.span, a_sig);
 
                 let a_fn_pointer = self.tcx.mk_fn_ptr(a_sig);
                 let InferOk { value, obligations: o2 } = self.coerce_from_safe_fn(
@@ -762,6 +764,7 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
     fn coerce_closure_to_fn(
         &self,
         a: Ty<'tcx>,
+        closure_def_id_a: DefId,
         substs_a: SubstsRef<'tcx>,
         b: Ty<'tcx>,
     ) -> CoerceResult<'tcx> {
@@ -771,8 +774,19 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
 
         let b = self.shallow_resolve(b);
 
-        match b.kind {
-            ty::FnPtr(fn_ty) if substs_a.as_closure().upvar_tys().next().is_none() => {
+        match b.kind() {
+            // At this point we haven't done capture analysis, which means
+            // that the ClosureSubsts just contains an inference variable instead
+            // of tuple of captured types.
+            //
+            // All we care here is if any variable is being captured and not the exact paths,
+            // so we check `upvars_mentioned` for root variables being captured.
+            ty::FnPtr(fn_ty)
+                if self
+                    .tcx
+                    .upvars_mentioned(closure_def_id_a.expect_local())
+                    .map_or(true, |u| u.is_empty()) =>
+            {
                 // We coerce the closure, which has fn type
                 //     `extern "rust-call" fn((arg0,arg1,...)) -> _`
                 // to
@@ -802,7 +816,7 @@ impl<'f, 'tcx> Coerce<'f, 'tcx> {
     ) -> CoerceResult<'tcx> {
         debug!("coerce_unsafe_ptr(a={:?}, b={:?})", a, b);
 
-        let (is_ref, mt_a) = match a.kind {
+        let (is_ref, mt_a) = match *a.kind() {
             ty::Ref(_, ty, mutbl) => (true, ty::TypeAndMut { ty, mutbl }),
             ty::RawPtr(mt) => (false, mt),
             _ => return self.unify_and(a, b, identity),
@@ -906,16 +920,16 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         // Function items or non-capturing closures of differing IDs or InternalSubsts.
         let (a_sig, b_sig) = {
             let is_capturing_closure = |ty| {
-                if let &ty::Closure(_, substs) = ty {
-                    substs.as_closure().upvar_tys().next().is_some()
+                if let &ty::Closure(closure_def_id, _substs) = ty {
+                    self.tcx.upvars_mentioned(closure_def_id.expect_local()).is_some()
                 } else {
                     false
                 }
             };
-            if is_capturing_closure(&prev_ty.kind) || is_capturing_closure(&new_ty.kind) {
+            if is_capturing_closure(&prev_ty.kind()) || is_capturing_closure(&new_ty.kind()) {
                 (None, None)
             } else {
-                match (&prev_ty.kind, &new_ty.kind) {
+                match (&prev_ty.kind(), &new_ty.kind()) {
                     (&ty::FnDef(..), &ty::FnDef(..)) => {
                         // Don't reify if the function types have a LUB, i.e., they
                         // are the same function and their parameters have a LUB.
@@ -959,8 +973,8 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
         };
         if let (Some(a_sig), Some(b_sig)) = (a_sig, b_sig) {
             // The signature must match.
-            let a_sig = self.normalize_associated_types_in(new.span, &a_sig);
-            let b_sig = self.normalize_associated_types_in(new.span, &b_sig);
+            let a_sig = self.normalize_associated_types_in(new.span, a_sig);
+            let b_sig = self.normalize_associated_types_in(new.span, b_sig);
             let sig = self
                 .at(cause, self.param_env)
                 .trace(prev_ty, new_ty)
@@ -969,12 +983,12 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
 
             // Reify both sides and return the reified fn pointer type.
             let fn_ptr = self.tcx.mk_fn_ptr(sig);
-            let prev_adjustment = match prev_ty.kind {
+            let prev_adjustment = match prev_ty.kind() {
                 ty::Closure(..) => Adjust::Pointer(PointerCast::ClosureFnPointer(a_sig.unsafety())),
                 ty::FnDef(..) => Adjust::Pointer(PointerCast::ReifyFnPointer),
                 _ => unreachable!(),
             };
-            let next_adjustment = match new_ty.kind {
+            let next_adjustment = match new_ty.kind() {
                 ty::Closure(..) => Adjust::Pointer(PointerCast::ClosureFnPointer(b_sig.unsafety())),
                 ty::FnDef(..) => Adjust::Pointer(PointerCast::ReifyFnPointer),
                 _ => unreachable!(),
@@ -1024,7 +1038,7 @@ impl<'a, 'tcx> FnCtxt<'a, 'tcx> {
             let noop = match self.typeck_results.borrow().expr_adjustments(expr) {
                 &[Adjustment { kind: Adjust::Deref(_), .. }, Adjustment { kind: Adjust::Borrow(AutoBorrow::Ref(_, mutbl_adj)), .. }] =>
                 {
-                    match self.node_ty(expr.hir_id).kind {
+                    match *self.node_ty(expr.hir_id).kind() {
                         ty::Ref(_, _, mt_orig) => {
                             let mutbl_adj: hir::Mutability = mutbl_adj.into();
                             // Reborrow that we can safely ignore, because
@@ -1459,14 +1473,37 @@ impl<'tcx, 'exprs, E: AsCoercionSite> CoerceMany<'tcx, 'exprs, E> {
             }
         }
         if let (Some(sp), Some(fn_output)) = (fcx.ret_coercion_span.borrow().as_ref(), fn_output) {
-            self.add_impl_trait_explanation(&mut err, fcx, expected, *sp, fn_output);
+            self.add_impl_trait_explanation(&mut err, cause, fcx, expected, *sp, fn_output);
         }
+
+        if let Some(sp) = fcx.ret_coercion_span.borrow().as_ref() {
+            // If the closure has an explicit return type annotation,
+            // then a type error may occur at the first return expression we
+            // see in the closure (if it conflicts with the declared
+            // return type). Skip adding a note in this case, since it
+            // would be incorrect.
+            if !err.span.primary_spans().iter().any(|span| span == sp) {
+                let hir = fcx.tcx.hir();
+                let body_owner = hir.body_owned_by(hir.enclosing_body_owner(fcx.body_id));
+                if fcx.tcx.is_closure(hir.body_owner_def_id(body_owner).to_def_id()) {
+                    err.span_note(
+                        *sp,
+                        &format!(
+                            "return type inferred to be `{}` here",
+                            fcx.resolve_vars_if_possible(expected)
+                        ),
+                    );
+                }
+            }
+        }
+
         err
     }
 
     fn add_impl_trait_explanation<'a>(
         &self,
         err: &mut DiagnosticBuilder<'a>,
+        cause: &ObligationCause<'tcx>,
         fcx: &FnCtxt<'a, 'tcx>,
         expected: Ty<'tcx>,
         sp: Span,
@@ -1501,7 +1538,7 @@ impl<'tcx, 'exprs, E: AsCoercionSite> CoerceMany<'tcx, 'exprs, E> {
             if let hir::TyKind::OpaqueDef(..) = ty.kind {
                 let ty = AstConv::ast_ty_to_ty(fcx, ty);
                 // Get the `impl Trait`'s `DefId`.
-                if let ty::Opaque(def_id, _) = ty.kind {
+                if let ty::Opaque(def_id, _) = ty.kind() {
                     let hir_id = fcx.tcx.hir().local_def_id_to_hir_id(def_id.expect_local());
                     // Get the `impl Trait`'s `Item` so that we can get its trait bounds and
                     // get the `Trait`'s `DefId`.
@@ -1523,10 +1560,30 @@ impl<'tcx, 'exprs, E: AsCoercionSite> CoerceMany<'tcx, 'exprs, E> {
         };
         if has_impl {
             if is_object_safe {
-                err.help(&format!(
-                    "you can instead return a boxed trait object using `Box<dyn {}>`",
-                    &snippet[5..]
-                ));
+                err.multipart_suggestion(
+                    "you could change the return type to be a boxed trait object",
+                    vec![
+                        (return_sp.with_hi(return_sp.lo() + BytePos(4)), "Box<dyn".to_string()),
+                        (return_sp.shrink_to_hi(), ">".to_string()),
+                    ],
+                    Applicability::MachineApplicable,
+                );
+                let sugg = vec![sp, cause.span]
+                    .into_iter()
+                    .flat_map(|sp| {
+                        vec![
+                            (sp.shrink_to_lo(), "Box::new(".to_string()),
+                            (sp.shrink_to_hi(), ")".to_string()),
+                        ]
+                        .into_iter()
+                    })
+                    .collect::<Vec<_>>();
+                err.multipart_suggestion(
+                    "if you change the return type to expect trait objects, box the returned \
+                     expressions",
+                    sugg,
+                    Applicability::MaybeIncorrect,
+                );
             } else {
                 err.help(&format!(
                     "if the trait `{}` were object safe, you could return a boxed trait object",
@@ -1535,14 +1592,14 @@ impl<'tcx, 'exprs, E: AsCoercionSite> CoerceMany<'tcx, 'exprs, E> {
             }
             err.note(trait_obj_msg);
         }
-        err.help("alternatively, create a new `enum` with a variant for each returned type");
+        err.help("you could instead create a new `enum` with a variant for each returned type");
     }
 
     fn is_return_ty_unsized(&self, fcx: &FnCtxt<'a, 'tcx>, blk_id: hir::HirId) -> bool {
         if let Some((fn_decl, _)) = fcx.get_fn_decl(blk_id) {
             if let hir::FnRetTy::Return(ty) = fn_decl.output {
                 let ty = AstConv::ast_ty_to_ty(fcx, ty);
-                if let ty::Dynamic(..) = ty.kind {
+                if let ty::Dynamic(..) = ty.kind() {
                     return true;
                 }
             }

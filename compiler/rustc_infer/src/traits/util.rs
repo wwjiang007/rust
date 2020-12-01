@@ -1,16 +1,16 @@
 use smallvec::smallvec;
 
 use crate::traits::{Obligation, ObligationCause, PredicateObligation};
-use rustc_data_structures::fx::FxHashSet;
+use rustc_data_structures::fx::{FxHashSet, FxIndexSet};
 use rustc_middle::ty::outlives::Component;
 use rustc_middle::ty::{self, ToPredicate, TyCtxt, WithConstness};
-use rustc_span::Span;
+use rustc_span::symbol::Ident;
 
 pub fn anonymize_predicate<'tcx>(
     tcx: TyCtxt<'tcx>,
     pred: ty::Predicate<'tcx>,
 ) -> ty::Predicate<'tcx> {
-    match pred.kind() {
+    match *pred.kind() {
         ty::PredicateKind::ForAll(binder) => {
             let new = ty::PredicateKind::ForAll(tcx.anonymize_late_bound_regions(binder));
             tcx.reuse_or_mk_predicate(pred, new)
@@ -94,7 +94,11 @@ pub fn elaborate_predicates<'tcx>(
     tcx: TyCtxt<'tcx>,
     predicates: impl Iterator<Item = ty::Predicate<'tcx>>,
 ) -> Elaborator<'tcx> {
-    let obligations = predicates.map(|predicate| predicate_obligation(predicate, None)).collect();
+    let obligations = predicates
+        .map(|predicate| {
+            predicate_obligation(predicate, ty::ParamEnv::empty(), ObligationCause::dummy())
+        })
+        .collect();
     elaborate_obligations(tcx, obligations)
 }
 
@@ -109,15 +113,10 @@ pub fn elaborate_obligations<'tcx>(
 
 fn predicate_obligation<'tcx>(
     predicate: ty::Predicate<'tcx>,
-    span: Option<Span>,
+    param_env: ty::ParamEnv<'tcx>,
+    cause: ObligationCause<'tcx>,
 ) -> PredicateObligation<'tcx> {
-    let cause = if let Some(span) = span {
-        ObligationCause::dummy_with_span(span)
-    } else {
-        ObligationCause::dummy()
-    };
-
-    Obligation { cause, param_env: ty::ParamEnv::empty(), recursion_depth: 0, predicate }
+    Obligation { cause, param_env, recursion_depth: 0, predicate }
 }
 
 impl Elaborator<'tcx> {
@@ -128,15 +127,17 @@ impl Elaborator<'tcx> {
     fn elaborate(&mut self, obligation: &PredicateObligation<'tcx>) {
         let tcx = self.visited.tcx;
 
-        match obligation.predicate.skip_binders() {
+        let bound_predicate = obligation.predicate.bound_atom();
+        match bound_predicate.skip_binder() {
             ty::PredicateAtom::Trait(data, _) => {
                 // Get predicates declared on the trait.
                 let predicates = tcx.super_predicates_of(data.def_id());
 
-                let obligations = predicates.predicates.iter().map(|&(pred, span)| {
+                let obligations = predicates.predicates.iter().map(|&(pred, _)| {
                     predicate_obligation(
-                        pred.subst_supertrait(tcx, &ty::Binder::bind(data.trait_ref)),
-                        Some(span),
+                        pred.subst_supertrait(tcx, &bound_predicate.rebind(data.trait_ref)),
+                        obligation.param_env,
+                        obligation.cause.clone(),
                     )
                 });
                 debug!("super_predicates: data={:?}", data);
@@ -233,8 +234,17 @@ impl Elaborator<'tcx> {
                         })
                         .map(|predicate_kind| predicate_kind.to_predicate(tcx))
                         .filter(|&predicate| visited.insert(predicate))
-                        .map(|predicate| predicate_obligation(predicate, None)),
+                        .map(|predicate| {
+                            predicate_obligation(
+                                predicate,
+                                obligation.param_env,
+                                obligation.cause.clone(),
+                            )
+                        }),
                 );
+            }
+            ty::PredicateAtom::TypeWellFormedFromEnv(..) => {
+                // Nothing to elaborate
             }
         }
     }
@@ -278,6 +288,37 @@ pub fn transitive_bounds<'tcx>(
     elaborate_trait_refs(tcx, bounds).filter_to_traits()
 }
 
+/// A specialized variant of `elaborate_trait_refs` that only elaborates trait references that may
+/// define the given associated type `assoc_name`. It uses the
+/// `super_predicates_that_define_assoc_type` query to avoid enumerating super-predicates that
+/// aren't related to `assoc_item`.  This is used when resolving types like `Self::Item` or
+/// `T::Item` and helps to avoid cycle errors (see e.g. #35237).
+pub fn transitive_bounds_that_define_assoc_type<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    bounds: impl Iterator<Item = ty::PolyTraitRef<'tcx>>,
+    assoc_name: Ident,
+) -> FxIndexSet<ty::PolyTraitRef<'tcx>> {
+    let mut stack: Vec<_> = bounds.collect();
+    let mut trait_refs = FxIndexSet::default();
+
+    while let Some(trait_ref) = stack.pop() {
+        if trait_refs.insert(trait_ref) {
+            let super_predicates =
+                tcx.super_predicates_that_define_assoc_type((trait_ref.def_id(), Some(assoc_name)));
+            for (super_predicate, _) in super_predicates.predicates {
+                let bound_predicate = super_predicate.bound_atom();
+                let subst_predicate = super_predicate
+                    .subst_supertrait(tcx, &bound_predicate.rebind(trait_ref.skip_binder()));
+                if let Some(binder) = subst_predicate.to_opt_poly_trait_ref() {
+                    stack.push(binder.value);
+                }
+            }
+        }
+    }
+
+    trait_refs
+}
+
 ///////////////////////////////////////////////////////////////////////////
 // Other
 ///////////////////////////////////////////////////////////////////////////
@@ -300,7 +341,7 @@ impl<'tcx, I: Iterator<Item = PredicateObligation<'tcx>>> Iterator for FilterToT
     fn next(&mut self) -> Option<ty::PolyTraitRef<'tcx>> {
         while let Some(obligation) = self.base_iterator.next() {
             if let Some(data) = obligation.predicate.to_opt_poly_trait_ref() {
-                return Some(data);
+                return Some(data.value);
             }
         }
         None

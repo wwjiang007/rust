@@ -23,7 +23,7 @@ pub fn can_type_implement_copy(
 ) -> Result<(), CopyImplementationError<'tcx>> {
     // FIXME: (@jroesch) float this code up
     tcx.infer_ctxt().enter(|infcx| {
-        let (adt, substs) = match self_type.kind {
+        let (adt, substs) = match self_type.kind() {
             // These types used to have a builtin impl.
             // Now libcore provides that impl.
             ty::Uint(_)
@@ -50,7 +50,7 @@ pub fn can_type_implement_copy(
                 let span = tcx.def_span(field.did);
                 let cause = ObligationCause::dummy_with_span(span);
                 let ctx = traits::FulfillmentContext::new();
-                match traits::fully_normalize(&infcx, ctx, cause, param_env, &ty) {
+                match traits::fully_normalize(&infcx, ctx, cause, param_env, ty) {
                     Ok(ty) => {
                         if !infcx.type_is_copy_modulo_regions(param_env, ty, span) {
                             infringing.push(field);

@@ -26,10 +26,9 @@ use rustc_data_structures::fx::FxHashMap;
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_fs_util::path_to_c_string;
 use rustc_hir::def::CtorKind;
-use rustc_hir::def_id::{CrateNum, DefId, LOCAL_CRATE};
+use rustc_hir::def_id::{DefId, LOCAL_CRATE};
 use rustc_index::vec::{Idx, IndexVec};
 use rustc_middle::ich::NodeIdHashingMode;
-use rustc_middle::mir::interpret::truncate;
 use rustc_middle::mir::{self, Field, GeneratorLayout};
 use rustc_middle::ty::layout::{self, IntegerExt, PrimitiveExt, TyAndLayout};
 use rustc_middle::ty::subst::GenericArgKind;
@@ -190,7 +189,7 @@ impl TypeMap<'ll, 'tcx> {
         // something that provides more than the 64 bits of the DefaultHasher.
         let mut hasher = StableHasher::new();
         let mut hcx = cx.tcx.create_stable_hashing_context();
-        let type_ = cx.tcx.erase_regions(&type_);
+        let type_ = cx.tcx.erase_regions(type_);
         hcx.while_hashing_spans(false, |hcx| {
             hcx.with_node_id_hashing_mode(NodeIdHashingMode::HashDefPath, |hcx| {
                 type_.hash_stable(hcx, &mut hasher);
@@ -343,7 +342,7 @@ fn fixed_vec_metadata(
 
     let (size, align) = cx.size_and_align_of(array_or_slice_type);
 
-    let upper_bound = match array_or_slice_type.kind {
+    let upper_bound = match array_or_slice_type.kind() {
         ty::Array(_, len) => len.eval_usize(cx.tcx, ty::ParamEnv::reveal_all()) as c_longlong,
         _ => -1,
     };
@@ -428,11 +427,11 @@ fn subroutine_type_metadata(
     span: Span,
 ) -> MetadataCreationResult<'ll> {
     let signature =
-        cx.tcx.normalize_erasing_late_bound_regions(ty::ParamEnv::reveal_all(), &signature);
+        cx.tcx.normalize_erasing_late_bound_regions(ty::ParamEnv::reveal_all(), signature);
 
     let signature_metadata: Vec<_> = iter::once(
         // return type
-        match signature.output().kind {
+        match signature.output().kind() {
             ty::Tuple(ref tys) if tys.is_empty() => None,
             _ => Some(type_metadata(cx, signature.output(), span)),
         },
@@ -472,7 +471,7 @@ fn trait_pointer_metadata(
     // type is assigned the correct name, size, namespace, and source location.
     // However, it does not describe the trait's methods.
 
-    let containing_scope = match trait_type.kind {
+    let containing_scope = match trait_type.kind() {
         ty::Dynamic(ref data, ..) => {
             data.principal_def_id().map(|did| get_namespace_for_item(cx, did))
         }
@@ -572,7 +571,7 @@ pub fn type_metadata(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>, usage_site_span: Sp
 
     debug!("type_metadata: {:?}", t);
 
-    let ptr_metadata = |ty: Ty<'tcx>| match ty.kind {
+    let ptr_metadata = |ty: Ty<'tcx>| match *ty.kind() {
         ty::Slice(typ) => Ok(vec_slice_metadata(cx, t, typ, unique_type_id, usage_site_span)),
         ty::Str => Ok(vec_slice_metadata(cx, t, cx.tcx.types.u8, unique_type_id, usage_site_span)),
         ty::Dynamic(..) => Ok(MetadataCreationResult::new(
@@ -592,7 +591,7 @@ pub fn type_metadata(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>, usage_site_span: Sp
         }
     };
 
-    let MetadataCreationResult { metadata, already_stored_in_typemap } = match t.kind {
+    let MetadataCreationResult { metadata, already_stored_in_typemap } = match *t.kind() {
         ty::Never | ty::Bool | ty::Char | ty::Int(_) | ty::Uint(_) | ty::Float(_) => {
             MetadataCreationResult::new(basic_type_metadata(cx, t), false)
         }
@@ -760,16 +759,12 @@ fn hex_encode(data: &[u8]) -> String {
     hex_string
 }
 
-pub fn file_metadata(
-    cx: &CodegenCx<'ll, '_>,
-    source_file: &SourceFile,
-    defining_crate: CrateNum,
-) -> &'ll DIFile {
-    debug!("file_metadata: file_name: {}, defining_crate: {}", source_file.name, defining_crate);
+pub fn file_metadata(cx: &CodegenCx<'ll, '_>, source_file: &SourceFile) -> &'ll DIFile {
+    debug!("file_metadata: file_name: {}", source_file.name);
 
     let hash = Some(&source_file.src_hash);
     let file_name = Some(source_file.name.to_string());
-    let directory = if defining_crate == LOCAL_CRATE {
+    let directory = if source_file.is_real_file() && !source_file.is_imported() {
         Some(cx.sess().working_dir.0.to_string_lossy().to_string())
     } else {
         // If the path comes from an upstream crate we assume it has been made
@@ -805,6 +800,7 @@ fn file_metadata_raw(
                     let kind = match hash.kind {
                         rustc_span::SourceFileHashAlgorithm::Md5 => llvm::ChecksumKind::MD5,
                         rustc_span::SourceFileHashAlgorithm::Sha1 => llvm::ChecksumKind::SHA1,
+                        rustc_span::SourceFileHashAlgorithm::Sha256 => llvm::ChecksumKind::SHA256,
                     };
                     (kind, hex_encode(hash.hash_bytes()))
                 }
@@ -874,9 +870,9 @@ fn basic_type_metadata(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>) -> &'ll DIType {
 
     // When targeting MSVC, emit MSVC style type names for compatibility with
     // .natvis visualizers (and perhaps other existing native debuggers?)
-    let msvc_like_names = cx.tcx.sess.target.target.options.is_like_msvc;
+    let msvc_like_names = cx.tcx.sess.target.is_like_msvc;
 
-    let (name, encoding) = match t.kind {
+    let (name, encoding) = match t.kind() {
         ty::Never => ("!", DW_ATE_unsigned),
         ty::Tuple(ref elements) if elements.is_empty() => ("()", DW_ATE_unsigned),
         ty::Bool => ("bool", DW_ATE_boolean),
@@ -904,7 +900,7 @@ fn basic_type_metadata(cx: &CodegenCx<'ll, 'tcx>, t: Ty<'tcx>) -> &'ll DIType {
         return ty_metadata;
     }
 
-    let typedef_name = match t.kind {
+    let typedef_name = match t.kind() {
         ty::Int(int_ty) => int_ty.name_str(),
         ty::Uint(uint_ty) => uint_ty.name_str(),
         ty::Float(float_ty) => float_ty.name_str(),
@@ -985,7 +981,7 @@ pub fn compile_unit_metadata(
     // if multiple object files with the same `DW_AT_name` are linked together.
     // As a workaround we generate unique names for each object file. Those do
     // not correspond to an actual source file but that should be harmless.
-    if tcx.sess.target.target.options.is_like_osx {
+    if tcx.sess.target.is_like_osx {
         name_in_debuginfo.push("@");
         name_in_debuginfo.push(codegen_unit_name);
     }
@@ -1156,10 +1152,7 @@ impl<'ll> MemberDescription<'ll> {
                 self.size.bits(),
                 self.align.bits() as u32,
                 self.offset.bits(),
-                match self.discriminant {
-                    None => None,
-                    Some(value) => Some(cx.const_u64(value)),
-                },
+                self.discriminant.map(|v| cx.const_u64(v)),
                 self.flags,
                 self.type_metadata,
             )
@@ -1239,7 +1232,7 @@ fn prepare_struct_metadata(
 ) -> RecursiveTypeDescription<'ll, 'tcx> {
     let struct_name = compute_debuginfo_type_name(cx.tcx, struct_type, false);
 
-    let (struct_def_id, variant) = match struct_type.kind {
+    let (struct_def_id, variant) = match struct_type.kind() {
         ty::Adt(def, _) => (def.did, def.non_enum_variant()),
         _ => bug!("prepare_struct_metadata on a non-ADT"),
     };
@@ -1373,7 +1366,7 @@ fn prepare_union_metadata(
 ) -> RecursiveTypeDescription<'ll, 'tcx> {
     let union_name = compute_debuginfo_type_name(cx.tcx, union_type, false);
 
-    let (union_def_id, variant) = match union_type.kind {
+    let (union_def_id, variant) = match union_type.kind() {
         ty::Adt(def, _) => (def.did, def.non_enum_variant()),
         _ => bug!("prepare_union_metadata on a non-ADT"),
     };
@@ -1401,7 +1394,7 @@ fn prepare_union_metadata(
 /// on MSVC we have to use the fallback mode, because LLVM doesn't
 /// lower variant parts to PDB.
 fn use_enum_fallback(cx: &CodegenCx<'_, '_>) -> bool {
-    cx.sess().target.target.options.is_like_msvc
+    cx.sess().target.is_like_msvc
 }
 
 // FIXME(eddyb) maybe precompute this? Right now it's computed once
@@ -1457,14 +1450,14 @@ struct EnumMemberDescriptionFactory<'ll, 'tcx> {
 
 impl EnumMemberDescriptionFactory<'ll, 'tcx> {
     fn create_member_descriptions(&self, cx: &CodegenCx<'ll, 'tcx>) -> Vec<MemberDescription<'ll>> {
-        let generator_variant_info_data = match self.enum_type.kind {
+        let generator_variant_info_data = match *self.enum_type.kind() {
             ty::Generator(def_id, ..) => {
                 Some(generator_layout_and_saved_local_names(cx.tcx, def_id))
             }
             _ => None,
         };
 
-        let variant_info_for = |index: VariantIdx| match self.enum_type.kind {
+        let variant_info_for = |index: VariantIdx| match *self.enum_type.kind() {
             ty::Adt(adt, _) => VariantInfo::Adt(&adt.variants[index]),
             ty::Generator(def_id, _, _) => {
                 let (generator_layout, generator_saved_local_names) =
@@ -1486,14 +1479,14 @@ impl EnumMemberDescriptionFactory<'ll, 'tcx> {
         } else {
             type_metadata(cx, self.enum_type, self.span)
         };
-        let flags = match self.enum_type.kind {
+        let flags = match self.enum_type.kind() {
             ty::Generator(..) => DIFlags::FlagArtificial,
             _ => DIFlags::FlagZero,
         };
 
         match self.layout.variants {
             Variants::Single { index } => {
-                if let ty::Adt(adt, _) = &self.enum_type.kind {
+                if let ty::Adt(adt, _) = self.enum_type.kind() {
                     if adt.variants.is_empty() {
                         return vec![];
                     }
@@ -1696,7 +1689,7 @@ impl EnumMemberDescriptionFactory<'ll, 'tcx> {
                                 let value = (i.as_u32() as u128)
                                     .wrapping_sub(niche_variants.start().as_u32() as u128)
                                     .wrapping_add(niche_start);
-                                let value = truncate(value, tag.value.size(cx));
+                                let value = tag.value.size(cx).truncate(value);
                                 // NOTE(eddyb) do *NOT* remove this assert, until
                                 // we pass the full 128-bit value to LLVM, otherwise
                                 // truncation will be silent and remain undetected.
@@ -1835,7 +1828,7 @@ impl<'tcx> VariantInfo<'_, 'tcx> {
                 if !span.is_dummy() {
                     let loc = cx.lookup_debug_loc(span.lo());
                     return Some(SourceInfo {
-                        file: file_metadata(cx, &loc.file, def_id.krate),
+                        file: file_metadata(cx, &loc.file),
                         line: loc.line.unwrap_or(UNKNOWN_LINE_NUMBER),
                     });
                 }
@@ -1845,7 +1838,6 @@ impl<'tcx> VariantInfo<'_, 'tcx> {
         None
     }
 
-    #[allow(dead_code)]
     fn is_artificial(&self) -> bool {
         match self {
             VariantInfo::Generator { .. } => true,
@@ -1942,7 +1934,7 @@ fn prepare_enum_metadata(
     let tcx = cx.tcx;
     let enum_name = compute_debuginfo_type_name(tcx, enum_type, false);
     // FIXME(tmandry): This doesn't seem to have any effect.
-    let enum_flags = match enum_type.kind {
+    let enum_flags = match enum_type.kind() {
         ty::Generator(..) => DIFlags::FlagArtificial,
         _ => DIFlags::FlagZero,
     };
@@ -1957,13 +1949,13 @@ fn prepare_enum_metadata(
     let file_metadata = unknown_file_metadata(cx);
 
     let discriminant_type_metadata = |discr: Primitive| {
-        let enumerators_metadata: Vec<_> = match enum_type.kind {
+        let enumerators_metadata: Vec<_> = match enum_type.kind() {
             ty::Adt(def, _) => def
                 .discriminants(tcx)
                 .zip(&def.variants)
                 .map(|((_, discr), v)| {
                     let name = v.ident.as_str();
-                    let is_unsigned = match discr.ty.kind {
+                    let is_unsigned = match discr.ty.kind() {
                         ty::Int(_) => false,
                         ty::Uint(_) => true,
                         _ => bug!("non integer discriminant"),
@@ -2012,7 +2004,7 @@ fn prepare_enum_metadata(
                     type_metadata(cx, discr.to_ty(tcx), rustc_span::DUMMY_SP);
 
                 let item_name;
-                let discriminant_name = match enum_type.kind {
+                let discriminant_name = match enum_type.kind() {
                     ty::Adt(..) => {
                         item_name = tcx.item_name(enum_def_id).as_str();
                         &*item_name
@@ -2105,7 +2097,7 @@ fn prepare_enum_metadata(
         );
     }
 
-    let discriminator_name = match &enum_type.kind {
+    let discriminator_name = match enum_type.kind() {
         ty::Generator(..) => "__state",
         _ => "",
     };
@@ -2328,7 +2320,7 @@ fn set_members_of_composite_type(
 
 /// Computes the type parameters for a type, if any, for the given metadata.
 fn compute_type_parameters(cx: &CodegenCx<'ll, 'tcx>, ty: Ty<'tcx>) -> Option<&'ll DIArray> {
-    if let ty::Adt(def, substs) = ty.kind {
+    if let ty::Adt(def, substs) = *ty.kind() {
         if substs.types().next().is_some() {
             let generics = cx.tcx.generics_of(def.did);
             let names = get_parameter_names(cx, generics);
@@ -2475,7 +2467,7 @@ pub fn create_global_var_metadata(cx: &CodegenCx<'ll, '_>, def_id: DefId, global
 
     let (file_metadata, line_number) = if !span.is_dummy() {
         let loc = cx.lookup_debug_loc(span.lo());
-        (file_metadata(cx, &loc.file, LOCAL_CRATE), loc.line)
+        (file_metadata(cx, &loc.file), loc.line)
     } else {
         (unknown_file_metadata(cx), None)
     };
@@ -2577,9 +2569,8 @@ pub fn create_vtable_metadata(cx: &CodegenCx<'ll, 'tcx>, ty: Ty<'tcx>, vtable: &
 pub fn extend_scope_to_file(
     cx: &CodegenCx<'ll, '_>,
     scope_metadata: &'ll DIScope,
-    file: &rustc_span::SourceFile,
-    defining_crate: CrateNum,
+    file: &SourceFile,
 ) -> &'ll DILexicalBlock {
-    let file_metadata = file_metadata(cx, &file, defining_crate);
+    let file_metadata = file_metadata(cx, file);
     unsafe { llvm::LLVMRustDIBuilderCreateLexicalBlockFile(DIB(cx), scope_metadata, file_metadata) }
 }

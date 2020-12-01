@@ -7,7 +7,7 @@ use crate::ty::subst::{GenericArg, SubstsRef};
 use crate::ty::{self, Ty, TyCtxt};
 use rustc_hir::def_id::{CrateNum, DefId, LocalDefId, LOCAL_CRATE};
 use rustc_query_system::query::DefaultCacheSelector;
-use rustc_span::symbol::Symbol;
+use rustc_span::symbol::{Ident, Symbol};
 use rustc_span::{Span, DUMMY_SP};
 
 /// The `Key` trait controls what types can legally be used as the key
@@ -149,6 +149,28 @@ impl Key for (LocalDefId, DefId) {
     }
 }
 
+impl Key for (DefId, Option<Ident>) {
+    type CacheSelector = DefaultCacheSelector;
+
+    fn query_crate(&self) -> CrateNum {
+        self.0.krate
+    }
+    fn default_span(&self, tcx: TyCtxt<'_>) -> Span {
+        tcx.def_span(self.0)
+    }
+}
+
+impl Key for (DefId, LocalDefId, Ident) {
+    type CacheSelector = DefaultCacheSelector;
+
+    fn query_crate(&self) -> CrateNum {
+        self.0.krate
+    }
+    fn default_span(&self, tcx: TyCtxt<'_>) -> Span {
+        self.1.default_span(tcx)
+    }
+}
+
 impl Key for (CrateNum, DefId) {
     type CacheSelector = DefaultCacheSelector;
 
@@ -190,6 +212,22 @@ impl<'tcx> Key for (DefId, SubstsRef<'tcx>) {
     }
     fn default_span(&self, tcx: TyCtxt<'_>) -> Span {
         self.0.default_span(tcx)
+    }
+}
+
+impl<'tcx> Key
+    for (
+        (ty::WithOptConstParam<DefId>, SubstsRef<'tcx>),
+        (ty::WithOptConstParam<DefId>, SubstsRef<'tcx>),
+    )
+{
+    type CacheSelector = DefaultCacheSelector;
+
+    fn query_crate(&self) -> CrateNum {
+        (self.0).0.did.krate
+    }
+    fn default_span(&self, tcx: TyCtxt<'_>) -> Span {
+        (self.0).0.did.default_span(tcx)
     }
 }
 
